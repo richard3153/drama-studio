@@ -795,6 +795,8 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   // 项目一句话描述自动带入大纲输入框（创建项目时填的 description）
   const [idea, setIdea] = useState(project.description || '')
   const [nEp, setNEp] = useState(3)
+  // 分集列表分页：每页 5 集
+  const [epPage, setEpPage] = useState(0)
   const [script, setScript] = useState('')
   const [breakdown, setBreakdown] = useState(null)
   const [checks, setChecks] = useState({})
@@ -856,7 +858,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
 
   const genOutline = async () => {
     setBusy(true)
-    try { await post(`/projects/${project.id}/outline`, { idea, num_episodes: Number(nEp) }); await pollTask(loadEpisodes) }
+    try { await post(`/projects/${project.id}/outline`, { idea, num_episodes: Number(nEp) }); await pollTask(loadEpisodes); setEpPage(0) }
     finally { setBusy(false) }
   }
   const saveScript = async () => { await put(`/episodes/${selId}`, { script_text: script }); loadEpisodes() }
@@ -1086,7 +1088,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
         <label>① 一句话创意 / 大纲 → 生成分集</label>
         <div className="row">
           <input placeholder="例如：深夜便利店店员发现凌晨三点的神秘顾客…" value={idea} onChange={e => setIdea(e.target.value)} style={{ flex: 1 }} />
-          <input type="number" min="1" max="20" value={nEp} onChange={e => setNEp(e.target.value)} style={{ width: 70 }} />
+          <input type="number" min="1" max="60" value={nEp} onChange={e => setNEp(e.target.value)} style={{ width: 70 }} />
           <button disabled={busy || !idea.trim()} onClick={genOutline}>生成分集大纲</button>
         </div>
       </div>
@@ -1094,12 +1096,27 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div style={{ width: 320, flexShrink: 0 }}>
           <label>② 分集列表</label>
-          {episodes.map(e => (
-            <div key={e.id} className={`episode-item ${e.id === selId ? 'selected' : ''}`} onClick={() => setSelId(e.id)}>
-              <div className="t">第 {e.idx} 集 · {e.title || '（未命名）'} <span className="badge">{e.status}</span></div>
-              <div className="s">{(e.outline || '').slice(0, 80)}…</div>
-            </div>
-          ))}
+          {(() => {
+            const PER = 5
+            const totalPages = Math.max(1, Math.ceil(episodes.length / PER))
+            const cur = Math.min(epPage, totalPages - 1)
+            if (cur !== epPage) setEpPage(cur)
+            return <>
+              {episodes.length > PER && (
+                <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
+                  <button className="ghost" style={{ padding: '2px 8px' }} disabled={cur === 0} onClick={() => setEpPage(cur - 1)}>‹ 上一页</button>
+                  <span style={{ fontSize: 12, opacity: .7, flex: 1, textAlign: 'center' }}>{cur + 1}/{totalPages} 页 · 共 {episodes.length} 集</span>
+                  <button className="ghost" style={{ padding: '2px 8px' }} disabled={cur >= totalPages - 1} onClick={() => setEpPage(cur + 1)}>下一页 ›</button>
+                </div>
+              )}
+              {episodes.slice(cur * PER, cur * PER + PER).map(e => (
+                <div key={e.id} className={`episode-item ${e.id === selId ? 'selected' : ''}`} onClick={() => setSelId(e.id)}>
+                  <div className="t">第 {e.idx} 集 · {e.title || '（未命名）'} <span className="badge">{e.status}</span></div>
+                  <div className="s">{(e.outline || '').slice(0, 80)}…</div>
+                </div>
+              ))}
+            </>
+          })()}
           {!episodes.length && <div className="page-sub">暂无分集，先用上方创意生成。</div>}
         </div>
 
