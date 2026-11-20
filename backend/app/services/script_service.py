@@ -192,12 +192,16 @@ async def _chat_json(prompt: str, system: str, *, model: str = "qwen3.5:4b",
 # ---------- 1. 大纲（第三章：高概念 + 强钩子） ----------
 
 async def generate_outline(db, task, params: dict) -> dict:
-    """一句话/大纲 → 高概念 + 人物小传 + 分集大纲。params: {project_id, idea, num_episodes, genre?}"""
+    """一句话/大纲 → 高概念 + 人物小传 + 分集大纲。params: {project_id, idea, num_episodes, genre?}
+
+    数量硬保证（实测：qwen 4B 对"共 N 集"只给一半，60 集更不可能单次生成）：
+    按 6 集/批循环生成，每批带已有分集摘要做上下文防重复，直到凑满 N 或连续补不齐。
+    """
     from ..scheduler.queue import update_progress
     from ..db import Episode
 
-    n = int(params.get("num_episodes") or 3)
-    update_progress(db, task, 0.1, "调用本地 LLM 生成高概念与分集大纲")
+    n = max(1, min(int(params.get("num_episodes") or 3), 60))
+    update_progress(db, task, 0.05, "调用本地 LLM 生成高概念与分集大纲")
     # idea 空时回落到项目一句话描述（前端已自动带入，这里兜底防其他入口漏传）
     idea = (params.get("idea") or "").strip()
     if not idea:
@@ -211,20 +215,74 @@ async def generate_outline(db, task, params: dict) -> dict:
         "第二步按三幕剧逻辑拆分集：每集解决一个具体矛盾（小反转），结尾设强钩子。"
         '输出 JSON：{"high_concept":"一句话卖点","characters":[{"name":"","brief":"身份+性格反差+欲望"}],'
         '"episodes":[{"idx":1,"title":"","summary":"150-300字梗概","hook":"本集结尾钩子一句话"}]}'
+        "episodes 数组必须恰好包含要求的集数，一集都不能少。"
     )
     prompt = (
         f"题材/风格：{params.get('genre') or '不限'}\n"
-        f"共 {n} 集，每集 1-2 分钟竖屏短剧。\n"
+        f"全剧共 {n} 集，每集 1-2 分钟竖屏短剧。\n"
         f"创意/大纲：{idea}\n请输出 JSON。"
     )
-    data = await _chat_json(prompt, system, on_stage=lambda m: update_progress(db, task, 0.5, m))
-    eps = data.get("episodes", [])
+
+    # 首批：高概念 + 人物小传 + 第一批分集
+    first = await _chat_json(prompt, system, on_stage=lambda m: update_progress(db, task, 0.1, m))
+    high_concept = str(first.get("high_concept", ""))
+    chars_brief = first.get("characters", [])
+    batch_eps = first.get("episodes", [])
+    all_eps: list[dict] = []
+    seen_titles: set[str] = set()
+    for e in batch_eps:
+        t = str(e.get("title", "")).strip()
+        if e.get("summary") and t and t not in seen_titles:
+            seen_titles.add(t)
+            all_eps.append({"title": t, "summary": str(e.get("summary", "")),
+                            "hook": str(e.get("hook", ""))})
+
+    # 补齐循环：每批 6 集，带最近分集摘要做上下文，LLM 偷懒就继续催
+    BATCH = 6
+    rounds = 0
+    while len(all_eps) < n and rounds < 12:
+        rounds += 1
+        start = len(all_eps) + 1
+        want = min(n - len(all_eps), BATCH)
+        update_progress(db, task, 0.1 + 0.8 * (len(all_eps) / max(n, 1)),
+                        f"分集 {len(all_eps) + 1}-{len(all_eps) + want}/{n}（第 {rounds} 轮补齐）")
+        ctx = "已有分集（严禁重复，剧情线顺延）:\n" + "\n".join(
+            f"- 第{i + 1}集《{e['title']}》: {e['summary'][:70]}"
+            for i, e in enumerate(all_eps[-6:]))
+        p2 = (
+            f"题材/风格：{params.get('genre') or '不限'}\n"
+            f"全剧共 {n} 集；高概念：{high_concept}\n{ctx}\n\n"
+            f"请继续创作第 {start} 集到第 {start + want - 1} 集，"
+            f"共 {want} 集（episodes 数组必须恰好 {want} 个元素，idx 从 {start} 开始连续编号）。"
+            "每集推进一个新矛盾，钩子强度递进。只输出 JSON。"
+        )
+        data = await _chat_json(p2, system)
+        got = 0
+        for e in data.get("episodes", []):
+            t = str(e.get("title", "")).strip()
+            if e.get("summary") and t and t not in seen_titles:
+                seen_titles.add(t)
+                all_eps.append({"title": t, "summary": str(e.get("summary", "")),
+                                "hook": str(e.get("hook", ""))})
+                got += 1
+        if got == 0:   # 一轮颗粒无收：LLM 卡死，放弃避免死循环
+            break
+
+    # 落库（idx 统一重排 1..k，防止 LLM 乱编 idx）
+    # 重生成 = 整体覆盖：先清本项目旧分集与镜头（大纲重走即流程重走，与重拆覆盖镜头同一闭环哲学）
+    from ..db import Shot
+    pid = params["project_id"]
+    for s in db.scalars(select(Shot).join(
+            Episode, Shot.episode_id == Episode.id).where(Episode.project_id == pid)).all():
+        db.delete(s)
+    for e in db.scalars(select(Episode).where(Episode.project_id == pid)).all():
+        db.delete(e)
+    db.commit()
     created = []
-    for e in eps[:n]:
-        summary = str(e.get("summary", ""))
-        hook = str(e.get("hook", ""))
-        ep = Episode(project_id=params["project_id"], idx=int(e.get("idx", len(created) + 1)),
-                     title=str(e.get("title", ""))[:300],
+    for i, e in enumerate(all_eps[:n]):
+        summary, hook = e["summary"], e["hook"]
+        ep = Episode(project_id=params["project_id"], idx=i + 1,
+                     title=e["title"][:300],
                      outline=(summary + (f"\n【钩子】{hook}" if hook else "")),
                      status="outline")
         db.add(ep)
@@ -232,8 +290,13 @@ async def generate_outline(db, task, params: dict) -> dict:
         db.refresh(ep)
         created.append({"id": ep.id, "idx": ep.idx, "title": ep.title,
                         "summary": summary, "hook": hook})
-    return {"high_concept": data.get("high_concept", ""),
-            "characters_brief": data.get("characters", []),
+    if len(created) < n:
+        note = f"（要求 {n} 集，模型 {rounds} 轮后产出 {len(created)} 集——可在分集列表查看，重新生成会覆盖）"
+        update_progress(db, task, 1.0, f"大纲完成 {len(created)} 集{note}")
+    else:
+        update_progress(db, task, 1.0, f"大纲完成 {len(created)}/{n} 集")
+    return {"high_concept": high_concept,
+            "characters_brief": chars_brief,
             "episodes": created}
 
 
