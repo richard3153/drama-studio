@@ -245,6 +245,7 @@ async def _run_task(task_id: int):
             "upscale": lambda: asset_service.upscale_asset(db, t, params),
             "polish": lambda: refine_asset(db, t, params),
             "outline": lambda: script_service.generate_outline(db, t, params),
+            "continue_outline": lambda: script_service.continue_outline(db, t, params),
             "script": lambda: script_service.write_episode_script(db, t, params),
             "breakdown": lambda: script_service.breakdown_episode(db, t, params),
             "refine": lambda: script_service.refine_text(db, t, params),
@@ -373,6 +374,25 @@ async def generate_outline(pid: int, body: OutlineIn):
         params = {"project_id": pid, "idea": body.idea,
                   "num_episodes": body.num_episodes, "genre": body.genre}
         t = task_queue.create_task(db, "outline", params)
+    asyncio.create_task(_run_task(t.id))
+    return {"task_id": t.id}
+
+
+class ContinueOutlineIn(BaseModel):
+    idea: str = ""
+    add_episodes: int = 10
+    genre: str = ""
+
+
+@router.post("/projects/{pid}/outline/continue")
+async def continue_outline(pid: int, body: ContinueOutlineIn):
+    """续写分集：保留已有分集，从下一集继续生成 add 集并逐集 AI 写剧本"""
+    with SessionLocal() as db:
+        if not db.get(Project, pid):
+            raise HTTPException(404, "项目不存在")
+        params = {"project_id": pid, "idea": body.idea,
+                  "add_episodes": body.add_episodes, "genre": body.genre}
+        t = task_queue.create_task(db, "continue_outline", params)
     asyncio.create_task(_run_task(t.id))
     return {"task_id": t.id}
 

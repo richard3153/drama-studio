@@ -861,6 +861,16 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
     try { await post(`/projects/${project.id}/outline`, { idea, num_episodes: Number(nEp) }); await pollTask(loadEpisodes); setEpPage(0) }
     finally { setBusy(false) }
   }
+  const continueOutline = async () => {
+    setBusy(true)
+    try {
+      await post(`/projects/${project.id}/outline/continue`, { add_episodes: 10 })
+      await pollTask(loadEpisodes)
+      const list = await api(`/projects/${project.id}/episodes`)
+      setEpisodes(list)
+      setEpPage(Math.max(0, Math.floor((list.length - 1) / 5)))   // 跳到新分集所在末页
+    } finally { setBusy(false) }
+  }
   const saveScript = async () => { await put(`/episodes/${selId}`, { script_text: script }); loadEpisodes() }
   const writeScript = async () => {
     setBusy(true)
@@ -1095,7 +1105,15 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
 
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div style={{ width: 320, flexShrink: 0 }}>
-          <label>② 分集列表</label>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <label style={{ marginBottom: 0 }}>② 分集列表</label>
+            {!!episodes.length && (
+              <button className="ghost" style={{ padding: '2px 10px', fontSize: 12 }} disabled={busy}
+                onClick={continueOutline} title={`保留现有 ${episodes.length} 集，从第 ${episodes.length + 1} 集继续生成 10 集（含逐集 AI 剧本）`}>
+                续写后 10 集 ›
+              </button>
+            )}
+          </div>
           {(() => {
             const PER = 5
             const totalPages = Math.max(1, Math.ceil(episodes.length / PER))

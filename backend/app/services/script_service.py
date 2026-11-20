@@ -300,6 +300,106 @@ async def generate_outline(db, task, params: dict) -> dict:
             "episodes": created}
 
 
+async def continue_outline(db, task, params: dict) -> dict:
+    """续写分集：保留已有分集，从第 N+1 集继续生成 add 集，并逐集 AI 写剧本。
+    params: {project_id, add_episodes?=10, genre?, model?}
+    与 generate_outline（重建式）不同：只追加不清理，idx 接续已有分集。
+    """
+    from ..scheduler.queue import update_progress
+    from ..db import Episode, Project
+
+    pid = params["project_id"]
+    add = max(1, min(int(params.get("add_episodes") or 10), 60))
+    existing = db.scalars(select(Episode).where(Episode.project_id == pid)
+                          .order_by(Episode.idx)).all()
+    if not existing:
+        raise RuntimeError("暂无分集，请先用「生成分集大纲」创建，再续写")
+    if len(existing) + add > 60:
+        add = 60 - len(existing)
+        if add <= 0:
+            raise RuntimeError("已达 60 集上限，无法续写")
+    start_idx = existing[-1].idx + 1
+
+    idea = (params.get("idea") or "").strip()
+    if not idea:
+        p = db.get(Project, pid)
+        idea = (getattr(p, "description", "") or "").strip()
+    if not idea:
+        raise RuntimeError("缺少创意输入：项目一句话描述为空，请在续写时传入 idea")
+
+    system = (
+        "你是资深短剧策划。按三幕剧逻辑拆分集：每集解决一个具体矛盾（小反转），结尾设强钩子。"
+        '输出 JSON：{"episodes":[{"idx":1,"title":"","summary":"150-300字梗概","hook":"本集结尾钩子一句话"}]}'
+        "episodes 数组必须恰好包含要求的集数，一集都不能少，严禁与已有分集重复。"
+    )
+    all_new: list[dict] = []
+    seen_titles = {e.title.strip() for e in existing if e.title}
+    recent = [f"- 第{e.idx}集《{e.title}》: {(e.outline or '')[:70]}" for e in existing]
+    BATCH = 6
+    rounds = 0
+    while len(all_new) < add and rounds < 12:
+        rounds += 1
+        want = min(add - len(all_new), BATCH)
+        idx_from = start_idx + len(all_new)
+        update_progress(db, task, 0.05 + 0.6 * (len(all_new) / add),
+                        f"续写分集 {idx_from}-{idx_from + want - 1}（第 {rounds} 轮）")
+        ctx = "已有分集（剧情线顺延）:\n" + "\n".join(recent[-6:])
+        p2 = (
+            f"题材/风格：{params.get('genre') or '不限'}\n"
+            f"全剧创意：{idea}\n{ctx}\n\n"
+            f"请继续创作第 {idx_from} 集到第 {idx_from + want - 1} 集，"
+            f"共 {want} 集（episodes 数组必须恰好 {want} 个元素，idx 从 {idx_from} 开始连续编号）。"
+            "每集推进一个新矛盾，钩子强度递进。只输出 JSON。"
+        )
+        data = await _chat_json(p2, system)
+        got = 0
+        for e in data.get("episodes", []):
+            t = str(e.get("title", "")).strip()
+            if e.get("summary") and t and t not in seen_titles:
+                seen_titles.add(t)
+                cur_idx = start_idx + len(all_new)
+                all_new.append({"title": t, "summary": str(e.get("summary", "")),
+                                "hook": str(e.get("hook", ""))})
+                recent.append(f"- 第{cur_idx}集《{t}》: {str(e.get('summary', ''))[:70]}")
+                got += 1
+        if got == 0:   # 一轮颗粒无收：LLM 卡死，放弃避免死循环
+            break
+        # 每批立即落库：中断不丢已完成批次
+        base = start_idx + len(all_new) - got
+        for j, e in enumerate(all_new[-got:]):
+            db.add(Episode(project_id=pid, idx=base + j,
+                           title=e["title"][:300],
+                           outline=(e["summary"] + (f"\n【钩子】{e['hook']}" if e["hook"] else "")),
+                           status="outline"))
+        db.commit()
+
+    new_eps = db.scalars(select(Episode).where(Episode.project_id == pid)
+                         .order_by(Episode.idx)).all()[-len(all_new):]
+    # 逐集 AI 写剧本（单集失败不炸任务，保留 status=outline 可单独重写）
+    created, failed = [], []
+    for i, ep in enumerate(new_eps):
+        update_progress(db, task, 0.7 + 0.28 * i / max(len(new_eps), 1),
+                        f"写第 {ep.idx} 集剧本（{i + 1}/{len(new_eps)}）")
+        try:
+            prompt = f"本集标题：{ep.title}\n本集大纲：\n{ep.outline}\n\n请写本集完整剧本。"
+            text = await OllamaAdapter().chat(prompt, system=SCRIPT_FORMAT_SYSTEM,
+                                              model=params.get("model") or "qwen3.5:4b",
+                                              temperature=LLM_TEMP)
+            ep.script_text = text
+            ep.status = "script"
+            db.commit()
+            created.append({"id": ep.id, "idx": ep.idx, "title": ep.title})
+        except Exception as exc:
+            db.rollback()
+            failed.append({"idx": ep.idx, "error": str(exc)[:200]})
+    update_progress(db, task, 1.0,
+                    f"续写完成：新增 {len(new_eps)} 集（第 {start_idx}-{start_idx + len(new_eps) - 1} 集），"
+                    f"剧本 {len(created)}/{len(new_eps)} 集" + ("，失败集可单独点「AI 写本集剧本」重试" if failed else ""))
+    return {"added_episodes": len(new_eps), "start_idx": start_idx,
+            "scripts_done": len(created), "scripts_failed": failed,
+            "episodes": created}
+
+
 # ---------- 2. 剧本（第一章：影视标准格式） ----------
 
 SCRIPT_FORMAT_SYSTEM = (
