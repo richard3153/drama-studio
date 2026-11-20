@@ -1,0 +1,85 @@
+# 模型注册表：显存预算与档位（低显存优先，调度器据此自动选档）
+# vram_gb = 预估峰值占用（含文本编码器/VAE/激活），tier: low/mid/high
+# role: portrait/image_edit/scene/grid9/video/tts/bgm/upscale/asr/vlm
+
+models:
+  # —— 图像（定妆照/场景/道具）——
+  img_anythingxl:
+    role: [portrait, scene, prop, grid9]
+    family: sdxl
+    weight: "AnythingXL_v50.safetensors"
+    vram_gb: 4.0
+    tier: low
+    styles: [anime, paint]          # 风格族适配（风格锁据此选底模）
+  img_realvisxl:
+    role: [portrait, scene, prop]
+    family: sdxl
+    weight: "RealVisXL_V5.0_fp16.safetensors"
+    vram_gb: 6.5
+    tier: low
+    styles: [photo]
+  img_qwen_image:
+    role: [portrait, scene, prop, image_edit]
+    family: qwen_image
+    weight: "qwen-image-2512-Q5_K_M.gguf"
+    vram_gb: 13.5    # 实测账：Q5 gguf 14GB，8G 显存装不下（原标 7.0 低估，会导致 fits 误选）
+    tier: high
+    offload: true
+    styles: [photo, anime, 3d, paint]
+  img_flux2klein4b:
+    role: [portrait, scene, prop]
+    family: flux2_klein
+    weight: "flux-2-klein-4b-fp8.safetensors"
+    vram_gb: 6.5
+    tier: mid
+    offload: true
+    styles: [photo, 3d]
+
+  # —— 视频（双链路）——
+  vid_h3_q2k:
+    role: [video]
+    family: minimax_h3
+    weight: "minimax_h3_ref2va_pruned-Q2_K.gguf"
+    vram_gb: 6.8
+    tier: low
+  vid_wan21_480p:
+    role: [video]
+    family: wan22
+    weight: "Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors + lightx2v 4step LoRA"
+    workflow: i2v_wan21_480p.json
+    vram_gb: 7.0
+    tier: low
+    offload: blockswap     # fp8 原生加速，8G 实测 480x832x33帧≈108s（默认档）
+  vid_wan_i2v_aio:
+    role: [video]
+    family: wan22
+    weight: "wan2.2-i2v-rapid-aio-nsfw-v9.2.safetensors"
+    vram_gb: 7.2
+    tier: mid
+    offload: blockswap
+  vid_talk_infinitetalk:
+    role: [video]
+    family: wan22
+    weight: "Wan2_1-InfiniteTalk-Single_fp8 + wav2vec2(chinese-base) 音频驱动口型"
+    workflow: infinitetalk_talk.json
+    vram_gb: 7.8
+    tier: high
+    offload: blockswap     # 8G 依赖 WanVideoBlockSwap 30 块 + 强制卸载，速度最慢质量最高
+  vid_wan22_flf_q4:
+    role: [video]
+    family: wan22
+    weight: "Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf + LowNoise-Q4_K_S.gguf + 4step LoRA"
+    workflow: i2v_first_last.json
+    vram_gb: 9.0
+    tier: mid
+    offload: blockswap     # 两块 GGUF 顺序加载，显存不足时落 RAM 换速度
+
+scheduler:
+  # 同一时刻仅允许一个重模型任务；以下类型可并行
+  parallel_types: [tts, asr, stitch, export]
+  vram_safety_margin_gb: 0.5
+
+defaults:
+  portrait_resolution: [832, 1216]   # 竖版定妆照
+  video_resolution: [480, 832]       # 480p 先出，后期放大
+  video_seconds: 5

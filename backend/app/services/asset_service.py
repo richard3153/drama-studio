@@ -1,0 +1,616 @@
+"""P2 资产服务：资产图生成 + 初图 10% 微调（img2img）、活人感负面约束、低显存串行。"""
+import json
+import random
+from datetime import datetime
+from pathlib import Path
+
+from ..adapters.comfyui_adapter import ComfyUIAdapter
+from ..config import ASSETS_ROOT
+from ..db import AssetImage, Project
+from ..scheduler.vram import pick_model, registry
+from ..style_presets import (ANTI_OVER_RENDER_NEG, CHAR_SHEET_NEG, CHAR_VIEW_NEG,
+                             QUALITY_SUFFIX, character_view_prompt, style_family)
+
+# 角色/场景/道具的“中性”正向尾巴（不再堆砌 masterpiece/8k，规避过度渲染）
+POSITIVE_SUFFIX = {
+    "portrait": ("character reference sheet, full body, clean plain background, "
+                 "consistent art style"),
+    "scene": ("concept art, environment design, consistent art style, no people"),
+    "prop": ("item reference sheet, single object, clean plain background"),
+}
+NEGATIVE = (
+    "nsfw, lowres, bad anatomy, bad hands, text, watermark, "
+    "signature, jpeg artifacts, worst quality, blurry, deformed, " + ANTI_OVER_RENDER_NEG
+)
+
+KIND_BY_ROLE = {"portrait": "base_look", "scene": "scene", "prop": "prop"}
+
+# family → role → 模板名
+FAMILY_TEMPLATE = {
+    "sdxl": {
+        "portrait": "char_portrait.json",
+        "scene": "scene_sdxl.json",
+        "prop": "prop_sdxl.json",
+    },
+    "qwen_image": {
+        "portrait": "char_portrait_qwen.json",
+        "scene": "char_portrait_qwen.json",
+        "prop": "char_portrait_qwen.json",
+    },
+    "flux2_klein": {
+        "portrait": "char_portrait_flux2.json",
+        "scene": "char_portrait_flux2.json",
+        "prop": "char_portrait_flux2.json",
+    },
+}
+
+# 微调（img2img）默认幅度 10%（denoise 0.10-0.15 区间）
+DEFAULT_POLISH_STRENGTH = 0.12
+
+# 真实参考图重绘默认幅度：0.5 是平衡点——太低（<0.35）等于没换风格，
+# 太高（>0.65）结构和文字会漂（键帽/屏幕文字必须靠低 denoise 保真）
+REF_REDRAW_STRENGTH = 0.5
+
+# 超分放大模型（本地 ComfyUI upscale_models 目录实测在位）：
+# 写实照片族用 Nomos8k（照片级细节），动漫/插画族用 4x-ESRGAN，通用兜底 RealESRGAN_x2plus
+UPSCALE_MODEL_REAL = "4xNomos8kSCHAT-L.pth"
+UPSCALE_MODEL_ANIME = "4x-ESRGAN.pth"
+UPSCALE_MODEL_DEFAULT = "RealESRGAN_x2plus.pth"
+UPSCALE_MAX_SIDE = 4096          # 4x 后超限则 PIL 缩回，防前端加载/存储爆炸
+
+
+def _refs_root(project_id: int) -> Path:
+    return ASSETS_ROOT / str(project_id) / "refs"
+
+
+async def download_reference(project_id: int, image_url: str) -> Path:
+    """下载外部参考图到项目 refs 目录，返回本地路径。"""
+    import httpx
+    root = _refs_root(project_id)
+    root.mkdir(parents=True, exist_ok=True)
+    suffix = ".png"
+    lower = image_url.lower().split("?")[0]
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        if lower.endswith(ext):
+            suffix = ext
+            break
+    dest = root / f"ref{random.randint(0, 2**31 - 1)}{suffix}"
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+        r = await c.get(image_url)
+        r.raise_for_status()
+        dest.write_bytes(r.content)
+    return dest
+
+
+async def generate_from_reference(db, task, params: dict) -> dict:
+    """真实参考图 → img2img 风格化重绘。
+
+    适用：现实中真实存在的物品/场景（便利店、保温瓶、键盘、手机……）。
+    文生图画这类实物会文字乱码、结构失真（实测键帽全乱）；真实照片做底图
+    走 denoise≈0.5 的 img2img，结构、比例、屏幕/键帽文字全部保真，只换画风。
+    params: {project_id, entity_type, entity_id, image_url | ref_path, strength?, base_prompt?}
+    """
+    from ..scheduler.queue import update_progress
+    from ..db import Scene, Prop
+
+    etype = params["entity_type"]
+    eid = params["entity_id"]
+    # 提示词来源：显式传入 > 实体当前 base_prompt（风格锁+主体已在里面）
+    prompt = params.get("base_prompt")
+    if not prompt:
+        row = (db.get(Prop, eid) if etype == "prop" else db.get(Scene, eid))
+        if row is None:
+            raise RuntimeError("实体不存在")
+        prompt = row.base_prompt
+    if not prompt:
+        raise RuntimeError("实体提示词为空，先完成资产生成")
+
+    # 参考图：URL 下载或本地路径
+    ref_path = params.get("ref_path")
+    if not ref_path and params.get("image_url"):
+        ref_path = await download_reference(params["project_id"], params["image_url"])
+    if not ref_path or not Path(ref_path).exists():
+        raise RuntimeError("缺少参考图（image_url 或 ref_path）")
+
+    strength = float(params.get("strength") or REF_REDRAW_STRENGTH)
+    # 重绘统一走 SDXL 写实低档（refine_img2img.json 是 CheckpointLoaderSimple 模板）
+    model_key, model = await pick_model("scene", "low", allowed_families={"sdxl"})
+    task.model_key = model_key
+    task.vram_gb = model["vram_gb"]
+
+    comfy = ComfyUIAdapter()
+    wf = comfy.load_template("refine_img2img.json")
+    update_progress(db, task, 0.1, "上传参考图")
+    img_name = await comfy.upload_image(str(ref_path))
+    try:
+        from PIL import Image
+        with Image.open(ref_path) as im:
+            sw, sh = im.size
+    except Exception:
+        sw, sh = 1024, 1024
+    overrides = {
+        "CheckpointLoaderSimple.ckpt_name": model["weight"],
+        "LoadImage.image": img_name,
+        "ImageScale.width": sw,
+        "ImageScale.height": sh,
+        "ImageScale.crop": "disabled",
+        "positive_text": prompt,
+        "negative_text": NEGATIVE,
+        "KSampler.denoise": strength,
+        "KSampler.seed": random.randint(0, 2**31 - 1),
+    }
+    wf = comfy.apply_overrides(wf, overrides)
+    update_progress(db, task, 0.3, f"参考图重绘（denoise {strength}，{model_key}）")
+    save_root = ASSETS_ROOT / str(params["project_id"]) / "assets"
+    files = await comfy.run(wf,
+                            filename_prefix=f"drama_studio/p{params['project_id']}_{etype}{eid}_ref",
+                            save_root=save_root, timeout=900)
+    await comfy.free_memory()
+
+    saved = []
+    role_kind = {"scene": "scene", "prop": "prop"}.get(etype, "base_look")
+    for f in files:
+        img = AssetImage(project_id=params["project_id"], kind=role_kind,
+                         character_id=None, file_path=str(f),
+                         prompt=prompt,
+                         meta_json=json.dumps({"entity_type": etype, "entity_id": eid,
+                                               "from_reference": str(ref_path),
+                                               "redraw_strength": strength,
+                                               "model_key": model_key},
+                                              ensure_ascii=False))
+        db.add(img)
+        db.commit()
+        db.refresh(img)
+        saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": role_kind})
+    return {"assets": saved, "reference": str(ref_path), "strength": strength}
+
+
+async def upscale_asset(db, task, params: dict) -> dict:
+    """对已生成图片做像素级超分放大（不动构图/身份/seed，纯后处理）。
+
+    零 UNet：只加载 <320MB 的 ESRGAN 系放大器，显存占用 <1GB，几秒出图，
+    与扩散生成完全串行也不抢档位。params: {asset_id, model?, project_id?}
+    """
+    from ..scheduler.queue import update_progress
+    from PIL import Image
+
+    src = db.get(AssetImage, params["asset_id"])
+    if not src or not Path(src.file_path).exists():
+        raise RuntimeError("源图不存在")
+
+    # 按源图风格族选放大器（可显式覆盖）
+    model_name = params.get("model")
+    if not model_name:
+        fam = "realistic"
+        try:
+            meta = json.loads(src.meta_json or "{}")
+            preset = meta.get("style_preset") or ""
+            if not preset:
+                project = db.get(Project, src.project_id)
+                preset = project.style_preset if project else ""
+            from ..style_presets import style_family
+            fam = style_family(preset)
+        except Exception:
+            pass
+        model_name = (UPSCALE_MODEL_REAL if fam == "realistic"
+                      else UPSCALE_MODEL_ANIME if fam == "anime"
+                      else UPSCALE_MODEL_DEFAULT)
+    task.model_key = f"upscale:{model_name}"
+    task.vram_gb = 1
+
+    comfy = ComfyUIAdapter()
+    wf = comfy.load_template("upscale_image.json")
+    update_progress(db, task, 0.1, "上传源图到 ComfyUI")
+    img_name = await comfy.upload_image(src.file_path)
+    wf = comfy.apply_overrides(wf, {
+        "LoadImage.image": img_name,
+        "UpscaleModelLoader.model_name": model_name,
+    })
+    update_progress(db, task, 0.4, f"超分放大（{model_name}，无 UNet 纯后处理）")
+    save_root = ASSETS_ROOT / str(src.project_id) / "assets"
+    files = await comfy.run(wf,
+                            filename_prefix=f"drama_studio/p{src.project_id}_upscale{src.id}",
+                            save_root=save_root, timeout=300)
+    await comfy.free_memory()
+
+    saved = []
+    for f in files:
+        # 4x 后超限缩回（LANCZOS，画质损失可忽略），防前端/存储问题
+        try:
+            with Image.open(f) as im:
+                w, h = im.size
+            if max(w, h) > UPSCALE_MAX_SIDE:
+                scale = UPSCALE_MAX_SIDE / max(w, h)
+                with Image.open(f) as im:
+                    im.resize((int(w * scale), int(h * scale)), Image.LANCZOS).save(f)
+        except Exception:
+            pass
+        img = AssetImage(project_id=src.project_id, kind=src.kind,
+                         character_id=src.character_id, file_path=str(f),
+                         prompt=src.prompt,
+                         meta_json=json.dumps({"upscaled_from": src.id,
+                                               "upscale_model": model_name},
+                                              ensure_ascii=False))
+        db.add(img)
+        db.commit()
+        db.refresh(img)
+        saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": img.kind})
+    return {"assets": saved, "upscale_model": model_name}
+
+
+def _supported_families(role: str) -> frozenset:
+    """该 role 实际有工作流模板的家族集合（按磁盘文件校验，不是按声明）。
+
+    pick_model 据此排除"注册了但模板文件缺失"的家族（实测 flux2_klein 被兜底选中后
+    加载 char_portrait_flux2.json 直接报"模板不存在"，整批任务失败）。
+    """
+    wf_dir = Path(__file__).resolve().parent.parent.parent / "workflows"
+    ok = set()
+    for fam, m in FAMILY_TEMPLATE.items():
+        name = m.get(role)
+        if name and (wf_dir / name).exists():
+            ok.add(fam)
+    return frozenset(ok)
+
+
+async def generate_asset(db, task, params: dict) -> dict:
+    """通用资产图生成。params: {project_id, role, base_prompt, entity_id, entity_type,
+    prefer_tier?, width?, height?}"""
+    reg = registry()
+    role = params["role"]                     # portrait / scene / prop
+    if role == "portrait":
+        # 三视图 sheet/角色板 = 宽横幅版式（16:9，1344x768）；单人立绘保持竖版。
+        # 兜底修正：此前默认 832x1216 竖版，横幅三视图会被压成竖条崩版。
+        if params.get("width") and params.get("height"):
+            w, h = params["width"], params["height"]
+        elif params.get("portrait_mode") in ("sheet", "board"):
+            w, h = 1344, 768
+        else:
+            w, h = 832, 1216
+    else:
+        # 场景/道具跟随项目全局画幅（角色定妆照固定竖版不参与）
+        from ..aspect import asset_dims
+        project = db.get(Project, params.get("project_id"))
+        w, h = asset_dims(project.aspect_ratio if project else None)
+
+    # 实测坑：SDXL（RealVisXL）对日常实物构图服从度差——"泛黄纸条"出成纸纹理墙、
+    # 勺子出金属罐；Flux2-Klein-4B（多模态训练）对实物/文字理解显著更强，实测纸条
+    # 一次成立。道具/场景 photo 族自动档默认走 flux2（角色/分镜不动：IPA 锁脸链路
+    # 依赖 SDXL）。耗时代价：SDXL ~30s → flux2 ~3-4min，道具数量少可接受。
+    prefer = params.get("prefer_tier")
+    if (prefer is None and role in ("scene", "prop")
+            and style_family(params.get("style_preset") or "") == "photo"):
+        prefer = "mid"
+
+    model_key, model = await pick_model(role, prefer,
+                                        params.get("model_key"),
+                                        style_family=style_family(params.get("style_preset") or ""),
+                                        allowed_families=_supported_families(role))
+    task.model_key = model_key
+    task.vram_gb = model["vram_gb"]
+
+    family = model.get("family", "sdxl")
+    template_name = FAMILY_TEMPLATE.get(family, {}).get(role)
+    if not template_name:
+        raise RuntimeError(f"family={family} role={role} 尚无模板")
+
+    comfy = ComfyUIAdapter()
+    wf = comfy.load_template(template_name)
+    suffix = POSITIVE_SUFFIX[role]
+    negative = NEGATIVE
+    if role == "portrait":
+        if params.get("portrait_mode") == "single":
+            suffix = "full body single character, clean plain background, consistent art style"
+        elif params.get("portrait_mode") == "board":
+            suffix = ("character design board, one large main illustration with detail close-ups "
+                      "of face, hair, accessories, fabric texture and costume parts, "
+                      "plain background, consistent art style")
+        else:
+            # 信息栏需画姓名/身高小字：全局 NEG 的裸 "text" 会压制它 → sheet 模式剔除
+            # 裸 text（watermark/乱码拦截仍在 NEG 与 CHAR_SHEET_NEG 里）。
+            neg_parts = [p.strip() for p in NEGATIVE.split(",") if p.strip() and p.strip() != "text"]
+            negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
+    prompt = f"{params['base_prompt']}, {suffix}, {QUALITY_SUFFIX}"
+    overrides = {
+        "positive_text": prompt,
+        "negative_text": negative,
+        "EmptyLatentImage.width": w,
+        "EmptyLatentImage.height": h,
+        "KSampler.seed": random.randint(0, 2**31 - 1),
+    }
+    # 一次渲染任务 = 一个 render_session（compose 多图归一次计数；前端「渲染 N 次」按此去重）
+    render_session = f"{task.id}-{int(datetime.now().timestamp() * 1000)}"
+    if family == "sdxl":
+        overrides["CheckpointLoaderSimple.ckpt_name"] = model["weight"]
+    elif family == "flux2_klein":
+        overrides["UNETLoader.unet_name"] = model["weight"]
+    wf = comfy.apply_overrides(wf, overrides)
+
+    def on_stage(msg):
+        print(f"[task {task.id}] {msg}")
+
+    from ..scheduler.queue import update_progress
+    update_progress(db, task, 0.05, f"选档 {model_key}（{model['vram_gb']}GB）")
+    save_root = ASSETS_ROOT / str(params["project_id"]) / "assets"
+    files = await comfy.run(wf, filename_prefix=f"drama_studio/p{params['project_id']}_{role}{params.get('entity_id','')}",
+                            save_root=save_root, timeout=600, on_stage=on_stage)
+    update_progress(db, task, 0.9, "生成完成，写入资产库")
+    await comfy.free_memory()
+
+    kind = KIND_BY_ROLE[role]
+    saved = []
+    for f in files:
+        img = AssetImage(project_id=params["project_id"], kind=kind,
+                         character_id=params.get("entity_id") if role == "portrait" else None,
+                         file_path=str(f), prompt=prompt,
+                         meta_json=json.dumps({"model_key": model_key, "workflow": template_name,
+                                               "entity_type": params.get("entity_type", ""),
+                                               "entity_id": params.get("entity_id"),
+                                               "render_session": render_session},
+                                              ensure_ascii=False))
+        db.add(img)
+        db.commit()
+        db.refresh(img)
+        saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": kind})
+
+    # 三视图 sheet（一次成图）自动裁 face_ref：新版式左半就是面部特写，
+    # 裁左半区域即可作为 IPA 锁脸参考（此前 sheet 模式不产 face_ref，锁脸链路断）。
+    if role == "portrait" and params.get("portrait_mode") == "sheet" and files:
+        try:
+            from PIL import Image
+            eid = params.get("entity_id")
+            with Image.open(files[0]) as im:
+                iw, ih = im.size
+                face = im.convert("RGB").crop((0, 0, int(iw * 0.5), int(ih * 0.85)))
+            face_path = Path(files[0]).with_name(
+                f"p{params['project_id']}_portrait{eid}_sheetface_{files[0].stem.rsplit('_', 1)[-1]}.png")
+            face_path.parent.mkdir(parents=True, exist_ok=True)
+            face.save(face_path)
+            fimg = AssetImage(project_id=params["project_id"], kind="face_ref",
+                              character_id=eid, file_path=str(face_path), prompt=prompt,
+                              meta_json=json.dumps({"source": "sheet_crop", "sheet": str(files[0]),
+                                                    "entity_type": "character", "entity_id": eid},
+                                                   ensure_ascii=False))
+            db.add(fimg)
+            db.commit()
+            saved.append({"asset_id": fimg.id, "file_path": str(face_path), "kind": "face_ref"})
+        except Exception as e:   # 裁脸失败不阻断主产物
+            print(f"[sheet face_ref] crop failed: {e}")
+
+    # 初图 10% 微调（自动，分级生效：角色板/三视图 OFF，场景/道具/单人立绘 ON）
+    if params.get("auto_polish") and not (
+            role == "portrait" and params.get("portrait_mode") in ("sheet", "board")):
+        import asyncio
+        from ..scheduler.queue import create_task
+        for item in saved:
+            p = {"project_id": params["project_id"], "asset_id": item["asset_id"],
+                 "role": role, "entity_type": params.get("entity_type", ""),
+                 "entity_id": params.get("entity_id"),
+                 "style_preset": params.get("style_preset", ""),
+                 "strength": DEFAULT_POLISH_STRENGTH}
+            t = create_task(db, "polish", p)
+            asyncio.create_task(_run_polish_task(t.id))
+    return {"assets": saved, "model_key": model_key}
+
+
+async def _run_polish_task(task_id: int):
+    """自动微调任务执行器：独立会话 + heavy 锁（与生图串行，低显存安全）。"""
+    import asyncio
+    from ..db import SessionLocal, TaskRecord
+    from ..scheduler import queue as task_queue
+
+    await asyncio.sleep(0.2)
+    with SessionLocal() as db:
+        t = db.get(TaskRecord, task_id)
+        if not t or t.status != "pending":
+            return
+        params = json.loads(t.params_json or "{}")
+        await task_queue.run_task(db, t, lambda: refine_asset(db, t, params))
+
+
+async def generate_portrait_composed(db, task, params: dict) -> dict:
+    """方案 A：正/侧/背三次单视角出图（同 seed）→ PIL 横向拼三视图 + 面部参考裁切。
+    params: project_id/entity_id/slots/style_preset/prefer_tier/model_key/lifelike/lifelike_full"""
+    from ..scheduler.queue import update_progress
+    import asyncio
+
+    slots = params.get("slots") or {}
+    preset = params.get("style_preset") or "anime_2d"
+    lifelike = params.get("lifelike", True)
+    full = params.get("lifelike_full", False)
+
+    model_key, model = await pick_model("portrait", params.get("prefer_tier"),
+                                        params.get("model_key"),
+                                        style_family=style_family(preset),
+                                        allowed_families=_supported_families("portrait"))
+    task.model_key = model_key
+    task.vram_gb = model["vram_gb"]
+    family = model.get("family", "sdxl")
+    template_name = FAMILY_TEMPLATE.get(family, {}).get("portrait", "char_portrait.json")
+
+    seed = random.randint(0, 2**31 - 1)      # 三视角同 seed，尽量稳住五官
+    w, h = (640, 960)
+    comfy = ComfyUIAdapter()
+    save_root = ASSETS_ROOT / str(params["project_id"]) / "assets"
+    files: list[Path] = []
+
+    for i, view in enumerate(("front", "side", "back")):
+        update_progress(db, task, 0.05 + i * 0.25, f"生成 {view} 视角（{i + 1}/3）")
+        prompt = character_view_prompt(slots, preset, view, lifelike, full)
+        overrides = {
+            "positive_text": prompt,
+            "negative_text": f"{NEGATIVE}, {CHAR_VIEW_NEG}",
+            "EmptyLatentImage.width": w,
+            "EmptyLatentImage.height": h,
+            "KSampler.seed": seed,
+        }
+        if family == "sdxl":
+            overrides["CheckpointLoaderSimple.ckpt_name"] = model["weight"]
+        elif family == "flux2_klein":
+            overrides["UNETLoader.unet_name"] = model["weight"]
+
+        wf = comfy.load_template(template_name)
+
+        if view == "back" and files:
+            # 决策 A1：背面不再硬猜，改用正面图做 img2img（denoise 0.55）重绘成背面，
+            # 底模对 "back view" 服从度差，图像条件比文字条件稳得多。
+            update_progress(db, task, 0.55, "背面视角：以正面图为条件 img2img 重绘")
+            wf = comfy.load_template("refine_img2img.json")
+            front_name = await comfy.upload_image(str(files[0]))
+            overrides = {
+                "positive_text": prompt,
+                "negative_text": f"{NEGATIVE}, {CHAR_VIEW_NEG}",
+                "LoadImage.image": front_name,
+                "ImageScale.width": w,
+                "ImageScale.height": h,
+                "ImageScale.crop": "center",
+                "KSampler.seed": seed,
+                "KSampler.denoise": 0.55,
+                "KSampler.steps": 28,
+                "KSampler.cfg": 5.0,
+            }
+            if family == "sdxl":
+                overrides["CheckpointLoaderSimple.ckpt_name"] = model["weight"]
+            else:
+                # refine_img2img.json 是 SDXL img2img 模板（CheckpointLoaderSimple），
+                # 主模型为 flux2 等非 sdxl 家族时，背面 img2img 临时换 sdxl 低档执行
+                skey, smodel = await pick_model("portrait", "low", allowed_families={"sdxl"})
+                overrides["CheckpointLoaderSimple.ckpt_name"] = smodel["weight"]
+            wf = comfy.apply_overrides(wf, overrides)
+            out = await comfy.run(wf,
+                                  filename_prefix=f"drama_studio/p{params['project_id']}_view_{view}",
+                                  save_root=save_root, timeout=600)
+            files.extend(out)
+            continue
+
+        wf = comfy.apply_overrides(wf, overrides)
+        out = await comfy.run(wf,
+                              filename_prefix=f"drama_studio/p{params['project_id']}_view_{view}",
+                              save_root=save_root, timeout=600)
+        files.extend(out)
+
+    update_progress(db, task, 0.85, "PIL 拼版三视图 + 面部参考裁切")
+    from PIL import Image
+    panels = [Image.open(f).convert("RGB") for f in files[:3]]
+    ph = min(p.height for p in panels)
+    panels = [p.resize((int(p.width * ph / p.height), ph), Image.LANCZOS) for p in panels]
+    total_w = sum(p.width for p in panels)
+    sheet = Image.new("RGB", (total_w, ph), (245, 245, 245))
+    x = 0
+    for p in panels:
+        sheet.paste(p, (x, 0))
+        x += p.width
+    # 实测坑：输出文件名曾是固定 sheet_composed.png/face_ref.png —— 多角色共用
+    # 同一物理文件互相覆盖（后生成的角色覆盖先前的，且旧 AssetImage 行指向的
+    # 内容悄然变化）。文件名必须带角色 id + seed 唯一化。
+    eid = params.get("entity_id")
+    sheet_path = (ASSETS_ROOT / str(params["project_id"]) / "assets"
+                  / f"p{params['project_id']}_portrait{eid}_sheet_{seed}.png")
+    sheet_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(sheet_path)
+
+    # 面部参考：从正面图裁上部中央区域
+    front = panels[0]
+    fw, fh = front.size
+    face = front.crop((int(fw * 0.28), 0, int(fw * 0.72), int(fh * 0.32)))
+    face_path = sheet_path.with_name(f"p{params['project_id']}_portrait{eid}_face_{seed}.png")
+    face.save(face_path)
+
+    update_progress(db, task, 0.95, "写入资产库")
+    await comfy.free_memory()
+    saved = []
+    for path, kind in ((sheet_path, "base_look"), (face_path, "face_ref")):
+        img = AssetImage(project_id=params["project_id"], kind=kind,
+                         character_id=eid, file_path=str(path),
+                         prompt=character_view_prompt(slots, preset, "front", lifelike, full),
+                         meta_json=json.dumps({"compose": "A", "views": ["front", "side", "back"],
+                                               "entity_type": "character", "entity_id": eid,
+                                               "seed": seed, "model_key": model_key},
+                                              ensure_ascii=False))
+        db.add(img)
+        db.commit()
+        db.refresh(img)
+        saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": kind})
+
+    if params.get("auto_polish"):
+        # 决策 3：三视图/角色板默认不自动微调（怕改坏版式与五官），仅保留手动「✨微调10%」
+        pass
+    return {"assets": saved, "model_key": model_key, "compose": "A"}
+
+
+async def refine_asset(db, task, params: dict) -> dict:
+    """初图 → img2img 低幅度微调（默认 denoise 0.12），修复塑料感/增加自然质感。"""
+    from ..scheduler.queue import update_progress
+    src = db.get(AssetImage, params["asset_id"])
+    if not src:
+        raise RuntimeError("源图不存在")
+    strength = float(params.get("strength") or DEFAULT_POLISH_STRENGTH)
+    role = params.get("role", "portrait")
+
+    # 微调统一走 SDXL 低档模型（潜空间一致、显存最省），按风格族选底模。
+    # refine_img2img.json 是 SDXL img2img 模板，必须锁死 sdxl 族：
+    # 实测 flux2_klein 源图的 polish 把 flux2 权重塞进 CheckpointLoaderSimple → 400
+    preset = params.get("style_preset") or ""
+    if not preset:
+        project = db.get(Project, src.project_id)
+        preset = project.style_preset if project else ""
+    model_key, model = await pick_model("portrait", "low",
+                                        style_family=style_family(preset),
+                                        allowed_families={"sdxl"})
+    task.model_key = model_key
+    task.vram_gb = model["vram_gb"]
+
+    comfy = ComfyUIAdapter()
+    wf = comfy.load_template("refine_img2img.json")
+    update_progress(db, task, 0.1, "上传初图到 ComfyUI")
+    img_name = await comfy.upload_image(src.file_path)
+    base_prompt = src.prompt.split(", character reference sheet")[0]
+    try:
+        from PIL import Image
+        with Image.open(src.file_path) as im:
+            sw, sh = im.size
+    except Exception:
+        sw, sh = 832, 1216
+    overrides = {
+        "CheckpointLoaderSimple.ckpt_name": model["weight"],
+        "LoadImage.image": img_name,
+        "ImageScale.width": sw,          # 微调保持原图尺寸，不裁不加边
+        "ImageScale.height": sh,
+        "ImageScale.crop": "disabled",
+        "positive_text": f"{base_prompt}, subtle natural texture, film-like grain, "
+                         f"unretouched detail, keep composition and identity unchanged",
+        "negative_text": NEGATIVE,
+        "KSampler.denoise": strength,
+        "KSampler.seed": random.randint(0, 2**31 - 1),
+    }
+    wf = comfy.apply_overrides(wf, overrides)
+    update_progress(db, task, 0.3, f"img2img 微调（denoise {strength}）")
+    save_root = ASSETS_ROOT / str(src.project_id) / "assets"
+    files = await comfy.run(wf,
+                            filename_prefix=f"drama_studio/p{src.project_id}_refine{src.id}",
+                            save_root=save_root, timeout=600)
+    await comfy.free_memory()
+
+    saved = []
+    for f in files:
+        img = AssetImage(project_id=src.project_id, kind=src.kind,
+                         character_id=src.character_id, file_path=str(f),
+                         prompt=src.prompt,
+                         meta_json=json.dumps({"polish_strength": strength,
+                                               "refined_from": src.id,
+                                               "model_key": model_key},
+                                              ensure_ascii=False))
+        db.add(img)
+        db.commit()
+        db.refresh(img)
+        saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": img.kind})
+    return {"assets": saved, "strength": strength}
+
+
+async def generate_portrait(db, task, params: dict) -> dict:
+    """兼容 M1 接口：角色定妆照。"""
+    params = dict(params)
+    params["role"] = "portrait"
+    params.setdefault("entity_type", "character")
+    params["entity_id"] = params.get("character_id") or params.get("entity_id")
+    return await generate_asset(db, task, params)

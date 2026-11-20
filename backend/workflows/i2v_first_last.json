@@ -1,0 +1,67 @@
+{
+  "100": { "class_type": "UnetLoaderGGUF", "inputs": { "unet_name": "Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf" } },
+  "101": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["100", 0], "lora_name": "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors", "strength_model": 1.0 } },
+  "102": { "class_type": "ModelSamplingSD3", "inputs": { "model": ["101", 0], "shift": 5.0 } },
+  "103": { "class_type": "UnetLoaderGGUF", "inputs": { "unet_name": "Wan2.2-I2V-A14B-LowNoise-Q4_K_S.gguf" } },
+  "104": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["103", 0], "lora_name": "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors", "strength_model": 1.0 } },
+  "105": { "class_type": "ModelSamplingSD3", "inputs": { "model": ["104", 0], "shift": 5.0 } },
+  "106": { "class_type": "CLIPLoader", "inputs": { "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "default" } },
+  "107": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{POSITIVE_PLACEHOLDER}}", "clip": ["106", 0] } },
+  "108": { "class_type": "CLIPTextEncode", "inputs": { "text": "静态，过曝，细节模糊，字幕，水印，低质量，畸形肢体，多余手指，画面闪烁，镜头跳变", "clip": ["106", 0] } },
+  "109": { "class_type": "VAELoader", "inputs": { "vae_name": "wan_2.1_vae.safetensors" } },
+  "110": { "class_type": "LoadImage", "inputs": { "image": "{{START_IMAGE}}", "upload": "image" } },
+  "111": { "class_type": "LoadImage", "inputs": { "image": "{{END_IMAGE}}", "upload": "image" } },
+  "112": {
+    "class_type": "WanFirstLastFrameToVideo",
+    "inputs": {
+      "positive": ["107", 0],
+      "negative": ["108", 0],
+      "vae": ["109", 0],
+      "width": 480,
+      "height": 832,
+      "length": 81,
+      "batch_size": 1,
+      "start_image": ["110", 0],
+      "end_image": ["111", 0]
+    }
+  },
+  "113": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["102", 0],
+      "add_noise": "enable",
+      "noise_seed": 0,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["112", 0],
+      "negative": ["112", 1],
+      "latent_image": ["112", 2],
+      "start_at_step": 0,
+      "end_at_step": 4,
+      "return_with_leftover_noise": "enable"
+    }
+  },
+  "114": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["105", 0],
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["112", 0],
+      "negative": ["112", 1],
+      "latent_image": ["113", 0],
+      "start_at_step": 4,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable"
+    }
+  },
+  "115": { "class_type": "VAEDecode", "inputs": { "samples": ["114", 0], "vae": ["109", 0] } },
+  "116": { "class_type": "CreateVideo", "inputs": { "images": ["115", 0], "fps": 16 } },
+  "117": { "class_type": "SaveVideo", "inputs": { "video": ["116", 0], "filename_prefix": "drama_studio/i2v", "format": "auto", "codec": "auto" } }
+}

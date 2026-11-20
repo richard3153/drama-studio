@@ -1,0 +1,42 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "AnythingXL_v50.safetensors" }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{POSITIVE_PLACEHOLDER}}, storyboard grid sheet, 3 by 3 panels, nine different shot compositions of the same scene, same character with identical face and costume in every panel, consistent art style, thin white panel borders, no caption text, no panel numbers", "clip": ["1", 1] }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "nsfw, lowres, bad anatomy, bad hands, text, caption, subtitle, watermark, signature, jpeg artifacts, worst quality, blurry, deformed, mismatched faces, different character in each panel", "clip": ["1", 1] }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": 864, "height": 1512, "batch_size": 1 }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 26,
+      "cfg": 5.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["1", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0]
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["5", 0], "vae": ["1", 2] }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["6", 0], "filename_prefix": "drama_studio/grid" }
+  }
+}
+

@@ -1,0 +1,43 @@
+{
+  "100": { "class_type": "UNETLoader", "inputs": { "unet_name": "Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors", "weight_dtype": "default" } },
+  "101": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["100", 0], "lora_name": "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors", "strength_model": 1.0 } },
+  "106": { "class_type": "CLIPLoader", "inputs": { "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "default" } },
+  "107": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{POSITIVE_PLACEHOLDER}}", "clip": ["106", 0] } },
+  "108": { "class_type": "CLIPTextEncode", "inputs": { "text": "静态，过曝，细节模糊，字幕，水印，低质量，畸形肢体，多余手指", "clip": ["106", 0] } },
+  "109": { "class_type": "VAELoader", "inputs": { "vae_name": "wan_2.1_vae.safetensors" } },
+  "110": { "class_type": "LoadImage", "inputs": { "image": "{{START_IMAGE}}", "upload": "image" } },
+  "111": { "class_type": "LoadImage", "inputs": { "image": "{{END_IMAGE}}", "upload": "image" } },
+  "112": {
+    "class_type": "WanFirstLastFrameToVideo",
+    "inputs": {
+      "positive": ["107", 0],
+      "negative": ["108", 0],
+      "vae": ["109", 0],
+      "width": 480,
+      "height": 832,
+      "length": 33,
+      "batch_size": 1,
+      "start_image": ["110", 0],
+      "end_image": ["111", 0]
+    }
+  },
+  "113": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["101", 0],
+      "positive": ["112", 0],
+      "negative": ["112", 1],
+      "latent_image": ["112", 2]
+    }
+  },
+  "115": { "class_type": "VAEDecode", "inputs": { "samples": ["113", 0], "vae": ["109", 0] } },
+  "116": { "class_type": "CreateVideo", "inputs": { "images": ["115", 0], "fps": 16 } },
+  "117": { "class_type": "SaveVideo", "inputs": { "video": ["116", 0], "filename_prefix": "drama_studio/i2v21", "format": "auto", "codec": "auto" } }
+}
+

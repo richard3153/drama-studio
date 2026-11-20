@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# 运行数据（项目资产/DB/生成产物 —— 本地私有，不入库；示例配置除外）
+backend/data/*
+!backend/data/models.example.yaml
+
+# 前端
+node_modules/
+frontend/dist/
+
+# 日志与临时
+*.log
+*.err.log
+data/downloads/
+tmp_ref/
