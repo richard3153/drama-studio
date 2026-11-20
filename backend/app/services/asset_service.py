@@ -259,14 +259,13 @@ async def generate_asset(db, task, params: dict) -> dict:
     reg = registry()
     role = params["role"]                     # portrait / scene / prop
     if role == "portrait":
-        # 三视图 sheet/角色板 = 宽横幅版式（16:9，1344x768）；单人立绘保持竖版。
+        # 【硬性要求 2026-11-21】角色资产必须三视图 sheet 版式：入口统一归一，
+        # 单人立绘(single)/角色板(board)通道废弃——任何调用方传什么都以 sheet 出图。
+        params["portrait_mode"] = "sheet"
+        # 三视图 sheet = 宽横幅版式（16:9，1344x768）。
         # 兜底修正：此前默认 832x1216 竖版，横幅三视图会被压成竖条崩版。
-        if params.get("width") and params.get("height"):
-            w, h = params["width"], params["height"]
-        elif params.get("portrait_mode") in ("sheet", "board"):
-            w, h = 1344, 768
-        else:
-            w, h = 832, 1216
+        if not (params.get("width") and params.get("height")):
+            params["width"], params["height"] = 1344, 768
     else:
         # 场景/道具跟随项目全局画幅（角色定妆照固定竖版不参与）
         from ..aspect import asset_dims
@@ -299,17 +298,10 @@ async def generate_asset(db, task, params: dict) -> dict:
     suffix = POSITIVE_SUFFIX[role]
     negative = NEGATIVE
     if role == "portrait":
-        if params.get("portrait_mode") == "single":
-            suffix = "full body single character, clean plain background, consistent art style"
-        elif params.get("portrait_mode") == "board":
-            suffix = ("character design board, one large main illustration with detail close-ups "
-                      "of face, hair, accessories, fabric texture and costume parts, "
-                      "plain background, consistent art style")
-        else:
-            # 信息栏需画姓名/身高小字：全局 NEG 的裸 "text" 会压制它 → sheet 模式剔除
-            # 裸 text（watermark/乱码拦截仍在 NEG 与 CHAR_SHEET_NEG 里）。
-            neg_parts = [p.strip() for p in NEGATIVE.split(",") if p.strip() and p.strip() != "text"]
-            negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
+        # 【硬性要求】sheet 三视图专属词块：信息栏需画姓名/身高小字，全局 NEG 的裸
+        # "text" 会压制它 → 剔除裸 text（watermark/乱码拦截仍在 NEG 与 CHAR_SHEET_NEG 里）。
+        neg_parts = [p.strip() for p in NEGATIVE.split(",") if p.strip() and p.strip() != "text"]
+        negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
     prompt = f"{params['base_prompt']}, {suffix}, {QUALITY_SUFFIX}"
     overrides = {
         "positive_text": prompt,

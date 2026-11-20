@@ -803,7 +803,6 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [presets, setPresets] = useState({})
-  const [portraitModes, setPortraitModes] = useState({})
 
   useEffect(() => { api('/style-presets').then(setPresets).catch(() => {}) }, [])
 
@@ -893,7 +892,6 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const reBreakdown = () => { setBreakdown(null); doBreakdown() }  // 回退重拆
 
   const toggle = (k) => setChecks(c => ({ ...c, [k]: !c[k] }))
-  const setMode = (name, mode) => setPortraitModes(m => ({ ...m, [name]: mode }))
   const [editing, setEditing] = useState({})
   const setSlot = (key, field, val, base) => setEditing(e => ({
     ...e, [key]: { ...(e[key] || base), [field]: val },
@@ -906,7 +904,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
       return {
         name: c.name, description: c.description || '',
         slots, base_prompt: c.base_prompt || '',
-        portrait_mode: kind === 'character' ? (portraitModes[c.name] || 'sheet') : 'sheet',
+        portrait_mode: kind === 'character' ? 'sheet' : 'sheet',   // 【硬性要求】角色一律三视图
       }
     })
   const confirmCandidates = async () => {
@@ -976,10 +974,9 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
                     <td style={{ color: 'var(--dim)', width: 200 }}>{c.description}</td>
                     {k === 'characters' && (
                       <td style={{ width: 150 }}>
-                        <select value={portraitModes[c.name] || 'sheet'} onChange={e => setMode(c.name, e.target.value)} style={{ width: '100%' }}>
-                          <option value="sheet">三视图 16:9</option>
-                          <option value="board">角色板（全要素）</option>
-                          <option value="single">单人立绘竖版</option>
+                        {/* 【硬性要求】角色资产必须三视图，版式选项已锁死 */}
+                        <select value="sheet" disabled style={{ width: '100%' }} title="角色资产硬性要求：必须为三视图">
+                          <option value="sheet">三视图 16:9（硬性要求）</option>
                         </select>
                       </td>
                     )}
@@ -1178,14 +1175,13 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
   const [name, setName] = useState(asset.name)
   const [prompt, setPrompt] = useState(asset.base_prompt)
   const [slots, setSlots] = useState(asset.slots || {})
-  const [mode, setMode] = useState(asset.portrait_mode || 'sheet')
   const [genMode, setGenMode] = useState(asset.gen_mode || 'auto')
   const [modelKey, setModelKey] = useState('')
   const [tier, setTier] = useState('')
   const [versions, setVersions] = useState(asset.image_ids || [])
   const [delMsg, setDelMsg] = useState('')
   const defaultDims = () => (role === 'portrait'
-    ? ((asset.portrait_mode === 'single') ? [832, 1216] : [1344, 768])
+    ? [1344, 768]   // 【硬性要求】角色必须三视图横幅，竖版通道已废弃
     : (role === 'scene' ? [1216, 704] : [832, 1216]))
   const [w, setW] = useState(defaultDims()[0])
   const [h, setH] = useState(defaultDims()[1])
@@ -1195,14 +1191,14 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
   const save = async () => {
     await put(`/entities/${asset._etype}/${asset.id}`,
       Object.keys(slots).length
-        ? { name, slots, portrait_mode: role === 'portrait' ? mode : undefined, gen_mode: role === 'portrait' ? genMode : undefined }
+        ? { name, slots, portrait_mode: role === 'portrait' ? 'sheet' : undefined, gen_mode: role === 'portrait' ? genMode : undefined }
         : { name, base_prompt: prompt, gen_mode: role === 'portrait' ? genMode : undefined })
     onClose(true)
   }
   const rerender = async () => {
     setBusy(true)
     try {
-      if (Object.keys(slots).length) await put(`/entities/${asset._etype}/${asset.id}`, { name, slots, portrait_mode: role === 'portrait' ? mode : undefined, gen_mode: role === 'portrait' ? genMode : undefined })
+      if (Object.keys(slots).length) await put(`/entities/${asset._etype}/${asset.id}`, { name, slots, portrait_mode: role === 'portrait' ? 'sheet' : undefined, gen_mode: role === 'portrait' ? genMode : undefined })
       else await put(`/entities/${asset._etype}/${asset.id}`, { name, base_prompt: prompt, gen_mode: role === 'portrait' ? genMode : undefined })
       const r = await post('/regenerate', {
         project_id: asset.project_id, entity_type: asset._etype, entity_id: asset.id,
@@ -1328,30 +1324,23 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                 <label>结构化提示词槽位（改后自动按公式重组提示词，风格锁保持不变）</label>
                 {role === 'portrait' && (
                   <>
-                    <label>角色生成方式（决定三视图怎么出）</label>
+                    <label>角色生成方式（三视图怎么出）</label>
                     <div className="row" style={{ marginBottom: 6 }}>
                       <select value={genMode} onChange={e => {
                         const gm = e.target.value
                         setGenMode(gm)
-                        if (gm === 'board') { setMode('board') }
-                        else if (gm === 'sheet' || gm === 'layout') { setMode('sheet') }
-                        else if (gm === 'compose') { setMode('sheet') }
-                        const d = gm === 'sheet' || gm === 'layout' || gm === 'compose' ? [1344, 768] : [832, 1216]
-                        if (gm !== 'auto') { setW(d[0]); setH(d[1]) }
+                        if (gm === 'sheet' || gm === 'layout' || gm === 'compose') { setW(1344); setH(768) }
                       }} style={{ flex: 1 }}>
                         <option value="auto">自动（按风格族推荐）</option>
                         <option value="compose">A · 程序合成三视图（正/侧/背分3次出图+PIL拼版，同seed）｜ 8G 显存足够，耗时约 3 倍</option>
-                        <option value="board">B · 角色板单张（主立绘+细节特写）｜ 4G 起，最省时间（写实/低显存兜底）</option>
                         <option value="layout">C · 版式模型整张多视图（Qwen-Image/Flux2）｜ 10G 以上推荐，8G 可跑但慢 3–5 倍</option>
                         <option value="sheet">单张多视图（低档底模直接出，动漫/国潮最稳）｜ 4–6G</option>
                       </select>
                     </div>
                     <div className="row" style={{ marginBottom: 6 }}>
                       <span style={{ color: 'var(--dim)', fontSize: 13 }}>构图模式：</span>
-                      <select value={mode} onChange={e => { setMode(e.target.value); const d = e.target.value === 'single' ? [832, 1216] : [1344, 768]; setW(d[0]); setH(d[1]) }}>
-                        <option value="sheet">三视图 16:9（视觉基准）</option>
-                        <option value="board">角色板（妆造/饰品/表情/Q版全要素）</option>
-                        <option value="single">单人立绘竖版</option>
+                      <select value="sheet" disabled style={{ flex: 1 }} title="角色资产硬性要求：必须为三视图版式">
+                        <option value="sheet">三视图 16:9（硬性要求 · 不可更改）</option>
                       </select>
                     </div>
                   </>

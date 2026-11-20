@@ -1272,7 +1272,9 @@ async def rebuild_slots(db, task, params: dict):
     lifelike = bool(project.lifelike) if project else True
     lfull = bool(getattr(project, "lifelike_full", 0)) if project else False
     if etype == "character":
-        row.base_prompt = assemble_character_prompt(slots, preset, row.portrait_mode,
+        # 【硬性要求】角色资产必须三视图：重建槽位时归一 portrait_mode 并按 sheet 重组
+        row.portrait_mode = "sheet"
+        row.base_prompt = assemble_character_prompt(slots, preset, "sheet",
                                                     lifelike, lfull)
     elif etype == "scene":
         # LLM 再漏 space 时回退场景名，保证提示词永远有空间主体词

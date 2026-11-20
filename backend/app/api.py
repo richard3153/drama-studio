@@ -545,8 +545,8 @@ class ConfirmIn(BaseModel):
 
 
 def _portrait_dims(mode: str | None) -> tuple[int, int]:
-    """三视图/角色板 = 16:9 横幅；单人立绘 = 竖版。"""
-    return (832, 1216) if mode == "single" else (1344, 768)
+    """【硬性要求】角色资产必须三视图：一律 16:9 横幅（1344x768），单人竖版通道已废弃。"""
+    return (1344, 768)
 
 
 @router.post("/projects/{pid}/confirm-candidates")
@@ -573,13 +573,14 @@ async def confirm_candidates(pid: int, body: ConfirmIn):
             if _dup_check(Character, c.name):
                 created["skipped_dup"].append(f"角色:{c.name}")
                 continue
-            prompt = (assemble_character_prompt(c.slots, preset, c.portrait_mode,
+            # 【硬性要求】角色资产必须三视图：候选携带的 portrait_mode 一律归一 sheet
+            prompt = (assemble_character_prompt(c.slots, preset, "sheet",
                                                lifelike, lifelike_full)
                       if c.slots else c.base_prompt)
             row = Character(project_id=pid, name=c.name, description=c.description,
                             base_prompt=prompt,
                             prompt_json=json.dumps(c.slots, ensure_ascii=False),
-                            portrait_mode=c.portrait_mode,
+                            portrait_mode="sheet",
                             gen_mode=c.gen_mode or "auto")
             # 音色跨集锁定：新角色自动分配未占用音色；同名角色已被 _dup_check 复用（继承已锁音色）
             _slots = c.slots if isinstance(c.slots, dict) else {}
@@ -679,11 +680,13 @@ def stash_candidates(pid: int, body: StashIn):
             raise HTTPException(404, "项目不存在")
         ids = []
         for it in body.items:
+            # 【硬性要求】角色候选一律三视图：portrait_mode 入库前归一 sheet
             row = StashCandidate(project_id=pid, episode_id=body.episode_id,
                                  entity_type=it.entity_type, name=it.name,
                                  description=it.description,
                                  slots_json=json.dumps(it.slots, ensure_ascii=False),
-                                 portrait_mode=it.portrait_mode)
+                                 portrait_mode="sheet" if it.entity_type == "character"
+                                 else it.portrait_mode)
             db.add(row)
             db.commit()
             db.refresh(row)
@@ -936,7 +939,8 @@ def update_entity(etype: str, eid: int, body: EntityUpdate):
             lifelike = bool(project.lifelike) if project else True
             lifelike_full = bool(getattr(project, "lifelike_full", 0)) if project else False
             if etype == "character":
-                mode = body.portrait_mode or row.portrait_mode
+                # 【硬性要求】角色资产必须三视图：请求携带的 portrait_mode 一律归一 sheet
+                mode = "sheet"
                 row.portrait_mode = mode
                 row.base_prompt = assemble_character_prompt(body.slots, preset, mode,
                                                             lifelike, lifelike_full)
@@ -949,7 +953,7 @@ def update_entity(etype: str, eid: int, body: EntityUpdate):
         elif body.base_prompt is not None:
             row.base_prompt = body.base_prompt
         if body.portrait_mode is not None and etype == "character" and body.slots is None:
-            row.portrait_mode = body.portrait_mode
+            row.portrait_mode = "sheet"   # 【硬性要求】改版式请求一律落 sheet
         if body.gen_mode is not None and etype == "character":
             if body.gen_mode not in CHAR_GEN_MODES:
                 raise HTTPException(400, "未知角色生成方式")
@@ -1054,7 +1058,8 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
         base.update({"task_type": "asset", "base_prompt": entity.base_prompt,
                      "portrait_mode": "sheet", "prefer_tier": "mid"})
         return "asset", base
-    mode = "board" if gm == "board" else ("single" if entity.portrait_mode == "single" else "sheet")
+    # 【硬性要求】角色资产必须三视图：gm single/board 通道废弃，一律 sheet
+    mode = "sheet"
     base.update({"task_type": "asset", "base_prompt": entity.base_prompt,
                  "portrait_mode": mode, "prefer_tier": tier, "model_key": model_key,
                  "width": w, "height": h})
@@ -1090,15 +1095,13 @@ async def regenerate(body: RegenerateIn):
         auto_polish = bool(project.auto_polish) if project else False
         width, height = body.width, body.height
         if (width is None or height is None) and body.entity_type == "character":
-            mode = getattr(entity, "portrait_mode", "sheet")
             if width is None and height is None:
-                width, height = _portrait_dims(mode)
+                width, height = _portrait_dims("sheet")
         # 槽位存在时按当前风格锁+活人感重组装（保证每次渲染词块一致）
         slots = json.loads(getattr(entity, "prompt_json", "{}") or "{}")
         if slots:
             if body.entity_type == "character":
-                prompt = assemble_character_prompt(slots, preset,
-                                                   getattr(entity, "portrait_mode", "sheet"),
+                prompt = assemble_character_prompt(slots, preset, "sheet",
                                                    lifelike, lifelike_full)
             elif body.entity_type == "scene":
                 prompt = assemble_scene_prompt(slots, preset, lifelike,

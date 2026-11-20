@@ -476,7 +476,11 @@ def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
                               lifelike: bool = True, full_identity: bool = False) -> str:
     """角色提示词组装（第二章九段式公式：风格定位→身份→身材→五官→发型→服装→饰品→
     配色→表情气质→姿态→画面规格）。活人感：单人立绘加自然姿态；三视图/角色板保持静态规范。
-    full_identity=True 时连三视图也用全量瑕疵（仅用户显式开启）。"""
+    full_identity=True 时连三视图也用全量瑕疵（仅用户显式开启）。
+
+    【硬性要求 2026-11-21】角色资产必须三视图版式：mode 参数一律强制 "sheet"，
+    无论调用方传 single/board——单人立绘与角色板通道已废弃，防止任何入口漏网。"""
+    mode = "sheet"
     s = get_style(preset_key)
     parts = [s["style_lock"]]
     # 九段式主体段（顺序即权重顺序）
