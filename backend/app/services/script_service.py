@@ -1045,7 +1045,10 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
     from ..db import Character, Prop, Scene
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
-    from ..style_vocab import style_vocab_positive
+    from ..style_vocab import style_vocab_positive, combined_shot_vocab
+    from ..db import Project as _Proj
+    _proj = db.get(_Proj, project_id)
+    _genre = (getattr(_proj, "genre", "") if _proj else "") or ""
 
     chars = {c.name: json.loads(c.prompt_json or "{}")
              for c in db.scalars(select(Character)
@@ -1097,7 +1100,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                 props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
-            "vocab": style_vocab_positive(preset),
+            "vocab": combined_shot_vocab(preset, _genre),
             "quality": QUALITY_SUFFIX,
         }
 
@@ -1250,7 +1253,10 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
     from ..db import Character, Prop, Scene, Shot
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
-    from ..style_vocab import style_vocab_positive
+    from ..style_vocab import style_vocab_positive, combined_shot_vocab
+    from ..db import Project as _Proj
+    _proj = db.get(_Proj, project_id)
+    _genre = (getattr(_proj, "genre", "") if _proj else "") or ""
 
     rows = db.scalars(select(Shot).where(Shot.episode_id == episode_id)
                       .order_by(Shot.idx)).all()
@@ -1311,7 +1317,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                 props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
-            "vocab": style_vocab_positive(preset),
+            "vocab": combined_shot_vocab(preset, _genre),
             "quality": QUALITY_SUFFIX,
         }
         v = dict(common)

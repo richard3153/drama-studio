@@ -274,3 +274,220 @@ def style_vocab_positive(preset_key: str, kinds: tuple = ("style", "atmosphere",
 def style_vocab_negative(preset_key: str) -> str:
     """风格词库负面 token 串（防风格串味：动漫禁摄影词、写实禁动漫词等）。"""
     return ", ".join(x for x in _pack(preset_key).get("negative", []) if x)
+
+
+# ============================================================
+# 题材词库（GENRE_VOCAB，2026-11-22 新增）：红果短剧爆款反向解析。
+# 与风格词库正交：风格锁管「画什么画风」，题材锁管「画面像不像这个题材的爆款」。
+# 数据来源（网络搜索）：
+# - 母题分布（电影界 2026-10 全平台统计）：复仇 1053 部 > 隐身份 526 > 豪门言情 520
+#   > 奇幻超自然 425 > 强势女主 412 > 契约婚姻 345 > 再度逆袭 334 > 草根翻身 296；
+# - 红果官方激励六大品类：玄幻仙侠/历史古代/都市玄幻/悬疑犯罪/都市种田/奇幻脑洞；
+# - 800 部红果剧名高频词：重生/逆袭/闪婚/总裁/战神/神医/打脸/赘婿/团宠；
+# - 光比公式（抖音 AI 短剧方法论）：甜宠 1-2:1 高调柔光 / 剧情 3:1 中调 /
+#   悬疑复仇 6:1 低调侧逆光 / 权谋伦勃朗 10:1 三角光 / 惊悚剪影 16:1+；
+# - 场景语言（竖店/横店基地实测）：总裁家黑白灰轻奢+真皮沙发+石纹墙、
+#   豪门「亿级观感」双层楼梯别墅、灰姑娘低顶出租屋、年代厂区暖钨丝。
+# 每包五类：setting（典型场景）/ wardrobe（服化道）/ mood（光比情绪）/
+#           hooks（名场面视觉钩子）/ negative（题材反串味）。
+# ============================================================
+GENRE_VOCAB: dict[str, dict[str, list[str]]] = {
+    # ---------- 男频 ----------
+    "war_god": {  # 战神归来/隐身份强者（男频第一大母题）
+        "setting": ["opulent banquet hall with chandelier", "corporate boardroom",
+                    "underground fight club", "luxury hotel lobby"],
+        "wardrobe": ["military-style long coat with insignia", "sharp tailored black suit",
+                     "subtle medal ribbon and scar details"],
+        "mood": ["low-key dramatic lighting with deep shadows", "hero reveal backlight",
+                 "cold steel-blue grade with warm highlight accents"],
+        "hooks": ["low-angle hero entrance stepping out of a black car",
+                  "slow-motion crowd turning their heads in awe",
+                  "insignia or ring close-up reveal", "former bullies frozen mid-sneer"],
+        "negative": ["childish cartoonish props, playful bright pastel set dressing"],
+    },
+    "zhuixu": {  # 赘婿逆袭
+        "setting": ["wealthy family mansion dining hall", "cramped in-laws living room",
+                    "modern corporate office"],
+        "wardrobe": ["worn grey hoodie (hidden identity phase)",
+                     "transformation into tailored designer suit",
+                     "cheap slippers contrast with luxury surroundings"],
+        "mood": ["humiliating cool fluorescent tone shifting to triumphant warm backlight",
+                 "medium contrast with strong single-source key"],
+        "hooks": ["contract torn in half close-up", "family heirloom ring reveal",
+                  "in-laws' shocked gasping reaction shots",
+                  "luxury motorcade arriving at humble doorway"],
+        "negative": ["openly heroic heroic costume, fantasy armor"],
+    },
+    "shenhao": {  # 神豪/都市异能
+        "setting": ["penthouse with skyline view", "supercar showroom",
+                    "luxury shopping mall atrium", "private jet cabin"],
+        "wardrobe": ["designer streetwear with luxury watch",
+                     "limited sneakers and statement accessories"],
+        "mood": ["neon night reflections on wet streets", "high-contrast glamour lighting",
+                 "rich gold-teal commercial grade"],
+        "hooks": ["black metal credit card placed on table", "cash raining down",
+                  "luxury goods macro beauty shots", "envious onlookers whispering"],
+        "negative": ["shabby rundown environment, poor rural setting"],
+    },
+    "dushi_xuanhuan": {  # 都市玄幻/天师捉妖
+        "setting": ["old taoist temple with incense smoke", "modern city night alley",
+                    "haunted old apartment", "antique shop interior"],
+        "wardrobe": ["taoist robe hem peeking under modern jacket",
+                     "brass compass and cinnabar brush props"],
+        "mood": ["cold blue night with golden talisman glow accents",
+                 "flickering practical lights, uneasy green casts"],
+        "hooks": ["glowing yellow talisman paper burning with spirit flame",
+                  "evil aura wisps recoiling from light", "brass bell ringing close-up"],
+        "negative": ["pastoral idyllic countryside, bright daylight cheerfulness"],
+    },
+    "xuanhuan_xianxia": {  # 玄幻仙侠（漫剧第一大品类，配合 xianxia 风格锁）
+        "setting": ["immortal sect hall with floating platforms",
+                    "thunder tribulation peak", "spirit beast forest",
+                    "cultivation cave with glowing pools"],
+        "wardrobe": ["sect disciple robes with jade belt", "elder robes with cloud patterns"],
+        "mood": ["awe-inspiring vast scale lighting", "storm light before breakthrough"],
+        "hooks": ["cultivation aura burst with ground-crack shockwave",
+                  "giant spirit beast silhouette behind mist",
+                  "lightning tribulation column from dark clouds",
+                  "level-up light pillar enveloping the body"],
+        "negative": ["modern city buildings, everyday casual clothing"],
+    },
+    "lishi_quanmou": {  # 历史权谋/家国
+        "setting": ["imperial court hall with dragon pillars", "war military tent",
+                    "candle-lit night study with maps"],
+        "wardrobe": ["historical court robes with rank embroidery", "lamellar armor",
+                     "scholar robe with hair crown"],
+        "mood": ["Rembrandt triangle lighting at 10:1 contrast",
+                 "candlelight pools in vast dark halls"],
+        "hooks": ["imperial edict scroll unrolling close-up",
+                  "chess pieces being placed as power metaphor",
+                  "kneeling ministers rows in depth", "secret letter by candlelight"],
+        "negative": ["modern furniture, contemporary clothing"],
+    },
+    "niandai": {  # 年代逆袭（80/90 年代）
+        "setting": ["1980s state factory dormitory", "old street with bicycles",
+                    "factory office with enamel mugs", "family home with checkered tablecloth"],
+        "wardrobe": ["era-accurate worker jacket and padded coat",
+                     "twin braids and plain cotton dress"],
+        "mood": ["warm tungsten nostalgia grade", "sunlit dust in old rooms",
+                 "faded film-color palette"],
+        "hooks": ["bicycle streams on morning street", "black-and-white TV glow",
+                  "grain ration tickets and enamel basin close-ups",
+                  "family confrontation around dinner table"],
+        "negative": ["smartphones, modern appliances, contemporary fashion"],
+    },
+    "xuanyi": {  # 悬疑犯罪
+        "setting": ["interrogation room with single lamp", "rain-slick night alley",
+                    "taped-off crime scene", "evidence-board covered wall"],
+        "wardrobe": ["dark trench coat", "plain detective casual wear"],
+        "mood": ["low-key 6:1 side backlight", "cold desaturated grade",
+                 "hard chiaroscuro with deep blacks"],
+        "hooks": ["flickering fluorescent lamp", "evidence bag close-up",
+                  "silhouette standing in doorway", "rain streaks on window glass"],
+        "negative": ["bright cheerful pastel palette, comedy props"],
+    },
+    "zhongtian": {  # 都市种田/乡村致富
+        "setting": ["sunlit village farmland", "farmhouse courtyard with harvest",
+                    "rural market stalls", "greenhouse rows"],
+        "wardrobe": ["plain practical rural workwear", "straw hat and rolled sleeves"],
+        "mood": ["golden-hour warm abundance", "fresh morning haze over fields"],
+        "hooks": ["overflowing harvest baskets close-up", "chickens and livestock bustle",
+                  "first money bundle counted at market", "villagers' amazed gathering"],
+        "negative": ["neon cyberpunk city, luxury penthouse"],
+    },
+    # ---------- 女频 ----------
+    "zongcai": {  # 霸总甜宠/闪婚契约（女频基本盘）
+        "setting": ["glass-walled CEO office overlooking city", "luxury penthouse living room",
+                    "grand wedding venue", "five-star hotel suite"],
+        "wardrobe": ["haute couture three-piece suit", "elegant evening dress",
+                     "silky slip dress and robe details"],
+        "mood": ["bright soft high-key glamour at 1-2:1 light ratio",
+                 "honey-warm romantic grade", "window sheer diffused daylight"],
+        "hooks": ["wall-slam silhouette shadow", "marriage contract papers on desk",
+                  "diamond ring sparkle close-up", "jealous rival reaction cutaway"],
+        "negative": ["grimy slum environment, violent gore"],
+    },
+    "danvzhu": {  # 大女主复仇/打脸虐渣
+        "setting": ["luxury banquet confrontation", "boardroom takeover scene",
+                    "rooftop at dusk", "rain-soaked street outside mansion"],
+        "wardrobe": ["sharp-shouldered power suit", "scarlet evening gown",
+                     "red lipstick and minimal jewelry"],
+        "mood": ["cold elegant grade with dramatic rim light",
+                 "strong contrast confrontation lighting"],
+        "hooks": ["slow-motion entrance with hair flip", "champagne glass set down sharply",
+                  "exposed evidence on projector screen",
+                  "former betrayers' faces draining of color"],
+        "negative": ["damsel-in-distress helpless pose, frumpy plain wardrobe"],
+    },
+    "gongdou": {  # 宫斗重生
+        "setting": ["imperial palace chamber with silk drapes", "throne hall",
+                    "palace garden with plum blossoms", "cold-side palace courtyard"],
+        "wardrobe": ["court concubine dress with gold hairpins", "phoenix embroidery details",
+                     "formal audience robes"],
+        "mood": ["candle-lit intrigue with deep red-gold palette",
+                 "shaft of light through lattice window"],
+        "hooks": ["poisoned tea ripple close-up", "kneeling palace maids in rows",
+                  "phoenix hairpin glinting ominously",
+                  "rebirth flashback desaturation contrast"],
+        "negative": ["modern clothing, contemporary architecture"],
+    },
+    "mengbao": {  # 萌宝/团宠甜宠
+        "setting": ["warm bright family home", "kindergarten classroom",
+                    "sunny park playground", "cozy bakery cafe"],
+        "wardrobe": ["matching family casual outfits", "adorable kids' designer clothes"],
+        "mood": ["airy high-key daylight", "soft pastel warm grade"],
+        "hooks": ["cute kid tugging parent's sleeve", "heart-warming family meal",
+                  "surprise gift box reveal", "tiny matching accessories close-up"],
+        "negative": ["dark horror atmosphere, violence"],
+    },
+    "qihuan_naodong": {  # 奇幻脑洞/系统流
+        "setting": ["modern city overlaid with holographic interface",
+                    "ordinary apartment with glowing system portal"],
+        "wardrobe": ["everyday casual clothes with glowing tech accessory"],
+        "mood": ["cyan-magenta system glow against ordinary lighting",
+                 "semi-transparent UI reflections on face"],
+        "hooks": ["floating translucent system panel with quest text",
+                  "level-up golden glow sweep", "inventory pop-up cards in air",
+                  "countdown timer hologram"],
+        "negative": ["fully fantasy medieval world, no-system setting cues"],
+    },
+}
+
+GENRE_LABELS: dict[str, str] = {
+    "war_god": "战神归来/隐身份强者", "zhuixu": "赘婿逆袭", "shenhao": "神豪/都市异能",
+    "dushi_xuanhuan": "都市玄幻/天师捉妖", "xuanhuan_xianxia": "玄幻仙侠",
+    "lishi_quanmou": "历史权谋", "niandai": "年代逆袭", "xuanyi": "悬疑犯罪",
+    "zhongtian": "种田致富", "zongcai": "霸总甜宠/闪婚", "danvzhu": "大女主复仇/打脸",
+    "gongdou": "宫斗重生", "mengbao": "萌宝团宠", "qihuan_naodong": "奇幻脑洞/系统流",
+}
+
+
+def style_genre_positive(genre_key: str,
+                         kinds: tuple = ("setting", "wardrobe", "mood", "hooks")) -> str:
+    """题材词库正向 token 串。默认全量（setting+wardrobe+mood+hooks）；
+    镜头层可按需收缩，如只要 mood+hooks。"""
+    pack = GENRE_VOCAB.get((genre_key or "").strip())
+    if not pack:
+        return ""
+    parts = []
+    for k in kinds:
+        parts.extend(x for x in pack.get(k, []) if x)
+    return ", ".join(parts)
+
+
+def style_genre_negative(genre_key: str) -> str:
+    """题材词库负面 token 串（防题材串味：霸总剧禁贫民窟、种田剧禁赛博都市等）。"""
+    pack = GENRE_VOCAB.get((genre_key or "").strip())
+    if not pack:
+        return ""
+    return ", ".join(x for x in pack.get("negative", []) if x)
+
+
+def combined_shot_vocab(preset_key: str, genre_key: str,
+                        genre_kinds: tuple = ("mood", "hooks")) -> str:
+    """风格词库 + 题材词库合并成镜头层 vocab 串（模板 {{ vocab }} 单变量注入）。
+    题材默认只取 mood+hooks——setting/wardrobe 由场景图与角色图承担，
+    镜头里重复写会让提示词臃肿稀释权重。"""
+    parts = [style_vocab_positive(preset_key),
+             style_genre_positive(genre_key, genre_kinds)]
+    return ", ".join(x for x in parts if x)

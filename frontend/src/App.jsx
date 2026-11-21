@@ -881,11 +881,15 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [presets, setPresets] = useState({})
+  const [genres, setGenres] = useState({})
 
   useEffect(() => { api('/style-presets').then(setPresets).catch(() => {}) }, [])
+  useEffect(() => { api('/style-genres').then(setGenres).catch(() => {}) }, [])
 
   const savePreset = async (key) => { await put(`/projects/${project.id}`, { style_preset: key }); project.style_preset = key }
   const currentPreset = project.style_preset || 'anime_2d'
+  const saveGenre = async (key) => { await put(`/projects/${project.id}`, { genre: key }); project.genre = key }
+  const currentGenre = project.genre || ''
   const [lifelike, setLifelike] = useState(project.lifelike !== 0)
   const [lifelikeFull, setLifelikeFull] = useState(project.lifelike_full === 1)
   const [autoPolish, setAutoPolish] = useState(project.auto_polish !== 0)
@@ -1149,6 +1153,16 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
           <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{presets[currentPreset]?.style_lock}</span>
         </div>
         <div className="page-sub" style={{ fontSize: 12, marginTop: 4 }}>视频动态策略：{presets[currentPreset]?.motion_hint}</div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label style={{ fontSize: 13 }}>题材词库（红果爆款反向解析，注入镜头 mood+名场面钩子）</label>
+          <select value={currentGenre} onChange={e => saveGenre(e.target.value)} style={{ flex: 1 }}>
+            <option value="">不挂题材词库（纯风格）</option>
+            {Object.entries(genres).map(([k, v]) => (
+              <option key={k} value={k}>{v.label}</option>
+            ))}
+          </select>
+          <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{genres[currentGenre]?.sample_setting || ''}</span>
+        </div>
         <div className="row" style={{ marginTop: 8 }}>
           <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
             <input type="checkbox" checked={lifelike} onChange={e => toggleLifelike(e.target.checked)} />

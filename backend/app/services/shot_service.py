@@ -316,20 +316,23 @@ def _motion_video_tokens(shot: Shot) -> str:
     return ", ".join(x for x in parts if x)
 
 
-def _vocab_positive(preset: str) -> str:
-    """风格词库正向 token（anime cel 词系 / xianxia 仙侠词系 / 特效词系…）。"""
-    from ..style_vocab import style_vocab_positive
-    return style_vocab_positive(preset)
+def _vocab_positive(preset: str, genre: str = "") -> str:
+    """风格词库 + 题材词库正向 token（anime cel 词系 / xianxia 仙侠词系 / 特效词系…
+    + 红果爆款题材层：战神/赘婿/霸总/宫斗… 的 mood+hooks 名场面视觉）。"""
+    from ..style_vocab import combined_shot_vocab
+    return combined_shot_vocab(preset, genre)
 
 
-def _shot_neg(stage: str, preset: str, extra: str = "") -> str:
-    """stage 负面基线 + 全局负面 + 风格词库负面。
+def _shot_neg(stage: str, preset: str, extra: str = "", genre: str = "") -> str:
+    """stage 负面基线 + 全局负面 + 风格词库负面 + 题材词库负面。
 
     风格串味治理：动漫模型必须禁摄影词（photorealistic 会拉出脏中间态），
     写实模型禁动漫词，词库按风格自动给出。
+    题材串味治理：霸总剧禁贫民窟、种田剧禁赛博都市、悬疑禁明亮欢乐色等。
     """
-    from ..style_vocab import style_vocab_negative
-    parts = [neg_for(stage, extra), style_vocab_negative(preset)]
+    from ..style_vocab import style_vocab_negative, style_genre_negative
+    parts = [neg_for(stage, extra), style_vocab_negative(preset),
+             style_genre_negative(genre)]
     return ", ".join(x for x in parts if x)
 
 
@@ -390,6 +393,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
                      params: dict | None = None) -> Path:
     params = params or {}
     preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
     fam = style_family(preset)
     model_key, model = await pick_model("scene", "low", style_family=fam,
                                         allowed_families=frozenset(("sdxl",)))
@@ -414,7 +418,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     if mtok and mtok[:24].lower() not in prompt.lower():
         prompt = prompt + ", " + mtok
     # 运行时兜底：风格词库（按风格锁挂载的领域词）未进提示词时补上
-    vtok = _vocab_positive(preset)
+    vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = prompt + ", " + vtok
 
@@ -422,7 +426,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     comfy = ComfyUIAdapter()
     w, h = _res(project)
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
-    neg = _shot_neg("shot_first_frame", preset, NEGATIVE)
+    neg = _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre)
     seed = random.randint(0, 2**31 - 1)
     prefix = f"drama_studio/p{shot.project_id}_s{shot.idx}_{frame_type}"
 
@@ -552,10 +556,11 @@ async def generate_shot_video(db, task, params: dict) -> dict:
                                has_end_frame=bool(shot.needs_end_frame))
     # 运行时兜底：motion_json 动作控制 + 稳定性约束（编辑即时生效，旧提示词也补）
     preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
     mtok = _motion_video_tokens(shot)
     if mtok and "no morphing" not in prompt:
         prompt = f"{prompt}, {mtok}"
-    vtok = _vocab_positive(preset)
+    vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = f"{prompt}, {vtok}"
 
@@ -567,7 +572,7 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     seed = random.randint(0, 2**31 - 1)
     overrides = {
         "positive_text": prompt,
-        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset)),
+        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
         "LoadImage@0.image": start_name,
         f"{samp_prefix}.seed": seed,
         "WanFirstLastFrameToVideo.length": length,
@@ -634,6 +639,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
         raise RuntimeError("镜头不存在")
     project = db.get(Project, shot.project_id)
     preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
     if style_family(preset) not in ("anime", "paint", "3d"):
         raise RuntimeError("九宫格只对动漫/国潮/3D 风格开放（写实风格分辨率损耗大，建议关掉宫格）")
     if not shot.image_prompt:
@@ -661,7 +667,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
             # 宫格也用 IPAdapter 锁脸：9 格构图不同、但必须是同一张脸
             try:
                 out = await _ipa_gen(comfy, model, prompt_i,
-                                     _shot_neg("shot_first_frame", preset, NEGATIVE), ref, w, h,
+                                     _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre), ref, w, h,
                                      base_seed + i, 22, 6.0,
                                      float(params.get("ipa_weight", 0.65)), save_root,
                                      prefix, timeout=600)
@@ -672,7 +678,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
             continue
         overrides = {
             "positive_text": prompt_i,
-            "negative_text": _shot_neg("shot_first_frame", preset, NEGATIVE),
+            "negative_text": _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre),
             "EmptyLatentImage.width": w,
             "EmptyLatentImage.height": h,
             "KSampler.seed": base_seed + i,
@@ -780,6 +786,7 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
 
     project = db.get(Project, src.project_id)
     preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
     model_key, model = await pick_model("scene", "low", style_family=style_family(
         (project.style_preset if project else "") or "anime_2d"),
         allowed_families=frozenset(("sdxl",)))
@@ -797,7 +804,7 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
     # img2img 本身锁住构图/光影/人物位置，提示词只引导本镜的动作与景别变化
     prompt = (f"{dst.image_prompt}, continuous scene from previous shot, "
               f"seamless match cut, consistent lighting, location and character appearance")
-    neg = _shot_neg("shot_first_frame", preset, NEGATIVE)
+    neg = _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre)
     update_progress(db, task, 0.4, f"末帧接力重绘（denoise {denoise}，承接 #{src.idx} → #{dst.idx}）")
     out = await _img2img(comfy, model, prompt, neg, src_frame, w, h, denoise,
                          26, 5.0, seed, save_root,
@@ -853,17 +860,18 @@ async def extend_shot_video(db, task, params: dict) -> dict:
     start_name = await comfy.upload_image(str(last_png))
     # 续写段提示词：保持人物/场景/运镜基调，仅自然延续动作
     preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
     prompt = wrap_video_prompt(shot.video_prompt, family, duration, has_end_frame=False)
     mtok = _motion_video_tokens(shot)
     if mtok and "no morphing" not in prompt:
         prompt = f"{prompt}, {mtok}"
-    vtok = _vocab_positive(preset)
+    vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = f"{prompt}, {vtok}"
     seed = random.randint(0, 2**31 - 1)
     overrides = {
         "positive_text": prompt,
-        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset)),
+        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
         "LoadImage@0.image": start_name,
         f"{samp_prefix}.seed": seed,
         "WanFirstLastFrameToVideo.length": length,
@@ -998,18 +1006,19 @@ async def generate_shot_talk(db, task, params: dict) -> dict:
     seed = random.randint(0, 2 ** 31 - 1)
     wf = comfy.load_template(TALK_WF)
     preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
     prompt = shot.video_prompt or shot.image_prompt or "a person talking"
     mtok = _motion_video_tokens(shot)
     if mtok:
         prompt = f"{prompt}, {mtok}"
-    vtok = _vocab_positive(preset)
+    vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = f"{prompt}, {vtok}"
     overrides = {
         "WanVideoTextEncode.positive_prompt":
             f"{prompt}, the character is speaking, natural talking expressions, "
             "lip movements match speech, consistent character appearance",
-        "WanVideoTextEncode.negative_prompt": dialect_negative("wan22", _shot_neg("shot_video", preset)),
+        "WanVideoTextEncode.negative_prompt": dialect_negative("wan22", _shot_neg("shot_video", preset, genre=genre)),
         "LoadImage@0.image": start_name,
         "LoadAudio.audio": audio_name,
         "MultiTalkWav2VecEmbeds.num_frames": frames,

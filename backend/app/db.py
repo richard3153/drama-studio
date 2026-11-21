@@ -26,6 +26,7 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     style_preset: Mapped[str] = mapped_column(String(40), default="anime_2d")  # 风格锁
+    genre: Mapped[str] = mapped_column(String(40), default="")  # 题材锁（红果爆款题材词库 key，空=不挂题材词库）
     lifelike: Mapped[int] = mapped_column(Integer, default=1)      # 活人感提示词机制
     lifelike_full: Mapped[int] = mapped_column(Integer, default=0) # 全量瑕疵（含五官不完美，仅建议分镜用）
     auto_polish: Mapped[int] = mapped_column(Integer, default=1)   # 初图 10% 微调（按资产类型分级生效）
@@ -241,6 +242,7 @@ def _migrate():
     additions = {
         "projects": [
             ("style_preset", "VARCHAR(40) DEFAULT 'anime_2d'"),
+            ("genre", "VARCHAR(40) DEFAULT ''"),
             ("lifelike", "INTEGER DEFAULT 1"),
             ("lifelike_full", "INTEGER DEFAULT 0"),
             ("auto_polish", "INTEGER DEFAULT 1"),

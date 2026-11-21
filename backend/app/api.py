@@ -77,6 +77,15 @@ def style_presets():
             for k, v in STYLE_PRESETS.items()}
 
 
+@router.get("/style-genres")
+def style_genres():
+    """题材词库列表（红果爆款反向解析）：key + 中文名 + 典型场景，供前端题材下拉。"""
+    from .style_vocab import GENRE_LABELS, GENRE_VOCAB
+    return {k: {"label": GENRE_LABELS.get(k, k),
+                "sample_setting": (GENRE_VOCAB[k].get("setting") or [""])[0]}
+            for k in GENRE_VOCAB}
+
+
 class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
@@ -86,13 +95,17 @@ class ProjectUpdate(BaseModel):
     auto_polish: int | None = None     # 初图 10% 微调 1/0（按资产类型分级生效）
     grid_storyboard: int | None = None # 宫格故事板（仅动漫风格建议开）
     aspect_ratio: str | None = None    # 全局画幅：16:9/21:9/4:3/1:1/3:4/9:16
+    genre: str | None = None           # 题材锁（红果爆款题材词库 key，""=不挂题材词库）
 
 
 @router.put("/projects/{pid}")
 def update_project(pid: int, body: ProjectUpdate):
     from .aspect import normalize_aspect
+    from .style_vocab import GENRE_VOCAB
     if body.style_preset and body.style_preset not in STYLE_PRESETS:
         raise HTTPException(400, "未知风格预设")
+    if body.genre and body.genre not in GENRE_VOCAB:
+        raise HTTPException(400, "未知题材词库 key")
     with SessionLocal() as db:
         p = db.get(Project, pid)
         if not p:
@@ -113,8 +126,11 @@ def update_project(pid: int, body: ProjectUpdate):
             p.grid_storyboard = body.grid_storyboard
         if body.aspect_ratio is not None:
             p.aspect_ratio = normalize_aspect(body.aspect_ratio)
+        if body.genre is not None:
+            p.genre = body.genre
         db.commit()
         return {"id": p.id, "name": p.name, "style_preset": p.style_preset,
+                "genre": getattr(p, "genre", ""),
                 "lifelike": p.lifelike, "lifelike_full": p.lifelike_full,
                 "auto_polish": p.auto_polish, "grid_storyboard": p.grid_storyboard,
                 "aspect_ratio": p.aspect_ratio}
@@ -126,6 +142,7 @@ def list_projects():
         rows = db.scalars(select(Project).order_by(Project.id.desc())).all()
         return [{"id": p.id, "name": p.name, "description": p.description,
                  "style_preset": p.style_preset,
+                 "genre": getattr(p, "genre", ""),
                  "lifelike": p.lifelike, "lifelike_full": p.lifelike_full,
                  "auto_polish": p.auto_polish, "grid_storyboard": p.grid_storyboard,
                  "aspect_ratio": p.aspect_ratio,
