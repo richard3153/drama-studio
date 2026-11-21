@@ -195,7 +195,9 @@ async def tts_episode(db, t: TaskRecord, params: dict) -> dict:
     voices = _assign_voices(db, pid)
     audio_dir = _proj_dir(pid) / "audio"
     # 清掉本集旧配音文件，避免残留孤儿音轨（重生成幂等）
-    for old in audio_dir.glob(f"p{pid}_s*_vo*.mp3"):
+    # 清掉本集旧配音文件，避免残留孤儿音轨（重生成幂等）。
+    # 文件名必须带集号（e{eid}）：同项目各集镜头序号相同，不带集号会互相覆盖/误删
+    for old in audio_dir.glob(f"p{pid}_e{eid}_s*_vo*.mp3"):
         old.unlink(missing_ok=True)
 
     jobs: list[tuple[Shot, int, str, str, str]] = []   # (shot, seq, tone, text, voice)
@@ -221,7 +223,7 @@ async def tts_episode(db, t: TaskRecord, params: dict) -> dict:
 
     done = 0
     for sh, seq, tone, text, voice in jobs:
-        out = audio_dir / f"p{pid}_s{sh.idx}_vo{seq}.mp3"
+        out = audio_dir / f"p{pid}_e{eid}_s{sh.idx}_vo{seq}.mp3"
         rate, pitch = _tone_params(tone)
         await _tts_one(text, voice, out, rate=rate, pitch=pitch)
         done += 1
@@ -376,7 +378,7 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
     update_progress(db, t, 0.35, "混入台词配音")
     audio_dir = _proj_dir(pid) / "audio"
     missing_audio = [f"s{s['idx']}#vo{j}" for s in segs for j in range(len(s["lines"]))
-                     if not (audio_dir / f"p{pid}_s{s['idx']}_vo{j}.mp3").exists()]
+                     if not (audio_dir / f"p{pid}_e{eid}_s{s['idx']}_vo{j}.mp3").exists()]
     if missing_audio:
         raise RuntimeError("缺少配音文件（先点「生成台词配音」）：" + "、".join(missing_audio[:8]))
     filters, mix_inputs, cursor, srt_rows, n = [], [], 0.0, [], 0
@@ -384,7 +386,7 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
         shot_end = cursor + s["dur"]
         cur_line = cursor + 0.15     # 台词从镜头起点略延后开始
         for j, (who, tone, text) in enumerate(s["lines"]):
-            mp3 = audio_dir / f"p{pid}_s{s['idx']}_vo{j}.mp3"
+            mp3 = audio_dir / f"p{pid}_e{eid}_s{s['idx']}_vo{j}.mp3"
             adur = _ffprobe_duration(mp3) or 2.0
             # 行开始按实际音频时长顺序排布（不再是镜内平分），越过镜尾则贴到镜尾
             start = min(cur_line, max(cursor, shot_end - adur))
@@ -419,7 +421,7 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
              f"amix=inputs={n}:duration=longest:normalize=0[mixout]"
         mixed = export_dir / f"final_ep{eid}_vo.mp4"
         _run_ff([str(FFMPEG), "-y", "-i", str(novoice)] +
-                [x for a in _collect_vo_audio(segs, pid, audio_dir) for x in ("-i", str(a))] +
+                [x for a in _collect_vo_audio(segs, pid, eid, audio_dir) for x in ("-i", str(a))] +
                 ["-filter_complex", fc, "-map", "0:v", "-map", "[mixout]",
                  "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(mixed)],
                 "台词混音")
@@ -453,9 +455,9 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
             "duration": round(_ffprobe_duration(final), 2)}
 
 
-def _collect_vo_audio(segs, pid, audio_dir):
+def _collect_vo_audio(segs, pid, eid, audio_dir):
     out = []
     for s in segs:
         for j in range(len(s["lines"])):
-            out.append(audio_dir / f"p{pid}_s{s['idx']}_vo{j}.mp3")
+            out.append(audio_dir / f"p{pid}_e{eid}_s{s['idx']}_vo{j}.mp3")
     return out

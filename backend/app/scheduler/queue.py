@@ -16,6 +16,8 @@ _heavy_lock = asyncio.Lock()
 _bg_tasks: set[asyncio.Task] = set()
 # 任务 id → 运行中的 asyncio.Task（取消运行中任务用）
 _run_map: dict[int, asyncio.Task] = {}
+# 主事件循环（启动时登记）：工作线程的进度更新经它投递回 SSE
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 def spawn_bg(coro) -> asyncio.Task:
@@ -104,7 +106,11 @@ async def run_task(db, t: TaskRecord, fn: Callable[[], Awaitable[dict]],
         return result
     except asyncio.CancelledError:
         db.rollback()  # 丢弃 fn() 留下的半截事务，防止标状态时把未完成的删除/写入一并提交
-        _set(db, t, status="cancelled", finished_at=now())
+        db.refresh(t)
+        if t.status != "paused":
+            # 排队等锁的任务被「暂停」时走 cancel 协程收尾——此时保留 paused，
+            # 不被覆写成 cancelled（否则「继续」按钮消失，暂停语义失效）
+            _set(db, t, status="cancelled", finished_at=now())
         await publish("task_update", {"task": task_to_dict(t)})
         raise
     except Exception as e:
@@ -116,4 +122,20 @@ async def run_task(db, t: TaskRecord, fn: Callable[[], Awaitable[dict]],
 
 def update_progress(db, t: TaskRecord, progress: float, stage: str = ""):
     _set(db, t, progress=max(0.0, min(1.0, progress)), stage=stage)
-    # 进度推送走同步上下文异步发布：调度器在 async 函数内调用此方法
+    # 进度实时推送：任务开始/结束之外，中途 stage/百分比也推给 SSE 订阅者。
+    # 大部分调用方在 async 上下文（直接 create_task 投递）；stitch/export 等在
+    # 工作线程里跑（无 running loop），投递回启动时登记的主循环。
+    d = task_to_dict(t)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(publish("task_update", {"task": d}))
+    except RuntimeError:
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(publish("task_update", {"task": d}),
+                                             _main_loop)
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop):
+    """启动时登记主事件循环（供工作线程里的进度更新投递 SSE）。"""
+    global _main_loop
+    _main_loop = loop

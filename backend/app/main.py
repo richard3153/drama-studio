@@ -1,4 +1,5 @@
 """Drama Studio 后端入口：uvicorn app.main:app --port 8766"""
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -35,6 +36,13 @@ app = FastAPI(title="Drama Studio", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
 app.include_router(router)
+
+
+@app.on_event("startup")
+async def _capture_main_loop():
+    # 登记主事件循环：export/stitch 等工作线程里的进度更新要经它投递 SSE
+    from .scheduler import queue as _q
+    _q.set_main_loop(asyncio.get_running_loop())
 
 
 @app.get("/api/health")

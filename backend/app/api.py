@@ -356,12 +356,14 @@ def pause_task(tid: int):
         if t.status == "pending":
             t.status = "paused"
             db.commit()
-        elif t.status == "running" and task_queue.cancel_running(tid):
-            # 尚在等锁、未进 GPU 推理：取消协程并立即改标 paused（比 cancelled 更符合预期）
-            db.refresh(t)
-            if t.stage == "":
-                t.status = "paused"
-                db.commit()
+        elif t.status == "running" and (t.stage or "") == "":
+            # 尚在等锁、未进 GPU 推理（stage 为空）：先落库 paused 再取消协程——
+            # 顺序反了会有竞态：CancelledError 收尾读到旧快照 running 会覆写成 cancelled
+            db.rollback()
+            t.status = "paused"
+            t.stage = "等待 GPU 空闲，已暂停"
+            db.commit()
+            task_queue.cancel_running(tid)
         else:
             raise HTTPException(400, f"任务状态 {t.status} 不支持暂停（推理中的任务只能取消）")
         return {"task_id": tid, "status": t.status}
@@ -1813,11 +1815,12 @@ async def episode_rechain_from(eid: int, body: BatchIn = None):
         ep = db.get(Episode, eid)
         if not ep:
             raise HTTPException(404, "剧集不存在")
-        # 防重复：同集已有重链在跑/排队时拒绝重复发起（避免多条链互相碾压产物）
-        dup = db.scalars(select(TaskRecord).where(
+        # 防重复：同集已有重链在跑/排队时拒绝重复发起（避免多条链互相碾压产物）。
+        # 参数在 Python 侧精确解析（LIKE '%"episode_id": 1%' 会误伤集 11/12…）
+        dup = next((t for t in db.scalars(select(TaskRecord).where(
             TaskRecord.type == "rechain_from",
-            TaskRecord.status.in_(("running", "pending")),
-            TaskRecord.params_json.like(f'%"episode_id": {eid}%'))).first()
+            TaskRecord.status.in_(("running", "pending")))).all()
+            if json.loads(t.params_json or "{}").get("episode_id") == eid), None)
         if dup:
             raise HTTPException(400, f"该集已有重链任务在跑（任务 #{dup.id}），"
                                      "可在底部「队列详情」里取消后再发")
