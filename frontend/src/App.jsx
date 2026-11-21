@@ -789,6 +789,14 @@ function PromptTemplatesPanel({ projectId }) {
   )
 }
 
+// 国家/地区形象预设（与后端 ETHNICITY_PRESETS 对齐：value=槽位值，label=显示）
+const ETHNICITIES = [
+  ['chinese', '中国人'], ['korean', '韩国人'], ['japanese', '日本人'],
+  ['american', '美国人'], ['european', '欧洲人'], ['african', '非洲人'],
+  ['indian', '印度人'], ['southeast asian', '东南亚人'], ['middle eastern', '中东人'],
+  ['latin', '拉丁裔'], ['russian', '俄罗斯人'],
+]
+
 function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const [episodes, setEpisodes] = useState([])
   const [selId, setSelId] = useState(null)
@@ -940,7 +948,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   }
 
   const SLOT_FIELDS = {
-    characters: [['identity', '身份'], ['appearance', '身材五官'], ['hair', '发型发色'], ['clothing', '服装'], ['makeup', '妆造'], ['accessories', '饰品'], ['expression', '表情姿态'], ['chibi', 'Q版形象'], ['palette', '主色']],
+    characters: [['identity', '身份'], ['ethnicity', '国家形象'], ['appearance', '身材五官'], ['hair', '发型发色'], ['clothing', '服装'], ['makeup', '妆造'], ['accessories', '饰品'], ['expression', '表情姿态'], ['chibi', 'Q版形象'], ['palette', '主色']],
     scenes: [['space', '空间结构'], ['era', '时代风格'], ['elements', '陈设元素'], ['light', '光线时段'], ['mood', '氛围']],
     props: [['category', '分类 core/bond'], ['subject', '本体'], ['purpose', '剧情功能'], ['era', '时代'], ['details', '细节'], ['material', '材质色彩'], ['interaction', '交互方式']],
   }
@@ -993,8 +1001,16 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
                         {SLOT_FIELDS[k].map(([f, lbl]) => (
                           <div key={f} className="row" style={{ alignItems: 'center' }}>
                             <span style={{ width: 86, color: 'var(--dim)', fontSize: 12, flexShrink: 0 }}>{lbl}</span>
-                            <input value={(editing[key] || c)[f] || ''} placeholder={c[f] || ''}
-                              onChange={e => setSlot(key, f, e.target.value, c)} style={{ flex: 1, fontSize: 12 }} />
+                            {f === 'ethnicity' ? (
+                              <select value={(editing[key] || c)[f] || ''} style={{ flex: 1, fontSize: 12 }}
+                                onChange={e => setSlot(key, f, e.target.value, c)}>
+                                <option value="">（未指定）</option>
+                                {ETHNICITIES.map(([v, lbl2]) => <option key={v} value={v}>{lbl2}</option>)}
+                              </select>
+                            ) : (
+                              <input value={(editing[key] || c)[f] || ''} placeholder={c[f] || ''}
+                                onChange={e => setSlot(key, f, e.target.value, c)} style={{ flex: 1, fontSize: 12 }} />
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1348,7 +1364,14 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                 {Object.entries(slots).map(([k, v]) => (
                   <div className="row" key={k} style={{ marginBottom: 4 }}>
                     <span style={{ width: 90, color: 'var(--dim)', fontSize: 12, flexShrink: 0 }}>{k}</span>
-                    <input value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))} style={{ flex: 1 }} />
+                    {k === 'ethnicity' ? (
+                      <select value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))} style={{ flex: 1 }}>
+                        <option value="">（未指定）</option>
+                        {ETHNICITIES.map(([ev, el]) => <option key={ev} value={ev}>{el}</option>)}
+                      </select>
+                    ) : (
+                      <input value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))} style={{ flex: 1 }} />
+                    )}
                   </div>
                 ))}
                 <label style={{ marginTop: 8 }}>最终提示词（自动组装，可直接查看）</label>

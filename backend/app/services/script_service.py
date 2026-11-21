@@ -1199,14 +1199,18 @@ def build_candidate_prompts(preset: str, cands: dict) -> dict:
 
 
 SLOT_FIELDS = {
-    "character": ("identity", "appearance", "face", "hair", "clothing", "makeup",
+    "character": ("identity", "ethnicity", "appearance", "face", "hair", "clothing", "makeup",
                   "accessories", "expression", "pose", "chibi", "palette"),
     "scene": ("space", "era", "elements", "light", "mood"),
     "prop": ("category", "subject", "purpose", "era", "details", "material", "interaction"),
 }
 
 SLOT_GUIDE = {
-    "character": ("按第二章九段式角色公式：identity=性别,年龄段,职业/身份；appearance=身高参照,体型,年龄感"
+    "character": ("按第二章九段式角色公式：identity=性别,年龄段,职业/身份；"
+                  "ethnicity=国家/地区形象，必须从固定枚举中按角色背景选一个（有就写，没有则空串）："
+                  "chinese/korean/japanese/american/european/african/indian/southeast asian/"
+                  "middle eastern/latin/russian，如韩国财阀→korean、印度程序员→indian；"
+                  "appearance=身高参照,体型,年龄感"
                   "（要具体，如接近180cm/比同龄人矮半个头）；face=脸型+五官+记忆点（痣/疤/耳洞等区分标志）；"
                   "hair=发型发色；clothing=按上身-下装-鞋三段描述（基础着装要具体到款式，如风衣/制服/机能服/军靴）；"
                   "makeup=妆造；accessories=1-2个标志性配件（宁缺勿多，配件是辨识度关键）；expression=常见表情"

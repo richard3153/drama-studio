@@ -388,6 +388,31 @@ def style_lock_for(kind: str, preset_key: str) -> str:
     return lock
 
 
+# ---------- 国家/地区形象（ethnicity）预设：value=槽位值（英文 token），label=前端显示 ----------
+
+ETHNICITY_PRESETS = {
+    "chinese": ("中国人", "East Asian Chinese ethnicity, Chinese facial features"),
+    "korean": ("韩国人", "East Asian Korean ethnicity, Korean facial features"),
+    "japanese": ("日本人", "East Asian Japanese ethnicity, Japanese facial features"),
+    "american": ("美国人", "American, Caucasian facial features"),
+    "european": ("欧洲人", "European, Caucasian facial features"),
+    "african": ("非洲人", "African, Black facial features, dark skin tone"),
+    "indian": ("印度人", "South Asian Indian ethnicity, Indian facial features, warm brown skin tone"),
+    "southeast asian": ("东南亚人", "Southeast Asian ethnicity, Southeast Asian facial features"),
+    "middle eastern": ("中东人", "Middle Eastern ethnicity, Middle Eastern facial features"),
+    "latin": ("拉丁裔", "Latin American Hispanic ethnicity, Latino facial features"),
+    "russian": ("俄罗斯人", "Slavic Eastern European ethnicity, Slavic facial features"),
+}
+
+
+def ethnicity_token(slots: dict) -> str:
+    """槽位 ethnicity → 画面词块：预设值展开成完整外貌描述，自由文本原样用。"""
+    v = (slots.get("ethnicity") or "").strip()
+    if not v:
+        return ""
+    return ETHNICITY_PRESETS.get(v.lower(), (v, v))[1]
+
+
 def lifelike_tokens(preset_key: str, *, human: bool = True, pose: bool = False,
                     consistent: bool = False) -> str:
     """组装活人感词块。
@@ -409,11 +434,14 @@ def character_view_prompt(slots: dict, preset_key: str, view: str,
     """方案 A 用：单视角（front/side/back）定妆图提示词。视角/构图规格放最前（权重最高）。"""
     s = get_style(preset_key)
     parts = [VIEW_SPEC[view], s["style_lock"]]
+    eth = ethnicity_token(slots)
     for key in ("identity", "appearance", "face", "hair", "clothing", "makeup",
                 "accessories", "expression", "pose"):
         v = _take(slots, key)
         if v:
             parts.append(v)
+        if key == "identity" and eth:
+            parts.append(eth)
     palette = _take(slots, "palette")
     if palette:
         parts.append(f"color palette: {palette}")
@@ -483,12 +511,15 @@ def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
     mode = "sheet"
     s = get_style(preset_key)
     parts = [s["style_lock"]]
-    # 九段式主体段（顺序即权重顺序）
+    # 国家/地区形象：紧跟 identity 段（权重顺序第二位）
+    eth = ethnicity_token(slots)
     for key in ("identity", "appearance", "face", "hair", "clothing", "makeup",
                 "accessories"):
         v = _take(slots, key)
         if v:
             parts.append(v)
+        if key == "identity" and eth:
+            parts.append(eth)
     palette = _take(slots, "palette")
     if palette:
         parts.append(f"color palette: {palette}")
