@@ -152,7 +152,8 @@ async def rechain_from(db, t: TaskRecord, params: dict) -> dict:
     start_idx = int(params.get("from_idx") or 1)
     todo = [s for s in shots if s.idx >= start_idx]
     if not todo:
-        raise RuntimeError(f"没有 idx >= {start_idx} 的镜头")
+        raise RuntimeError(f"第 {start_idx - 1} 镜已是最后一镜，没有后续镜头可重链"
+                           f"（锚点镜本身保持不动）")
     prev_by_idx = {s.idx: s for s in shots}
     prev = prev_by_idx.get(start_idx - 1)
     total_steps = len(todo) * 2

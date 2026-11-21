@@ -1807,12 +1807,20 @@ async def episode_batch_videos(eid: int, body: BatchIn = None):
 
 @router.post("/episodes/{eid}/rechain-from")
 async def episode_rechain_from(eid: int, body: BatchIn = None):
-    """向后重链：从 from_idx 镜起逐镜 末帧→接力首帧→视频 连锁重生成（衔接一致性）。
-    断链即停，修复后可从断点镜再链。from_idx=1 即全链重刷。"""
+    """向后重链：以 from_idx-1 镜为锚点，从 from_idx 镜起逐镜 末帧→接力首帧→视频 连锁重生成。
+    断链即停，修复后可从断点镜再链。全链重刷传 from_idx=1（第 1 镜也会重生成）。"""
     with SessionLocal() as db:
         ep = db.get(Episode, eid)
         if not ep:
             raise HTTPException(404, "剧集不存在")
+        # 防重复：同集已有重链在跑/排队时拒绝重复发起（避免多条链互相碾压产物）
+        dup = db.scalars(select(TaskRecord).where(
+            TaskRecord.type == "rechain_from",
+            TaskRecord.status.in_(("running", "pending")),
+            TaskRecord.params_json.like(f'%"episode_id": {eid}%'))).first()
+        if dup:
+            raise HTTPException(400, f"该集已有重链任务在跑（任务 #{dup.id}），"
+                                     "可在底部「队列详情」里取消后再发")
         from_idx = (body.from_idx if body and body.from_idx else 1)
         params = {"episode_id": eid, "project_id": ep.project_id,
                   "ipa_weight": body.ipa_weight if body else None,

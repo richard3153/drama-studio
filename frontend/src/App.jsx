@@ -435,7 +435,7 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
   const rechain = async (fromIdx) => {
     try {
       const r = await post(`/episodes/${episodeId}/rechain-from`, { from_idx: fromIdx })
-      setGenMsg(`向后重链任务 #${r.task_id} 已入队（从第 ${fromIdx} 镜起：末帧→接力首帧→视频 连锁，断链即停），进度见底部任务栏`)
+      setGenMsg(`向后重链任务 #${r.task_id} 已入队（以第 ${fromIdx - 1} 镜为锚点，从第 ${fromIdx} 镜起：末帧→接力首帧→视频 连锁，断链即停），进度见底部任务栏`)
     } catch (e) { setGenMsg('重链失败：' + e.message) }
   }
   const genTalk = async (id, idx) => {
@@ -603,7 +603,7 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                   onClick={() => chainNext(s.id)}>⏭ 接力</button>
                 <button className="small ghost"
                   title={`从本镜起向后连锁重生成：本镜首帧以上一镜末帧重绘覆盖，逐镜 末帧→首帧→视频 向后传递（衔接+人物一致）。断链即停`}
-                  onClick={() => { if (confirm(`⛓ 从第 ${s.idx} 镜向后重链：本镜及之后所有镜的首帧和视频将连锁重新生成（本镜以上一镜末帧为源），不可自动恢复。确定？`)) rechain(s.idx) }}>⛓ 向后重链</button>
+                  onClick={() => { if (confirm(`⛓ 以第 ${s.idx} 镜为锚点向后重链：第 ${s.idx} 镜本身保持不动，从第 ${s.idx + 1} 镜起所有镜的首帧和视频用末帧接力连锁重新生成，不可自动恢复。确定？`)) rechain(s.idx + 1) }}>⛓ 向后重链</button>
                 <button className="small ghost" disabled={!s.video_path}
                   title="视频不够长：提末帧续写 3s 再拼接"
                   onClick={() => extendVideo(s.id)}>⏩ 续写</button>
