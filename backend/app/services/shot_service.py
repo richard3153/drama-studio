@@ -37,7 +37,7 @@ VIDEO_WF = "i2v_wan21_480p.json"
 GRID_WF = "grid_storyboard.json"
 IPA_WF = "scene_ipadapter.json"      # SDXL IPAdapter 锁脸（easy ipadapterApply，PLUS 预设）
 IPA_WF_DUAL = "scene_ipadapter_dual.json"  # 双人镜链式双 IPA（两张单人参考串接）
-IPA_WEIGHT = 0.7                     # 实测 0.7 既不糊也不僵；>0.85 会开始重复主体
+IPA_WEIGHT = 0.75                    # 2026-11-22 调优：0.7 身份偏弱（参考图治理后可承受更高权重）；>0.85 会开始重复主体
 
 NEGATIVE = ("nsfw, lowres, bad anatomy, bad hands, text, watermark, "
             "signature, jpeg artifacts, worst quality, blurry, deformed, "
@@ -51,25 +51,59 @@ def _res(project: Project | None) -> tuple[int, int]:
     return shot_dims(aspect)
 
 
-def _is_single_portrait(path: str) -> bool:
-    """参考图必须是一张单人竖版图。
+def _is_single_portrait(path: str, meta: dict | None = None) -> bool:
+    """参考图必须是单人特写（face_ref / 单人立绘），不能是整张多视角版式。
 
-    多视角设定板（三视图/角色板/线稿拼版）当 IPAdapter 参考会把整张版式学进去：
-    实测拿 6 视角设定板做参考，直接出"两个人 + 线稿风 + 雨街"的废图。
-    判定：文件名不含版式词，且画面宽高比 < 0.9（竖版）。
+    判定顺序（2026-11-22 治理：此前竖版硬判把 672x652 近正方形三视图裁脸图整批误拒，
+    实际喂给 IPAdapter 的只剩 253px 拼版小图，身份信号弱 → 脸锁不住）：
+    1. meta 明确标记单脸特写（source=sheet_crop / compose 拼版裁脸）→ 直接可用；
+    2. 文件名含版式词且无特写 meta → 拒（整张版式当 IPA 参考会把版式一起学进去）；
+    3. 宽高比兜底：只拒宽横版拼版（w > h*1.25）；竖版/近正方形单人图均可用。
     """
     p = Path(path)
     if not p.exists():
         return False
+    m = meta or {}
+    if m.get("source") == "sheet_crop" or m.get("compose"):
+        return True
     if any(k in p.name.lower() for k in ("sheet", "view", "board", "refine", "grid")):
         return False
     try:
         from PIL import Image
         with Image.open(p) as im:
             w, h = im.size
-        return h >= w * 1.05
+        return w <= h * 1.25
     except Exception:
         return False
+
+
+def _face_candidates(db, cid: int) -> list[str]:
+    """一个角色的可用单人参考图，按「特写优先→分辨率大优先→版本新优先」排序。
+
+    分辨率即身份信号强度：672px 裁脸图远胜 253px 拼版小图（放大后糊成色块）。
+    """
+    rows = db.scalars(select(AssetImage).where(
+        AssetImage.character_id == cid).order_by(AssetImage.id.desc())).all()
+    out: list[tuple[str, tuple]] = []
+    for r in rows:
+        if r.kind not in ("face_ref", "base_look"):
+            continue
+        try:
+            meta = json.loads(r.meta_json or "{}")
+        except Exception:
+            meta = {}
+        if not _is_single_portrait(r.file_path, meta):
+            continue
+        try:
+            from PIL import Image
+            with Image.open(r.file_path) as im:
+                area = im.size[0] * im.size[1]
+        except Exception:
+            area = 0
+        score = (0 if r.kind == "face_ref" else 1, -area, -r.id)
+        out.append((r.file_path, score))
+    out.sort(key=lambda x: x[1])
+    return [p for p, _ in out]
 
 
 def _ref_overrides(shot: Shot) -> dict:
@@ -82,10 +116,11 @@ def _ref_overrides(shot: Shot) -> dict:
 
 
 def _char_ref_paths(db, shot: Shot, limit: int = 2) -> list[str]:
-    """按镜头 characters_json 顺序收集每人的单人竖版参考图（face_ref 优先，base_look 次之）。
+    """按镜头 characters_json 顺序收集每人的单人特写参考图。
 
-    注意排除多视角设定板（sheet/board/view/refine/grid），整张版式当 IPA 参考会连版式一起学。
-    镜头卡 ref_overrides_json 手动指定了某角色的参考图时优用指定值（溯源窗口可换）。
+    优先级（2026-11-22 治理）：镜头卡手动指定 ref_overrides_json
+    > 角色级默认脸锁 Character.face_lock_path（溯源窗口「设为默认参考」钉死版本）
+    > 自动择优（_face_candidates：特写优先→分辨率大优先→版本新优先）。
     """
     from ..db import Character
     names = json.loads(shot.characters_json or "[]") if isinstance(shot.characters_json, str) else (shot.characters_json or [])
@@ -93,7 +128,7 @@ def _char_ref_paths(db, shot: Shot, limit: int = 2) -> list[str]:
         return []
     overrides = _ref_overrides(shot)
     chars = db.scalars(select(Character).where(Character.project_id == shot.project_id)).all()
-    by_name = {c.name: c.id for c in chars}
+    by_name = {c.name: c for c in chars}
     out: list[str] = []
     for n in names:
         ov = overrides.get(n)
@@ -102,18 +137,18 @@ def _char_ref_paths(db, shot: Shot, limit: int = 2) -> list[str]:
             if len(out) >= limit:
                 break
             continue
-        cid = by_name.get(n)
-        if not cid:
+        c = by_name.get(n)
+        if not c:
             continue
-        rows = db.scalars(select(AssetImage).where(
-            AssetImage.character_id == cid).order_by(AssetImage.id.desc())).all()
-        for r in rows:
-            if r.kind == "face_ref" and _is_single_portrait(r.file_path):
-                out.append(r.file_path); break
-        else:
-            for r in rows:
-                if r.kind == "base_look" and _is_single_portrait(r.file_path):
-                    out.append(r.file_path); break
+        lock = getattr(c, "face_lock_path", "") or ""
+        if lock and Path(lock).exists():
+            out.append(lock)
+            if len(out) >= limit:
+                break
+            continue
+        cands = _face_candidates(db, c.id)
+        if cands:
+            out.append(cands[0])
         if len(out) >= limit:
             break
     return out
@@ -237,23 +272,56 @@ async def _ipa_gen(comfy, model, prompt: str, negative: str, ref_path: str,
 
 
 def _scene_anchor(db, shot: Shot) -> str | None:
-    """场景锚定图（缩略图法）：按镜头的场景名查 Scene.anchor_path，文件存在才返回。
+    """场景参考图三级回退（2026-11-22 治理：此前只认手动锚图，覆盖率≈0）：
 
-    锚图作用：同一场景跨镜头环境一致（布局/光影/色调），由资产页手动选定锚点。
-    镜头卡 ref_overrides_json 的 "__scene__" 手动指定时优先（溯源窗口可换）。
+    1. 镜头卡 ref_overrides_json 的 "__scene__"（溯源窗口手动指定，优先级最高）；
+    2. Scene.anchor_path 手动锚图（资产页「设为锚点」）；
+    3. 自动回退：该场景名下的 iso 45° 布局图优先（空间结构最完整，缩略图法本意），
+       其次最新一张场景概念图——无需任何手动操作即生效。
+
+    场景匹配：先精确名，后大小写/空白容错名（防拆解命名漂移导致锚图失联）。
     """
-    from ..db import Scene
+    from ..db import Scene, AssetImage
     ov = _ref_overrides(shot).get("__scene__")
     if ov and Path(ov).exists():
         return ov
-    if not (getattr(shot, "scene_name", "") or "").strip():
+    name = (getattr(shot, "scene_name", "") or "").strip()
+    if not name:
         return None
     sc = db.scalars(select(Scene).where(
         Scene.project_id == shot.project_id,
-        Scene.name == shot.scene_name.strip())).first()
-    if sc and getattr(sc, "anchor_path", "") and Path(sc.anchor_path).exists():
+        Scene.name == name)).first()
+    if not sc:
+        for cand in db.scalars(select(Scene).where(
+                Scene.project_id == shot.project_id)).all():
+            if (cand.name or "").strip().lower() == name.lower():
+                sc = cand
+                break
+    if not sc:
+        return None
+    if getattr(sc, "anchor_path", "") and Path(sc.anchor_path).exists():
         return sc.anchor_path
-    return None
+    # 自动回退：meta.entity_id 挂在该场景名下的场景图（iso 布局图优先，最新优先）
+    imgs = db.scalars(select(AssetImage).where(
+        AssetImage.project_id == shot.project_id,
+        AssetImage.kind == "scene").order_by(AssetImage.id.desc())).all()
+    iso = plain = None
+    for r in imgs:
+        try:
+            meta = json.loads(r.meta_json or "{}")
+        except Exception:
+            meta = {}
+        if meta.get("entity_id") != sc.id:
+            continue
+        p = Path(r.file_path)
+        if not p.exists():
+            continue
+        is_iso = bool(meta.get("iso_layout")) or "isometric" in (r.prompt or "").lower()
+        if is_iso and iso is None:
+            iso = r.file_path
+        if plain is None:
+            plain = r.file_path
+    return iso or plain
 
 
 async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,

@@ -658,3 +658,76 @@ async def generate_portrait(db, task, params: dict) -> dict:
     params.setdefault("entity_type", "character")
     params["entity_id"] = params.get("character_id") or params.get("entity_id")
     return await generate_asset(db, task, params)
+
+
+def _scene_iso_image(db, project_id: int, scene_id: int) -> str | None:
+    """找场景名下最新的 iso 45° 布局图（meta.iso_layout 或提示词含 isometric）。"""
+    from sqlalchemy import select as _select
+    from ..db import AssetImage as _AI
+    rows = db.scalars(_select(_AI).where(
+        _AI.project_id == project_id,
+        _AI.kind == "scene").order_by(_AI.id.desc())).all()
+    for r in rows:
+        try:
+            meta = json.loads(r.meta_json or "{}")
+        except Exception:
+            meta = {}
+        if meta.get("entity_id") != scene_id:
+            continue
+        if not Path(r.file_path).exists():
+            continue
+        if bool(meta.get("iso_layout")) or "isometric" in (r.prompt or "").lower():
+            return r.file_path
+    return None
+
+
+async def auto_scene_anchors(db, task, params: dict) -> dict:
+    """一键补齐场景锚图（缩略图法落地）。
+
+    对项目每个场景：已有锚图→跳过；已有 iso 布局图→直接设锚；
+    两者皆无→生成 45° 等距剖面布局全景图（iso diorama，完整空间结构）
+    并设为 Scene.anchor_path。生成复用 generate_asset 渲染链路（kind=scene 入库）。
+    """
+    from sqlalchemy import select
+    from ..db import Scene
+    from ..scheduler.queue import update_progress
+    from ..prompt_templates import assemble_scene_prompt
+
+    pid = params["project_id"]
+    project = db.get(Project, pid)
+    preset = (project.style_preset if project else "") or "anime_2d"
+    lifelike = bool(project.lifelike) if project else True
+    scenes = db.scalars(select(Scene).where(Scene.project_id == pid)).all()
+    anchored, skipped = [], []
+    total = len(scenes)
+    for i, sc in enumerate(scenes):
+        update_progress(db, task, 0.05 + 0.9 * i / max(total, 1),
+                        f"场景 {i + 1}/{total}：{sc.name}")
+        if sc.anchor_path and Path(sc.anchor_path).exists():
+            skipped.append(sc.name)
+            continue
+        iso = _scene_iso_image(db, pid, sc.id)
+        if not iso:
+            # 生成 45° iso 布局全景图（与资产页 iso_layout 出图同一提示词结构）
+            slots = json.loads(sc.prompt_json or "{}")
+            base = (assemble_scene_prompt(slots, preset, lifelike,
+                                          fallback_subject=sc.name)
+                    if slots else (sc.base_prompt or sc.name))
+            iso_prompt = (
+                "isometric cutaway diorama, 45-degree elevated dollhouse view of the complete space, "
+                "entire layout visible in one frame, walls, furniture and prop placement clearly arranged, "
+                f"miniature 3D model style, soft studio lighting, plain dark background. Scene: {base}")
+            await generate_asset(db, task, {
+                "project_id": pid, "role": "scene", "entity_type": "scene",
+                "entity_id": sc.id, "base_prompt": iso_prompt,
+                "style_preset": preset})
+            iso = _scene_iso_image(db, pid, sc.id)
+        if iso:
+            sc.anchor_path = iso
+            db.commit()
+            anchored.append(sc.name)
+        else:
+            skipped.append(sc.name)
+    update_progress(db, task, 1.0,
+                    f"场景锚图完成：{len(anchored)} 个设锚，{len(skipped)} 个已有/跳过")
+    return {"anchored": anchored, "skipped": skipped}

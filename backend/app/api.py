@@ -250,6 +250,7 @@ async def _run_task(task_id: int):
             "ref_redraw": lambda: asset_service.generate_from_reference(db, t, params),
             "upscale": lambda: asset_service.upscale_asset(db, t, params),
             "polish": lambda: refine_asset(db, t, params),
+            "scene_anchor": lambda: asset_service.auto_scene_anchors(db, t, params),
             "outline": lambda: script_service.generate_outline(db, t, params),
             "continue_outline": lambda: script_service.continue_outline(db, t, params),
             "script": lambda: script_service.write_episode_script(db, t, params),
@@ -293,7 +294,31 @@ def get_character(cid: int):
         imgs = db.scalars(select(AssetImage).where(AssetImage.character_id == cid)).all()
         return {"id": ch.id, "name": ch.name, "description": ch.description,
                 "base_prompt": ch.base_prompt,
+                "face_lock_path": getattr(ch, "face_lock_path", "") or "",
                 "images": [{"id": i.id, "kind": i.kind, "path": i.file_path} for i in imgs]}
+
+
+class FaceLockIn(BaseModel):
+    path: str = ""                   # 参考图绝对路径；空串=解除锁定（回到自动择优）
+
+
+@router.post("/characters/{cid}/face-lock")
+def set_face_lock(cid: int, body: FaceLockIn):
+    """角色级默认脸锁：钉死该角色所有镜头 IPAdapter 参考用的那张图（100% 一致性）。
+
+    path 传空解除锁定，回到自动择优（特写优先→分辨率大优先→版本新优先）。
+    锁定路径不存在时 400（防锁死到失效图）。
+    """
+    with SessionLocal() as db:
+        ch = db.get(Character, cid)
+        if not ch:
+            raise HTTPException(404, "角色不存在")
+        p = (body.path or "").strip()
+        if p and not Path(p).exists():
+            raise HTTPException(400, f"参考图不存在：{p}")
+        ch.face_lock_path = p
+        db.commit()
+        return {"id": ch.id, "face_lock_path": ch.face_lock_path}
 
 
 @router.get("/assets/{aid}/file")
@@ -1067,6 +1092,27 @@ def clear_scene_anchor(sid: int):
         return {"id": s.id, "anchor_path": ""}
 
 
+@router.post("/projects/{pid}/auto-scene-anchors")
+async def auto_scene_anchors(pid: int):
+    """一键补齐场景锚图：无锚场景自动生成 45° iso 等距剖面布局全景图并设为锚点。
+
+    已有锚图的场景跳过；已有 iso 布局图的直接设锚（不重复渲染）。
+    防重复：同项目已有 scene_anchor 任务在跑/排队时拒绝重复发起。
+    """
+    with SessionLocal() as db:
+        if not db.get(Project, pid):
+            raise HTTPException(404, "项目不存在")
+        dup = next((t for t in db.scalars(select(TaskRecord).where(
+            TaskRecord.type == "scene_anchor",
+            TaskRecord.status.in_(("running", "pending")))).all()
+            if json.loads(t.params_json or "{}").get("project_id") == pid), None)
+        if dup:
+            raise HTTPException(400, f"场景锚图任务 #{dup.id} 已在进行中，勿重复发起")
+        t = task_queue.create_task(db, "scene_anchor", {"project_id": pid})
+    task_queue.spawn_bg(_run_bg(t.id))
+    return {"task_id": t.id, "task_type": "scene_anchor"}
+
+
 @router.post("/entities/{etype}/{eid}/rebuild-slots")
 async def rebuild_slots(etype: str, eid: int):
     """旧资产槽位重铸：本地 LLM 按方法论模板从「名称+描述」反推结构化槽位。"""
@@ -1371,43 +1417,48 @@ def shot_refs(sid: int):
     - 道具：仅提示词级引用（不挂图），如实标注。
     """
     from .db import Character
-    from .services.shot_service import _is_single_portrait, _ref_overrides
+    from .services.shot_service import _ref_overrides, _face_candidates, _scene_anchor
     with SessionLocal() as db:
         s = db.get(Shot, sid)
         if not s:
             raise HTTPException(404, "镜头不存在")
         ov = _ref_overrides(s)
         names = json.loads(s.characters_json or "[]")
-        chars = {c.name: c.id for c in db.scalars(select(Character).where(
+        chars = {c.name: c for c in db.scalars(select(Character).where(
             Character.project_id == s.project_id)).all()}
         chars_out = []
         for n in names:
-            cid = chars.get(n)
+            c = chars.get(n)
+            cid = c.id if c else None
             cands = []
             used_path, used_kind, source = "", "", ""
             if cid:
-                for r in db.scalars(select(AssetImage).where(
-                        AssetImage.character_id == cid)
-                        .order_by(AssetImage.id.desc())).all():
-                    if Path(r.file_path).exists() and _is_single_portrait(r.file_path):
-                        cands.append({"path": r.file_path, "kind": r.kind})
-            if ov.get(n) and Path(ov[n]).exists():
-                used_path, used_kind, source = ov[n], "override", "manual"
-            elif cands:
-                used_path, used_kind, source = cands[0]["path"], cands[0]["kind"], "auto"
+                cands = [{"path": p, "kind": "face_ref"} for p in _face_candidates(db, cid)]
+                # 与生成链路同源：override > 角色级脸锁 > 自动择优第一张
+                lock = getattr(c, "face_lock_path", "") or ""
+                if ov.get(n) and Path(ov[n]).exists():
+                    used_path, used_kind, source = ov[n], "override", "manual"
+                elif lock and Path(lock).exists():
+                    used_path, used_kind, source = lock, "face_lock", "locked"
+                elif cands:
+                    used_path, used_kind, source = cands[0]["path"], cands[0]["kind"], "auto"
             chars_out.append({"name": n, "character_id": cid, "used_path": used_path,
                               "used_kind": used_kind, "source": source,
                               "candidates": cands})
-        # 场景
+        # 场景：与生成链路同源（_scene_anchor 三级回退）；source 区分手动/锚点/自动回退
         scene_used, scene_src = "", ""
         if ov.get("__scene__") and Path(ov["__scene__"]).exists():
             scene_used, scene_src = ov["__scene__"], "manual"
         else:
-            sc = db.scalars(select(Scene).where(
-                Scene.project_id == s.project_id,
-                Scene.name == (s.scene_name or "").strip())).first()
-            if sc and getattr(sc, "anchor_path", "") and Path(sc.anchor_path).exists():
-                scene_used, scene_src = sc.anchor_path, "auto"
+            auto_scene = _scene_anchor(db, s)
+            if auto_scene:
+                scene_used = auto_scene
+                sc = db.scalars(select(Scene).where(
+                    Scene.project_id == s.project_id,
+                    Scene.name == (s.scene_name or "").strip())).first()
+                scene_src = ("anchor" if sc and sc.anchor_path
+                             and Path(sc.anchor_path).exists()
+                             and sc.anchor_path == auto_scene else "auto")
         scene_cands = [{"path": r.file_path, "kind": r.kind} for r in
                        db.scalars(select(AssetImage).where(
                            AssetImage.project_id == s.project_id,

@@ -47,6 +47,7 @@ class Character(Base):
     portrait_mode: Mapped[str] = mapped_column(String(20), default="sheet")  # sheet=三视图 / single=单人 / board=角色板
     gen_mode: Mapped[str] = mapped_column(String(24), default="auto")  # auto / compose(程序合成A) / board(角色板B) / layout(版式模型C)
     voice: Mapped[str] = mapped_column(String(80), default="")  # edge-tts 音色名（成片配音用；空=按性别自动分配）
+    face_lock_path: Mapped[str] = mapped_column(Text, default="")  # 角色级默认脸锁：钉死 IPAdapter 参考版本（空=自动择优）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -251,6 +252,7 @@ def _migrate():
             ("portrait_mode", "VARCHAR(20) DEFAULT 'sheet'"),
             ("gen_mode", "VARCHAR(24) DEFAULT 'auto'"),
             ("voice", "VARCHAR(80) DEFAULT ''"),
+            ("face_lock_path", "TEXT DEFAULT ''"),   # 角色级默认脸锁：钉死 IPAdapter 参考版本，100% 一致性
         ],
         "scenes": [("prompt_json", "TEXT DEFAULT '{}'"),
                    ("anchor_path", "TEXT DEFAULT ''")],
@@ -311,6 +313,7 @@ def task_desc(type_: str, params: dict) -> str:
         "shot_chain": lambda: f"末帧接力首帧（承上一镜）",
         "shot_extend": lambda: f"镜头 #{p.get('shot_id', '?')} 镜内延长",
         "grid9": lambda: "九宫格故事板",
+        "scene_anchor": lambda: "场景锚图补齐（45° iso 布局图→设锚）",
         "tts": lambda: f"{ep}台词配音（edge-tts）",
         "stitch": lambda: f"{ep}成片合成（拼接/混音/烧字幕）",
         "batch_frames": lambda: f"{ep}批量首帧（链式接力）",

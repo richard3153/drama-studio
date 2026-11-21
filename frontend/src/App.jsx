@@ -676,11 +676,23 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                 <div style={{ fontSize: 12 }}>
                   <b>{c.name}</b>
                   <span style={{ marginLeft: 8, color: 'var(--dim)' }}>
-                    当前：{c.used_path ? (c.source === 'manual' ? '手动指定' : `自动（${c.used_kind}）`) : '无可用人像参考'}
+                    当前：{c.used_path ? (c.source === 'manual' ? '手动指定'
+                      : c.source === 'locked' ? '角色默认脸锁（📌 已钉死版本）'
+                      : `自动择优（${c.used_kind}）`) : '无可用人像参考'}
                   </span>
                   {c.source === 'manual' &&
                     <button className="small ghost" style={{ marginLeft: 8 }}
                       onClick={() => setRef(refsFor, c.name, '')}>清除指定</button>}
+                  {c.used_path && c.character_id && c.source !== 'locked' &&
+                    <button className="small ghost" style={{ marginLeft: 8 }} title="钉死这张图为该角色所有镜头的 IPAdapter 参考（面部 100% 一致），其他镜头不再随版本漂移"
+                      onClick={async () => {
+                        try { await post(`/characters/${c.character_id}/face-lock`, { path: c.used_path }); load(); setGenMsg(`已锁定 ${c.name} 默认参考：该角色全部镜头统一用这张脸`) } catch (e) { alert('锁定失败：' + e.message) }
+                      }}>📌 设为默认参考</button>}
+                  {c.source === 'locked' &&
+                    <button className="small ghost" style={{ marginLeft: 8 }} title="解除后回到自动择优"
+                      onClick={async () => {
+                        try { await post(`/characters/${c.character_id}/face-lock`, { path: '' }); load(); setGenMsg(`已解除 ${c.name} 默认脸锁`) } catch (e) { alert('解除失败：' + e.message) }
+                      }}>🔓 解除脸锁</button>}
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                   <div title="当前使用">
@@ -700,7 +712,9 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
               <div style={{ fontSize: 12 }}>
                 <b>场景锚⚓ {refsData.scene.name || '（未设置场景）'}</b>
                 <span style={{ marginLeft: 8, color: 'var(--dim)' }}>
-                  当前：{refsData.scene.used_path ? (refsData.scene.source === 'manual' ? '手动指定' : '自动（资产页选定锚点）') : '无锚图'}
+                  当前：{refsData.scene.used_path ? (refsData.scene.source === 'manual' ? '手动指定'
+                    : refsData.scene.source === 'anchor' ? '场景锚点（资产页选定）'
+                    : '自动回退（iso 布局图/场景图，未手动设锚）') : '无锚图'}
                 </span>
                 {refsData.scene.source === 'manual' &&
                   <button className="small ghost" style={{ marginLeft: 8 }}
@@ -1491,9 +1505,22 @@ function AssetsPage({ project, refreshTasks, setStage }) {
     } catch (e) { setNotice(`删除失败：${e.message}`) }
   }
 
+  const autoAnchors = async () => {
+    try {
+      const r = await post(`/projects/${project.id}/auto-scene-anchors`, {})
+      setNotice(`场景锚图任务 #${r.task_id} 已入队：无锚场景自动生成 45° iso 布局全景图并设为锚点（已有锚图跳过），完成后分镜首帧自动注入锁环境一致性`)
+      refreshTasks()
+    } catch (e) { setNotice(`发起失败：${e.message}`) }
+  }
+
   const wall = (list, etype, landscape) => (
     <>
-      <h3 style={{ margin: '20px 0 10px', color: 'var(--accent)' }}>{ENTITY_LABEL[etype]}（{list.length}）<span className="page-sub" style={{ fontSize: 12 }}>点击卡片可编辑提示词 / 换模型 / 重新渲染</span></h3>
+      <h3 style={{ margin: '20px 0 10px', color: 'var(--accent)' }}>{ENTITY_LABEL[etype]}（{list.length}）
+        <span className="page-sub" style={{ fontSize: 12 }}>点击卡片可编辑提示词 / 换模型 / 重新渲染</span>
+        {etype === 'scene' &&
+          <button className="small ghost" style={{ marginLeft: 12 }} title="无锚场景自动生成 45° iso 等距剖面布局全景图并设为锚点（缩略图法）：分镜首帧注入此图锁定环境布局一致性；已有锚图的场景跳过"
+            onClick={autoAnchors}>⚓ 补齐场景锚图</button>}
+      </h3>
       <div className="grid">
         {list.map(a => (
           <div key={a.id} className={`asset-card ${landscape ? 'landscape' : ''}`} style={{ cursor: 'pointer', position: 'relative' }}
