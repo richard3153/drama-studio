@@ -271,6 +271,51 @@ async def _ipa_gen(comfy, model, prompt: str, negative: str, ref_path: str,
     return await comfy.run(wf, filename_prefix=prefix, save_root=save_root, timeout=timeout)
 
 
+def _motion_static_tokens(shot: Shot) -> str:
+    """运动动作控制 → 首帧/尾帧静态姿态 token（运行时兜底，与 script_service 组装同源）。
+
+    独立生成（不经 rebuild-prompts）时提示词可能落后于 motion_json 编辑，
+    生成前补上：身体姿态+手部动作+表情状态+视线。
+    """
+    try:
+        m = json.loads(getattr(shot, "motion_json", "") or "{}")
+    except Exception:
+        m = {}
+    if not isinstance(m, dict):
+        return ""
+    parts = []
+    if (m.get("posture") or "").strip():
+        parts.append(f"body posture: {m['posture'].strip()}")
+    if (m.get("gesture") or "").strip():
+        parts.append(f"hand action: {m['gesture'].strip()}")
+    if (m.get("expression") or "").strip():
+        parts.append(f"facial state: {m['expression'].strip()}")
+    if (m.get("gaze") or "").strip():
+        parts.append(f"gaze: {m['gaze'].strip()}")
+    return ", ".join(parts)
+
+
+def _motion_video_tokens(shot: Shot) -> str:
+    """运动动作控制 → 视频运动 token：幅度限定 + 次级联动 + 稳定性约束。"""
+    try:
+        m = json.loads(getattr(shot, "motion_json", "") or "{}")
+    except Exception:
+        m = {}
+    if not isinstance(m, dict):
+        return ""
+    inten = {"subtle": "subtle, minimal amplitude", "natural": "natural amplitude",
+             "strong": "broad, deliberate amplitude"}.get(m.get("intensity", ""), "")
+    parts = [m[k].strip() for k in ("posture", "gesture", "expression", "gaze")
+             if (m.get(k) or "").strip()]
+    if inten:
+        parts.append(f"action amplitude: {inten}")
+    if (m.get("secondary") or "").strip():
+        parts.append(f"secondary motion: {m['secondary'].strip()}")
+    parts.append("smooth natural motion, stable framing, no jitter, no morphing, "
+                 "feet do not slide")
+    return ", ".join(x for x in parts if x)
+
+
 def _scene_anchor(db, shot: Shot) -> str | None:
     """场景参考图三级回退（2026-11-22 治理：此前只认手动锚图，覆盖率≈0）：
 
@@ -347,6 +392,10 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
                 and "continuous" not in prompt:
             prompt = (prompt + ", continuous scene from the previous shot, same location, "
                       "consistent lighting and character appearance")
+    # 运行时兜底：motion_json 里存了动作控制但提示词未含 → 生成前补上（编辑即时生效）
+    mtok = _motion_static_tokens(shot)
+    if mtok and mtok[:24].lower() not in prompt.lower():
+        prompt = prompt + ", " + mtok
 
     update_progress(db, task, 0.15, f"生成{ '尾帧' if frame_type=='end' else '首帧' }（{model_key}）")
     comfy = ComfyUIAdapter()
@@ -480,6 +529,10 @@ async def generate_shot_video(db, task, params: dict) -> dict:
         length = min(length, 49)
     prompt = wrap_video_prompt(shot.video_prompt, family, duration,
                                has_end_frame=bool(shot.needs_end_frame))
+    # 运行时兜底：motion_json 动作控制 + 稳定性约束（编辑即时生效，旧提示词也补）
+    mtok = _motion_video_tokens(shot)
+    if mtok and "no morphing" not in prompt:
+        prompt = f"{prompt}, {mtok}"
 
     update_progress(db, task, 0.1, f"上传首帧/尾帧（{model_key}，{duration}s / {length} 帧）")
     comfy = ComfyUIAdapter()
@@ -774,6 +827,9 @@ async def extend_shot_video(db, task, params: dict) -> dict:
     start_name = await comfy.upload_image(str(last_png))
     # 续写段提示词：保持人物/场景/运镜基调，仅自然延续动作
     prompt = wrap_video_prompt(shot.video_prompt, family, duration, has_end_frame=False)
+    mtok = _motion_video_tokens(shot)
+    if mtok and "no morphing" not in prompt:
+        prompt = f"{prompt}, {mtok}"
     seed = random.randint(0, 2**31 - 1)
     overrides = {
         "positive_text": prompt,
@@ -912,6 +968,9 @@ async def generate_shot_talk(db, task, params: dict) -> dict:
     seed = random.randint(0, 2 ** 31 - 1)
     wf = comfy.load_template(TALK_WF)
     prompt = shot.video_prompt or shot.image_prompt or "a person talking"
+    mtok = _motion_video_tokens(shot)
+    if mtok:
+        prompt = f"{prompt}, {mtok}"
     overrides = {
         "WanVideoTextEncode.positive_prompt":
             f"{prompt}, the character is speaking, natural talking expressions, "

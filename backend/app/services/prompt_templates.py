@@ -36,7 +36,9 @@ NEG_BASE = {
     "shot_end_frame": ("extra people, new characters, changed identity, different costume color, "
                        "changed location, text, watermark, deformed limbs"),
     "shot_video": ("extra people, identity change, costume color change, location change, "
-                   "text, watermark, limb distortion, camera jump cut, flickering"),
+                   "text, watermark, limb distortion, camera jump cut, flickering, "
+                   "morphing, warping faces, sliding feet, sudden speed changes, "
+                   "duplicated limbs, jittery motion"),
     "asset_scene": ("people, person, human figure, silhouette, reflection of a person, "
                     "portrait in a frame, hands, text, watermark"),
     "asset_prop": ("people, hands, fingers, model, busy background, pattern background, "
@@ -52,10 +54,12 @@ SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
         "{% if characters %}, {{ characters }}{% endif %}"
         "{% if props %}, {{ props }}{% endif %}"
         "{% if action %}, {{ action }}{% endif %}"
+        "{% if motion %}, {{ motion }}{% endif %}"
         "{% if atmosphere %}, atmosphere: {{ atmosphere }}{% endif %}"
         "{% if prev %}, {{ prev }}{% endif %}"
         "{% if framing %}, {{ framing }}{% endif %}"
-        "{% if angle %}, {{ angle }} camera angle{% endif %}"
+        "{% if angle %}, {{ angle }}{% endif %}"
+        "{% if lens %}, {{ lens }}{% endif %}"
         "{% if light %}, lighting: {{ light }}{% endif %}"
         "{% if composition %}, {{ composition }}{% endif %}"
         "{% if lifelike %}, {{ lifelike }}{% endif %}"
@@ -67,6 +71,7 @@ SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
         "{% if characters %}, {{ characters }}{% endif %}"
         "{% if props %}, {{ props }}{% endif %}"
         "{% if end_action %}, final pose after the action: {{ end_action }}{% endif %}"
+        "{% if motion %}, {{ motion }}{% endif %}"
         "{% if prev %}, {{ prev }}{% endif %}"
         "{% if framing_end %}, {{ framing_end }}{% endif %}"
         "{% if composition %}, {{ composition }}{% endif %}"
@@ -74,14 +79,15 @@ SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
         "{% if quality %}, {{ quality }}{% endif %}",
     ),
     "shot_video": (
-        "镜头视频（默认：动作节拍 + 运镜向量）",
+        "镜头视频（默认：I2V 公式——图定义实体，文只管运动）",
         "{{ style_lock }}{% if scene %}, {{ scene }}{% endif %}"
         "{% if beats %}, action beats: {{ beats }}{% endif %}"
+        "{% if motion_cues %}, subject motion: {{ motion_cues }}{% endif %}"
         "{% if camera %}, camera: {{ camera }}{% endif %}"
+        "{% if motion_constraints %}, {{ motion_constraints }}{% endif %}"
         "{% if blocking %}, blocking: {{ blocking }}{% endif %}"
         "{% if character_path %}, character movement: {{ character_path }}{% endif %}"
         "{% if focus %}, focus: {{ focus }}{% endif %}"
-        "{% if props %}, {{ props }}{% endif %}"
         "{% if prev %}, {{ prev }}{% endif %}"
         "{% if continuity %}, continuity: {{ continuity }}{% endif %}"
         "{% if duration %}, {{ duration }}s single continuous take{% endif %}"

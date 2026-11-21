@@ -458,6 +458,17 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
     try { await patch(`/shots/${id}`, { ref_overrides: { [key]: path || '' } }) } catch (e) { alert('保存失败：' + e.message) }
     openRefs(id)
   }
+  // 运动动作控制编辑窗：身体部位级动作描述（静态姿态锚 + 视频运动 token）
+  const [motionFor, setMotionFor] = useState(null)
+  const [motionDraft, setMotionDraft] = useState({})
+  const openMotion = (s) => { setMotionFor(s.id); setMotionDraft({ ...(s.motion || {}) }) }
+  const saveMotion = async () => {
+    try {
+      await patch(`/shots/${motionFor}`, { motion: motionDraft })
+      await post(`/episodes/${episodeId}/rebuild-prompts`, {})
+      setMotionFor(null); load(); setGenMsg('动作控制已保存，全部提示词已重组装生效')
+    } catch (e) { alert('保存失败：' + e.message) }
+  }
   const refImg = (p, size, style) => p
     ? <img src={`/api/asset-file-by-path?path=${encodeURIComponent(p)}`} style={{ width: size, height: size * 1.25, objectFit: 'cover', borderRadius: 4, ...(style || {}) }} />
     : <div style={{ width: size, height: size * 1.25, border: '1px dashed #556', borderRadius: 4, fontSize: 10, color: 'var(--dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>无</div>
@@ -596,6 +607,8 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                 </button>
                 <button className="small ghost" onClick={() => openRefs(s.id)}
                   title="查看本镜生成实际引用的角色/场景资产图，可手动指定换用">🔍 参考{(s.ref_overrides && Object.keys(s.ref_overrides).length) ? ' ✓' : ''}</button>
+                <button className="small ghost" onClick={() => openMotion(s)}
+                  title="运动动作控制：身体姿态/手部动作/表情状态/视线/动作幅度/次级联动——把“做什么”钉到“怎么做”，压随机性">🎬 动作{Object.keys(s.motion || {}).length ? ' ✓' : ''}</button>
                 {s.needs_end_frame &&
                   <button className="small ghost" disabled={!!busy[s.id]}
                     onClick={() => gen(s.id, 'frame', { frame_type: 'end' })}>尾帧</button>}
@@ -739,6 +752,43 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                   {refsData.props.map(p => `${p.name}（${p.asset_count > 0 ? `资产库 ${p.asset_count} 张，仅提示词级引用` : '无定妆图，提示词级引用'}）`).join('、')}
                 </span>
               </div>)}
+          </div>
+        </div>)}
+      {motionFor != null && (
+        <div onClick={() => setMotionFor(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#1c2836', border: '1px solid #3a4a5a', borderRadius: 10,
+              padding: '14px 16px', maxWidth: 560, width: '92%', fontSize: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <b>🎬 运动动作控制</b>
+              <span style={{ color: 'var(--dim)', fontSize: 11 }}>英文填写（CLIP/Wan 只认英文）；保存后自动重组装提示词</span>
+              <button className="small ghost" style={{ marginLeft: 'auto' }} onClick={() => setMotionFor(null)}>关闭</button>
+            </div>
+            {[['posture', '身体姿态', 'standing with weight on one leg / seated, leaning forward / crouched beside the desk'],
+              ['gesture', '手部动作（手级细节）', 'hands clasped tightly, knuckles white / one hand braced on the table edge'],
+              ['expression', '表情状态（微表情）', 'jaw clenched, breathing shallow / faint relieved smile, eyes still wary'],
+              ['gaze', '视线方向', 'eyes fixed on the contract / looking past the window, unfocused / glancing back over the shoulder'],
+              ['secondary', '次级联动（物理规律）', 'hair strands drifting with the step, coat hem swaying / breath fog in cold air']].map(([k, zh, hint]) => (
+              <div key={k} style={{ marginTop: 8 }}>
+                <div style={{ color: 'var(--dim)' }}>{zh} <span style={{ fontSize: 10 }}>示例：{hint}</span></div>
+                <input value={motionDraft[k] || ''} placeholder={hint}
+                  onChange={e => setMotionDraft(d => ({ ...d, [k]: e.target.value }))}
+                  style={{ width: '100%', fontSize: 12, marginTop: 2 }} />
+              </div>))}
+            <div style={{ marginTop: 8, color: 'var(--dim)' }}>动作幅度（视频运动强度）</div>
+            <select value={motionDraft.intensity || ''} style={{ fontSize: 12, marginTop: 2 }}
+              onChange={e => setMotionDraft(d => ({ ...d, intensity: e.target.value }))}>
+              <option value="">（默认，不限定）</option>
+              <option value="subtle">subtle 轻微（对话/凝视）</option>
+              <option value="natural">natural 自然（日常动作）</option>
+              <option value="strong">strong 大（冲突/奔跑）</option>
+            </select>
+            <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+              <button className="small" onClick={saveMotion}>保存并重组装提示词</button>
+              <button className="small ghost" onClick={() => setMotionDraft({})}>清空</button>
+            </div>
           </div>
         </div>)}
     </div>

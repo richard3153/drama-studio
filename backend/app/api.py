@@ -1314,6 +1314,7 @@ def _shot_dict(s: Shot, scene_anchor: str | None = None) -> dict:
         "light": s.light, "composition": s.composition,
         "characters": json.loads(s.characters_json or "[]"),
         "props": json.loads(s.props_json or "[]"),
+        "motion": json.loads(getattr(s, "motion_json", "") or "{}"),
         "dialogue": s.dialogue, "sfx": s.sfx,
         "image_prompt": s.image_prompt, "end_frame_prompt": s.end_frame_prompt,
         "video_prompt": s.video_prompt, "needs_end_frame": s.needs_end_frame,
@@ -1356,6 +1357,7 @@ def list_shots(eid: int):
 class ShotUpdate(BaseModel):
     dialogue: str | None = None    # 台词（「角色名（语气）：台词」，说话镜/配音共用）
     ref_overrides: dict | None = None   # 手动指定参考 {"角色名": path, "__scene__": path}，空值=清除
+    motion: dict | None = None     # 运动动作控制 {posture,gesture,expression,gaze,intensity,secondary}
     camera_move: str | None = None
     camera_speed: str | None = None
     camera_dir: str | None = None
@@ -1398,6 +1400,17 @@ def update_shot(sid: int, body: ShotUpdate):
                     else:
                         cur.pop(ok, None)
                 s.ref_overrides_json = json.dumps(cur, ensure_ascii=False)
+            elif k == "motion":
+                # 运动动作控制：字段白名单 + 值裁剪，防任意键/超长文本进提示词
+                cur = json.loads(getattr(s, "motion_json", "") or "{}")
+                for mk in ("posture", "gesture", "expression", "gaze",
+                           "intensity", "secondary"):
+                    mv = (v.get(mk) or "").strip()
+                    if mv:
+                        cur[mk] = mv[:200]
+                    else:
+                        cur.pop(mk, None)
+                s.motion_json = json.dumps(cur, ensure_ascii=False)
             elif hasattr(s, k):
                 setattr(s, k, v)
         if body.needs_end_frame is None and (body.camera_move or body.character_path):

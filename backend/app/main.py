@@ -12,12 +12,16 @@ from .db import init_db
 
 init_db()
 
-# 系统预置提示词模板（幂等写入，全局 scope）
-from .db import SessionLocal  # noqa: E402
+# 系统预置提示词模板（幂等写入）：全局 scope + 逐项目 scope 都要同步——
+# 项目创建时会复制一份 project 级系统模板，只同步全局的话旧项目永远用旧措辞。
+from .db import SessionLocal, Project  # noqa: E402
 from .services.prompt_templates import seed_templates  # noqa: E402
+from sqlalchemy import select as _sa_select  # noqa: E402
 
 with SessionLocal() as _s:
     seed_templates(_s, project_id=None)
+    for _p in _s.scalars(_sa_select(Project)).all():
+        seed_templates(_s, project_id=_p.id)
 
 # 僵尸任务收尸：进程重启后遗留的 running/pending 任务不可能再被执行（asyncio 任务
 # 随旧进程消失），启动时统一标 failed，避免接口永远等一个卡死的任务。

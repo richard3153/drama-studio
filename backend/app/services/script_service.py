@@ -86,13 +86,111 @@ SHOT_SCHEMA = {
 # 判定“这个镜头必须出尾帧”的运镜集合（位移型）
 MOVING_CAMERA = {"推", "拉", "横摇", "竖摇", "移", "跟", "升降", "环绕", "手持"}
 
-# 景别/角度中→英（v2v/i2v 模型只认英文，避免中文残留）
-SHOT_SIZE_EN = {"远景": "extreme wide shot", "全景": "wide shot", "中景": "medium shot",
-                "近景": "close shot", "特写": "close-up", "大特写": "extreme close-up",
-                "中近景": "medium close-up"}
-ANGLE_EN = {"平视": "eye level", "俯拍": "high angle", "仰拍": "low angle",
-            "过肩": "over-the-shoulder", "斜角": "dutch angle", "航拍": "aerial view",
-            "POV": "POV", "主观": "POV"}
+# 景别/角度中→英（v2v/i2v 模型只认英文，避免中文残留）。
+# 2026-11-22 影视语法强化：每条=「术语 + 可见构图后果」双锚点（Domer/AeliaVision
+# 摄影机语言指南方法论）——只给术语时模型随机发挥，后果短语把取景钉死。
+SHOT_SIZE_EN = {
+    "远景": "extreme wide shot, subject small in the environment, environment dominates the frame",
+    "全景": "wide shot, full body visible with breathing room, blocking and spatial context readable",
+    "中景": "medium shot, framed from the waist up, body language readable",
+    "中近景": "medium close-up, framed from the chest up, facial expression prominent",
+    "近景": "medium close-up, chest and face fill most of the frame",
+    "特写": "close-up, face fills the frame, subtle micro-expression visible",
+    "大特写": "extreme close-up on a single detail, shallow depth of field, tactile texture",
+}
+ANGLE_EN = {
+    "平视": "eye-level camera, natural grounded human perspective",
+    "俯拍": "high angle looking down, subject feels observed and vulnerable",
+    "仰拍": "slight low angle looking up, subject visually dominant",
+    "过肩": "over-the-shoulder framing, viewer placed behind the character",
+    "斜角": "dutch angle, horizon tilted about 20 degrees, unease",
+    "航拍": "bird's-eye view from directly above, geographic clarity",
+    "POV": "first-person POV shot, immediate surroundings at frame edge",
+    "主观": "first-person POV shot, immediate surroundings at frame edge",
+}
+# 焦段词典（BFA/Domer 镜头语言）：焦距决定空间关系与透视，不是装饰词
+LENS_EN = {
+    "24mm": "24mm wide-angle lens, expanded space, slight edge distortion",
+    "35mm": "35mm lens, natural documentary perspective",
+    "50mm": "50mm lens, balanced human perspective, minimal distortion",
+    "85mm": "85mm lens, compressed background, flattering facial perspective",
+    "135mm": "135mm telephoto lens, strong compression, subject isolated from background",
+}
+# 视频 i2v 运动稳定性约束（Alibaba 官方 Wan I2V 指南：图定义实体/场景，文只管运动；
+# 稳定词是必须的——模型默认倾向抖动与脚部滑移）
+MOTION_STABILITY = ("smooth natural motion, stable framing, no jitter, no morphing, "
+                    "no sudden speed changes, feet and objects do not slide, "
+                    "one primary camera move per shot")
+
+
+def _en_lens(v: str) -> str:
+    """focal_length 槽位 → 带透视后果的镜头短语；未知值返回空串。"""
+    v = (v or "").strip()
+    if not v:
+        return ""
+    return LENS_EN.get(v, LENS_EN.get(f"{v.replace('mm', '')}mm", ""))
+
+
+# ---------- 运动动作控制（2026-11-22 新模块：把"做什么"升级为"怎么做"） ----------
+# 方法论（PoseGuide + 微表情 + 次级运动）：静态姿态=身体姿态+肢体细节（手级）+表情状态+视线方向；
+# 视频运动=主动作幅度限定+次级联动（发丝/衣角/呼吸等物理规律的可见证据）。
+_INTENSITY_EN = {"subtle": "subtle, minimal amplitude", "natural": "natural amplitude",
+                 "strong": "broad, deliberate amplitude"}
+
+
+def _motion_image_tokens(motion: dict) -> str:
+    """运动动作控制 → 首帧/尾帧静态姿态 token。"""
+    if not isinstance(motion, dict):
+        return ""
+    parts = []
+    if _clean(motion.get("posture")):
+        parts.append(f"body posture: {_clean(motion['posture'])}")
+    if _clean(motion.get("gesture")):
+        parts.append(f"hand action: {_clean(motion['gesture'])}")
+    if _clean(motion.get("expression")):
+        parts.append(f"facial state: {_clean(motion['expression'])}")
+    if _clean(motion.get("gaze")):
+        parts.append(f"gaze: {_clean(motion['gaze'])}")
+    return _clean(", ".join(parts))
+
+
+def _motion_video_tokens(motion: dict) -> str:
+    """运动动作控制 → 视频运动 token：主动作 + 幅度 + 次级联动。"""
+    if not isinstance(motion, dict):
+        return ""
+    parts = []
+    for k in ("posture", "gesture", "expression", "gaze"):
+        if _clean(motion.get(k)):
+            parts.append(_clean(motion[k]))
+    inten = _INTENSITY_EN.get(motion.get("intensity", ""), "")
+    if inten:
+        parts.append(f"action amplitude: {inten}")
+    if _clean(motion.get("secondary")):
+        parts.append(f"secondary motion: {_clean(motion['secondary'])}")
+    return _clean(", ".join(parts))
+
+
+def _camera_motion_seg(move: str, direction: str = "", speed: str = "",
+                       framing_start: str = "", framing_end: str = "") -> str:
+    """运镜向量 → 英文段（统一版，两处组装共用）。
+
+    环绕默认限幅 <45°（全环绕必甩出参照系）、手持带 subtle drift（手持≠乱晃）。
+    """
+    if not move or move == "固定":
+        return ""
+    d = {"推": "dolly in / push in", "拉": "dolly out / pull back",
+         "横摇": "pan", "竖摇": "tilt", "移": "truck / track sideways",
+         "跟": "follow the subject", "升降": "crane up-down",
+         "环绕": "orbit around the subject (under 45 degrees)",
+         "手持": "handheld follow with subtle drift"}.get(move, move)
+    dr = {"left": "to the left", "right": "to the right", "up": "upward",
+          "down": "downward", "in": "closer", "out": "wider"}.get(direction, "")
+    sp = {"slow": "slow and steady", "normal": "normal pace",
+          "fast": "fast", "whip": "whip-fast"}.get(speed, "")
+    seg = f"{d} {dr} {sp}".strip()
+    if framing_start and framing_end:
+        seg += f", from {_en_size(framing_start)} to {_en_size(framing_end)}"
+    return seg
 
 
 def _en_size(v: str) -> str:
@@ -672,6 +770,12 @@ async def _breakdown_scene(scene: dict, assets: dict, project_name: str,
         "并给 category=core/bond；货架、门窗等环境陈设一律不列（它们属于场景槽位 elements）\n"
         "- scene 字段填该镜头所在场景名；\n"
         "- subject_action/light/composition 用英文、客观具体、可视觉化，禁止抽象形容词（帅气/霸气）\n"
+        "- subject_action 必须写到身体部位级（谁+身体部位+做什么+朝向），"
+        "如 'she grips the pen tightly, knuckles white, eyes fixed on the contract'；"
+        "禁止整段氛围式描写；表情写微表情状态不写形容词\n"
+        "- shot_size 服从信息量原则：交代空间用远景/全景、对话用中景/近景、情绪转折用特写；"
+        "camera_angle 服务于心理表达（仰拍=压迫/俯拍=弱势/平视=客观记录），禁止随机选；"
+        "focal_length 按透视需要选（24mm/35mm 空间感、50mm 客观、85mm/135mm 人物压缩），没有把握就留空\n"
         "- dialogue 用中文台词原文；多句台词每行一句，格式「角色名（语气）：台词」，"
         "语气从【平静/低语/紧张/急促/愤怒/悲伤/惊喜/温柔/迟疑/兴奋/冷峻】中按剧情选一个，"
         "如「小安（低语）：欢迎光临」；旁白行不用前缀直接写；shot_size/camera 用中文\n"
@@ -995,10 +1099,18 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "quality": QUALITY_SUFFIX,
         }
 
+        # 运动动作控制（分镜调整项）：静态姿态锚 + 视频运动 token
+        motion_ctl = shot.get("motion") or {}
+        motion_img = _motion_image_tokens(motion_ctl)
+        motion_vid = _motion_video_tokens(motion_ctl)
+        lens_tok = _en_lens(shot.get("focal_length", ""))
+
         # 1) 首帧：动作起拍（trigger），构图/景别/光影
         vars_ff = dict(common)
         vars_ff.update({
             "action": _clean(pick_beat(beats, "trigger") or slots_en.get("subject_action", "")),
+            "motion": motion_img,
+            "lens": lens_tok,
             "atmosphere": _clean(shot.get("atmosphere", "")),
             "prev": _clean(shot.get("prev_summary", "")),
             "framing": _en_size(slots_en.get("shot_size", "")),
@@ -1017,6 +1129,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             vars_ef = dict(common)
             vars_ef.update({
                 "end_action": _clean(pick_beat(beats, "aftermath") or slots_en.get("end_action", "")),
+                "motion": motion_img,
                 "prev": _clean(shot.get("prev_summary", "")),
                 "framing_end": _en_size(slots_en.get("framing_end", "")),
                 "composition": _clean(slots_en.get("composition", "")),
@@ -1040,28 +1153,16 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
         })
         shot["key_frame_prompt"] = render(tpl_ff, vars_kf)
 
-        # 4) 视频：三拍时间轴 + 运镜向量 + 站位 + 连续性
-        motion = []
-        if shot.get("camera_move") and shot["camera_move"] != "固定":
-            d = {"推": "dolly in / push in", "拉": "dolly out / pull back",
-                 "横摇": "pan", "竖摇": "tilt", "移": "truck / track sideways",
-                 "跟": "follow the subject", "升降": "crane up-down",
-                 "环绕": "orbit around the subject", "手持": "handheld follow"}.get(
-                shot["camera_move"], shot["camera_move"])
-            direction = {"left": "to the left", "right": "to the right", "up": "upward",
-                         "down": "downward", "in": "closer", "out": "wider"}.get(
-                shot.get("camera_dir", ""), "")
-            speed = {"slow": "slow and steady", "normal": "normal pace",
-                     "fast": "fast", "whip": "whip-fast"}.get(shot.get("camera_speed", ""), "")
-            seg = f"{d} {direction} {speed}".strip()
-            if shot.get("framing_start") and shot.get("framing_end"):
-                seg += f", from {_en_size(shot['framing_start'])} to {_en_size(shot['framing_end'])}"
-            motion.append(seg)
-
+        # 4) 视频：三拍时间轴 + 运镜向量 + 站位 + 连续性（I2V 公式：图定实体，文只管运动）
+        cam_seg = _camera_motion_seg(shot.get("camera_move", ""), shot.get("camera_dir", ""),
+                                     shot.get("camera_speed", ""), shot.get("framing_start", ""),
+                                     shot.get("framing_end", ""))
         vars_vd = dict(common)
         vars_vd.update({
             "beats": beats_text(beats, shot.get("duration", 4)),
-            "camera": ", ".join(motion),
+            "motion_cues": motion_vid,
+            "camera": cam_seg,
+            "motion_constraints": MOTION_STABILITY,
             "blocking": _clean(shot.get("blocking", "")),
             "character_path": _clean(shot.get("character_path", "")),
             "focus": shot.get("focus_transition", "") if shot.get("focus_transition") != "none" else "",
@@ -1076,7 +1177,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             shot["video_prompt"] = ", ".join(x for x in [
                 s["style_lock"] if char_looks else style_lock_for("scene", preset), scene_concept,
                 _clean(shot["image_slots"].get("subject_action")),
-                ", ".join(motion), _en_size(shot["shot_size"]),
+                motion_vid, cam_seg, MOTION_STABILITY, _en_size(shot["shot_size"]),
                 _en_angle(shot.get("camera_angle", "")), s["motion_hint"]] if x)
         shot["video_template_id"] = tid_vd
 
@@ -1173,6 +1274,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "character_path": r.character_path, "duration": r.duration,
             "characters": json.loads(r.characters_json or "[]"),
             "props": json.loads(r.props_json or "[]"),
+            "motion": json.loads(getattr(r, "motion_json", "") or "{}"),
+            "focal_length": getattr(r, "focal_length", "") or "",
             "image_slots": {"subject_action": r.subject_action, "light": r.light,
                             "composition": r.composition, "shot_size": r.shot_size,
                             "framing_end": r.framing_end},
@@ -1210,6 +1313,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         v = dict(common)
         v.update({
             "action": _clean(pick_beat(d["action_beats"], "trigger") or d["action"]),
+            "motion": _motion_image_tokens(d.get("motion") or {}),
+            "lens": _en_lens(d.get("focal_length", "")),
             "atmosphere": _clean(r.atmosphere), "framing": _en_size(r.shot_size),
             "prev": _clean(d.get("prev_summary", "")),
             "angle": _en_angle(r.camera_angle), "light": _clean(r.light),
@@ -1220,6 +1325,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         r.prompt_template_id = tid_x
         v2 = dict(common)
         v2.update({"end_action": _clean(pick_beat(d["action_beats"], "aftermath") or d["action"]),
+                   "motion": _motion_image_tokens(d.get("motion") or {}),
                    "prev": _clean(d.get("prev_summary", "")),
                    "framing_end": _en_size(r.framing_end or r.shot_size),
                    "composition": _clean(r.composition)})
@@ -1234,25 +1340,16 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         })
         r.key_frame_prompt = render(tpl_ff, v3)
 
-        motion = []
-        if r.camera_move and r.camera_move != "固定":
-            mv = {"推": "dolly in / push in", "拉": "dolly out / pull back",
-                  "横摇": "pan", "竖摇": "tilt", "移": "truck / track sideways",
-                  "跟": "follow the subject", "升降": "crane up-down",
-                  "环绕": "orbit around the subject", "手持": "handheld follow"}.get(
-                r.camera_move, r.camera_move)
-            dr = {"left": "to the left", "right": "to the right", "up": "upward",
-                  "down": "downward", "in": "closer", "out": "wider"}.get(r.camera_dir, "")
-            sp = {"slow": "slow and steady", "normal": "normal pace",
-                  "fast": "fast", "whip": "whip-fast"}.get(r.camera_speed, "")
-            seg = f"{mv} {dr} {sp}".strip()
-            if r.framing_start and r.framing_end:
-                seg += f", from {_en_size(r.framing_start)} to {_en_size(r.framing_end)}"
-            motion.append(seg)
+        cam_seg = _camera_motion_seg(r.camera_move or "", r.camera_dir or "",
+                                     r.camera_speed or "", r.framing_start or "",
+                                     r.framing_end or "")
         v4 = dict(common)
         v4.update({
             "beats": beats_text(d["action_beats"], r.duration),
-            "camera": ", ".join(motion), "blocking": _clean(r.blocking),
+            "motion_cues": _motion_video_tokens(d.get("motion") or {}),
+            "camera": cam_seg,
+            "motion_constraints": MOTION_STABILITY,
+            "blocking": _clean(r.blocking),
             "character_path": _clean(r.character_path),
             "focus": r.focus_transition if r.focus_transition != "none" else "",
             "prev": _clean(d.get("prev_summary", "")),

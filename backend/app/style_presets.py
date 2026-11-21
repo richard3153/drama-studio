@@ -302,7 +302,11 @@ PROP_SPEC = ("single product shot, one isolated item, centered composition, "
              "seamless pure white studio background, soft top light with subtle contact shadow, "
              "macro material detail, no hands, no people, no other objects")
 
-QUALITY_SUFFIX = "natural texture, authentic detail, subtle grain, restrained rendering"
+# 2026-11-22 强化（hyper-realism 方法论）：去掉泛化赞美词（masterpiece/8K 类只抬高饱和度
+# 与塑料感），换成摄影机/材质语言——给模型"怎么拍"而不是"拍得好"。
+QUALITY_SUFFIX = ("natural texture, authentic detail, subtle film grain, realistic fabric "
+                  "weight, visible pores and flyaway hairs, natural color grade, "
+                  "unretouched look, restrained rendering")
 
 # ---------- 活人感机制（去 AI 塑料感） ----------
 # 依据：生活化瑕疵 + 真实光影 + 非模板姿态 + 10%微调 + 规避过度渲染
@@ -359,8 +363,10 @@ NATURAL_POSE = ("captured mid-action, natural off-balance stance, asymmetric sho
 
 ANTI_OVER_RENDER_POS = ("unretouched photography feel, natural contrast, "
                         "restrained highlights, matte midtones, no plastic gloss")
-ANTI_OVER_RENDER_NEG = ("over-sharpened, hdr halo, oversaturated, plastic skin, airbrushed, "
-                        "cgi plastic look, flawless doll face, glossy over-polished, "
+ANTI_OVER_RENDER_NEG = ("over-sharpened, hdr halo, oversaturated, plastic skin, waxy skin, "
+                        "airbrushed, poreless glass skin, beauty filter, instagram filter, "
+                        "cgi plastic look, 3d render look, flawless doll face, dead glassy eyes, "
+                        "glossy over-polished, perfect symmetry, "
                         "stiff symmetrical pose, mannequin posture, t-pose, "
                         "perfectly centered portrait")
 

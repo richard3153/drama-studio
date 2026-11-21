@@ -169,6 +169,7 @@ class Shot(Base):
     next_goal: Mapped[str] = mapped_column(Text, default="")
     continuity_guidance: Mapped[str] = mapped_column(Text, default="")
     ref_overrides_json: Mapped[str] = mapped_column(Text, default="{}")  # 手动指定参考：{"角色名": path, "__scene__": path}
+    motion_json: Mapped[str] = mapped_column(Text, default="{}")  # 运动动作控制：{posture,gesture,expression,gaze,intensity,secondary}
     first_frame_path: Mapped[str] = mapped_column(Text, default="")
     end_frame_path: Mapped[str] = mapped_column(Text, default="")
     video_path: Mapped[str] = mapped_column(Text, default="")
@@ -271,6 +272,7 @@ def _migrate():
             ("next_goal", "TEXT DEFAULT ''"),
             ("continuity_guidance", "TEXT DEFAULT ''"),
             ("ref_overrides_json", "TEXT DEFAULT '{}'"),
+            ("motion_json", "TEXT DEFAULT '{}'"),
         ],
     }
     with engine.connect() as conn:
