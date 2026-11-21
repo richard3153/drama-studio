@@ -691,7 +691,7 @@ async def auto_scene_anchors(db, task, params: dict) -> dict:
     from sqlalchemy import select
     from ..db import Scene
     from ..scheduler.queue import update_progress
-    from .prompt_templates import assemble_scene_prompt
+    from ..style_presets import assemble_scene_prompt
 
     pid = params["project_id"]
     project = db.get(Project, pid)
