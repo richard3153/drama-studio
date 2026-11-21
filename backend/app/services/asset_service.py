@@ -264,8 +264,8 @@ async def generate_asset(db, task, params: dict) -> dict:
         params["portrait_mode"] = "sheet"
         # 三视图 sheet = 宽横幅版式（16:9，1344x768）。
         # 兜底修正：此前默认 832x1216 竖版，横幅三视图会被压成竖条崩版。
-        if not (params.get("width") and params.get("height")):
-            params["width"], params["height"] = 1344, 768
+        w = int(params.get("width") or 1344)
+        h = int(params.get("height") or 768)
     else:
         # 场景/道具跟随项目全局画幅（角色定妆照固定竖版不参与）
         from ..aspect import asset_dims
