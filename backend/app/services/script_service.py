@@ -79,6 +79,7 @@ SHOT_SCHEMA = {
         "subject_action": "谁在做什么，客观具体可视觉化（英文，禁止抽象形容词）",
         "light": "本镜头光影（英文）",
         "composition": "构图与角度，如过肩/仰视（英文）",
+        "beat": "叙事拍点：hook|pressure|escalation|turn|peak|cliffhanger|atmosphere（按留存波形分配，见拆解要求）",
     }],
     "new_characters": [], "new_scenes": [], "new_props": [],
 }
@@ -638,16 +639,54 @@ def _scene_script_text(scene: dict) -> str:
 # ---------- 4. 拆解（分场景 + 资产强制引用 + 代码组装提示词） ----------
 
 CUTTING_RULES = (
-    "切镜原则（20年经验导演，必须遵守）：\n"
+    "切镜原则（20年经验导演的 coverage 覆盖语法，必须遵守）：\n"
     "1. 情绪显著转变处切镜，情绪积累用2-3个镜头铺垫\n"
-    "2. 复杂动作拆“准备→执行→结果”多个镜头\n"
+    "2. 复杂动作拆“准备→执行→结果”多个镜头，剪接点优先落在动作中（cut on action）\n"
     "3. 人物增减/位置关系/主导关系变化时切新镜\n"
-    "4. 场景或时间切换必须新镜，转场可用1-2s专用镜头\n"
-    "5. 对话遵循视线乒乓：说话者→聆听者交替切镜\n"
-    "6. 景别/角度/运镜有意义变化即新镜\n"
-    "7. 特效/关键道具独占镜头并给足时长\n"
-    "8. 每镜头3-8秒；景别循序渐进（远→全→中→近→特），不要跳切"
+    "4. 场景或时间切换必须新镜，转场可用1-2s专用镜头；场景开场用定场镜"
+    "（establishing，全景/远景交代空间），长场景中段可回插一次 re-establishing 重定场\n"
+    "5. 对话遵循正反打（shot/reverse-shot）+过肩（OTS）：说话者→聆听者交替切镜，"
+    "相邻两镜保持在同一 180° 轴线一侧，视线方向（eyeline）必须匹配，禁止越轴乱跳\n"
+    "6. 情绪揭示优先给反应镜（reaction shot）：关键台词/消息落地后，切听者面部特写——"
+    "重场戏的戏眼常在听者脸上而非说者\n"
+    "7. 关键证据/道具/手机屏幕/信件用插入镜（insert）独占特写并给足时长，"
+    "插入镜前后留衔接帧\n"
+    "8. 景别/角度/运镜有意义变化即新镜；景别循序渐进（远→全→中→近→特）不跳切，"
+    "高潮段落允许特写↔全景大跨度对切制造冲击\n"
+    "9. 每 45 秒至少安排一个 mini-climax 小爆点镜（打脸/揭露/冲突顶点），"
+    "爆点镜用最强镜头语言（特写+慢推+fast）\n"
+    "10. 每镜头3-8秒；节拍错开：爽点刚落立刻抛新麻烦，不给观众松劲离场的空档"
 )
+
+# 竖屏留存波形（猫斯卡/DramaCanvas/Lollipop 方法论）：单集情绪蓄压释放循环。
+RHYTHM_RULES = (
+    "剧情节奏（竖屏短剧留存波形，硬性遵守）：\n"
+    "- 每个场景按留存波形分配镜头拍点 beat 字段：hook（开场钩子，3秒内截停：耳光/摔门/"
+    "证据出现/一句狠话，禁止背景铺垫、慢镜空镜、人物独白开场）→ pressure（反派施压/"
+    "主角隐忍）→ escalation（激化：证物/第三方/交锋，矛盾指数升级）→ turn/peak"
+    "（反转与情绪峰值）→ cliffhanger（集尾留扣：门被推开/真相到嘴边/反击刚要开始/"
+    "角色遇险——绝不给圆满收尾，把危机截断在半空）→ atmosphere（氛围过渡镜）\n"
+    "- 每场首镜若承担 hook，直接从冲突最糟时刻切入（in medias res），不从事件之前演起\n"
+    "- 镜头语言服务拍点：hook/peak/cliffhanger 用特写+强光比+手持或 fast；"
+    "pressure 用中景+平视+normal；atmosphere 用全景+slow\n"
+    "- 禁止原地对话堆积：连续3镜以上无新信息/新动作/新冲突即为失败拆解，"
+    "必须合并或砍掉；每个镜头删掉后剧情若不受影响，这个镜头就不该存在"
+)
+
+
+# 拍点 → 镜头张力 token：beat 不只标注，还落到提示词——
+# hook/turn/peak/cliffhanger 镜头获得更强的表演张力与氛围压迫词（组进 vocab 串）。
+BEAT_TOKENS: dict[str, str] = {
+    "hook": "charged opening tension, something visibly wrong in the frame",
+    "turn": "pivot moment energy, expression shifting decisively",
+    "peak": "heightened dramatic tension, maximal emotional intensity in performance",
+    "cliffhanger": "suspense withheld at the brink, unresolved tension lingering in frame",
+}
+BEAT_SET = set(BEAT_TOKENS) | {"pressure", "escalation", "atmosphere"}
+
+
+def _beat_tokens(beat: str) -> str:
+    return BEAT_TOKENS.get((beat or "").strip().lower(), "")
 
 
 def _load_asset_lists(db, project_id: int) -> dict:
@@ -762,7 +801,7 @@ async def _breakdown_scene(scene: dict, assets: dict, project_name: str,
                          "new_props": CANDIDATE_SCHEMA["props"]}, ensure_ascii=False)
     system = (
         f"你是拥有20年资历的影视导演与分镜设计师，为短剧《{project_name}》拆解分镜。\n"
-        f"{CUTTING_RULES}\n"
+        f"{CUTTING_RULES}\n\n{RHYTHM_RULES}\n"
         "输出 JSON，结构严格遵守：\n" + schema +
         "\n要求：\n"
         "- characters/scene/props 只能引用资产清单中的名字；清单没有的新实体放入 new_*（同样格式）\n"
@@ -958,6 +997,9 @@ async def breakdown_episode(db, task, params: dict) -> dict:
         for shot in data["shots"]:
             move = (shot.get("camera_move") or "固定").strip()
             path = (shot.get("character_path") or "").strip()
+            beat = (shot.get("beat") or "").strip().lower()
+            if beat not in BEAT_SET:
+                beat = ""   # LLM 偶发编造拍点值 → 丢弃，宁缺勿错
             # 决策：位移/运镜镜自动出尾帧，纯对话镜不出
             needs_end = 1 if (move in MOVING_CAMERA or path) else 0
             all_shots.append({
@@ -965,6 +1007,7 @@ async def breakdown_episode(db, task, params: dict) -> dict:
                 "scene_no": scene["no"], "scene_name": scene["name"],
                 "int_ext": scene["int_ext"], "tod": scene["tod"],
                 "duration": int(shot.get("duration") or 4),
+                "beat": beat,
                 "shot_size": shot.get("shot_size", "中景"),
                 "camera": shot.get("camera", "固定"),
                 "camera_move": move,
@@ -1100,7 +1143,10 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                 props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
-            "vocab": combined_shot_vocab(preset, _genre),
+            # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
+            # 更强的表演张力词，把留存波形落到提示词层面）
+            "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
+                                           _beat_tokens(shot.get("beat"))) if x),
             "quality": QUALITY_SUFFIX,
         }
 
@@ -1317,7 +1363,10 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                 props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
-            "vocab": combined_shot_vocab(preset, _genre),
+            # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
+            # 更强的表演张力词，把留存波形落到提示词层面）
+            "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
+                                           _beat_tokens(shot.get("beat"))) if x),
             "quality": QUALITY_SUFFIX,
         }
         v = dict(common)
