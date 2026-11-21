@@ -1345,12 +1345,11 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                       <select value={genMode} onChange={e => {
                         const gm = e.target.value
                         setGenMode(gm)
-                        if (gm === 'sheet' || gm === 'layout' || gm === 'compose') { setW(1344); setH(768) }
+                        if (gm === 'layout' || gm === 'compose') { setW(1344); setH(768) }
                       }} style={{ flex: 1 }}>
-                        <option value="auto">自动（按风格族推荐）</option>
-                        <option value="compose">A · 程序合成三视图（正/侧/背分3次出图+PIL拼版，同seed）｜ 8G 显存足够，耗时约 3 倍</option>
-                        <option value="layout">C · 版式模型整张多视图（Qwen-Image/Flux2）｜ 10G 以上推荐，8G 可跑但慢 3–5 倍</option>
-                        <option value="sheet">单张多视图（低档底模直接出，动漫/国潮最稳）｜ 4–6G</option>
+                        <option value="auto">自动（程序拼版三视图：左特写+正/侧/背+信息栏，版式最稳）</option>
+                        <option value="compose">程序拼版三视图（正/侧/背分3次出图+PIL拼版，同seed）｜ 8G 显存足够，耗时约 3 倍</option>
+                        <option value="layout">版式模型整张多视图（Qwen-Image/Flux2）｜ 10G 以上推荐，8G 可跑但慢 3–5 倍</option>
                       </select>
                     </div>
                     <div className="row" style={{ marginBottom: 6 }}>

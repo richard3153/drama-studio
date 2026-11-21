@@ -256,20 +256,27 @@ CHAR_SHEET_NEG = ("flat lay, clothing cutout collage, moodboard, outfit grid, cr
                   "orientation, square canvas")
 
 # 方案 A（程序侧合成）：单视角出图规格 —— 每次只画一个方向，最后程序拼版
+# 【防拼贴】实测底模会在单视角图里自由发挥出"特写+三视图"组合 → 前缀写死 one view，
+# 配合 CHAR_VIEW_NEG 的 model sheet/collage 拦截双保险。
 VIEW_SPEC = {
-    "front": ("full body photograph, entire body visible from head to feet, wide full-length "
+    "front": ("exactly one single view of one person, one figure only, no inset, no collage, "
+              "full body photograph, entire body visible from head to feet, wide full-length "
               "framing, (front view:1.2), standing straight facing camera, arms relaxed at sides, "
               "solid plain light-gray studio backdrop"),
-    "side": ("full body photograph, entire body visible from head to feet, wide full-length "
+    "side": ("exactly one single view of one person, one figure only, no inset, no collage, "
+             "full body photograph, entire body visible from head to feet, wide full-length "
              "framing, (side profile view:1.5), (facing left, 90 degree profile:1.3), "
              "standing straight, solid plain light-gray studio backdrop"),
-    "back": ("full body photograph, entire body visible from head to feet, wide full-length "
+    "back": ("exactly one single view of one person, one figure only, no inset, no collage, "
+             "full body photograph, entire body visible from head to feet, wide full-length "
              "framing, (back view:1.5), (seen from behind, back of the head and body:1.3), "
              "standing straight, solid plain light-gray studio backdrop"),
 }
 CHAR_VIEW_NEG = ("headshot, portrait crop, bust shot, close-up, upper body only, "
                  "cropped legs, cropped feet, two people, multiple characters, text, watermark, "
                  "clothing cutout collage, flat lay, moodboard, "
+                 "model sheet, character sheet, turnaround, multiple views, split panels, "
+                 "split screen, collage, grid layout, inset closeup, contact sheet, "
                  "convenience store interior, shop shelves, street, room interior, "
                  "background scenery, props in background")
 # 单人立绘

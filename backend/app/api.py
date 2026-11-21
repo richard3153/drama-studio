@@ -1041,12 +1041,12 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
     from .style_presets import style_family
     slots = _json.loads(getattr(entity, "prompt_json", "{}") or "{}")
     gm = getattr(entity, "gen_mode", "auto") or "auto"
-    if gm == "auto":
-        # 实测：sheet 单张版式同图内三视图一致性稳定（小安/神秘顾客验收通过），但仅限
-        # anime 族；photo 族（写实/电影感）SDXL 对"左特写+三视图+信息栏"复杂排版服从度
-        # 差，赵总实测崩成单人半身像 → 写实族自动档走 compose（程序拼版保证版式），
-        # 同 seed + 背面 img2img 缓解身份漂移。
-        gm = "compose" if (slots and style_family(preset) == "photo") else "sheet"
+    if gm in ("auto", "sheet"):
+        # 【硬性要求 2026-11-21】版式稳定性优先：单张 sheet 依赖底模服从复杂排版，
+        # 实测 anime 族偶稳、photo 族崩版（赵总单人像），且底模会在单视角图里自由
+        # 发挥出"特写+三视图"拼贴 → 一律走 compose 程序拼版，版式由 PIL 硬保证。
+        # layout（Qwen/Flux2 版式模型）仅用户显式选择时保留。
+        gm = "compose" if slots else "sheet"
     base = {"project_id": pid, "role": "portrait", "entity_type": "character",
             "entity_id": entity.id, "entity_name": entity.name,
             "style_preset": preset,

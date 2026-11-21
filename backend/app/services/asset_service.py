@@ -456,10 +456,14 @@ async def generate_portrait_composed(db, task, params: dict) -> dict:
 
         wf = comfy.load_template(template_name)
 
-        if view == "back" and files:
-            # 决策 A1：背面不再硬猜，改用正面图做 img2img（denoise 0.55）重绘成背面，
-            # 底模对 "back view" 服从度差，图像条件比文字条件稳得多。
-            update_progress(db, task, 0.55, "背面视角：以正面图为条件 img2img 重绘")
+        if view in ("side", "back") and files:
+            # 决策 A1 扩展（2026-11-21）：side/back 都不再独立采样——同 seed 独立采样
+            # 实测服装漂移（赵总 front 西装 vs side 夹克）。以正面图为条件 img2img 重绘：
+            # 服装/身份/体型随条件图锁定，姿势转向靠视角 prompt + denoise 驱动。
+            # 参数实测：denoise 0.55 + cfg 5.0 会把写实背面漂成插画 → 0.5/2.5。
+            view_cn = "侧面" if view == "side" else "背面"
+            update_progress(db, task, 0.3 if view == "side" else 0.55,
+                            f"{view_cn}视角：以正面图为条件 img2img 重绘")
             wf = comfy.load_template("refine_img2img.json")
             front_name = await comfy.upload_image(str(files[0]))
             overrides = {
@@ -469,10 +473,12 @@ async def generate_portrait_composed(db, task, params: dict) -> dict:
                 "ImageScale.width": w,
                 "ImageScale.height": h,
                 "ImageScale.crop": "center",
+                # 实测：denoise 0.55 + cfg 5.0 会把写实背面漂成插画（林小满/赵总两例）
+                # → 0.5 保背面服从度，cfg 2.5 贴 RealVisXL 写实推荐区间压风格漂移。
                 "KSampler.seed": seed,
-                "KSampler.denoise": 0.55,
+                "KSampler.denoise": 0.5,
                 "KSampler.steps": 28,
-                "KSampler.cfg": 5.0,
+                "KSampler.cfg": 2.5,
             }
             if family == "sdxl":
                 overrides["CheckpointLoaderSimple.ckpt_name"] = model["weight"]
