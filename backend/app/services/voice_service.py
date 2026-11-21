@@ -281,21 +281,58 @@ def _video_size(path: Path) -> tuple[int, int]:
         return (1280, 720)
 
 
+def _subtitle_font_px(w: int, h: int) -> float:
+    """字幕字号像素值（横屏贴画高 / 竖屏贴画宽）。"""
+    return h * 0.038 if w >= h else w * 0.048
+
+
+_CJK_RE = re.compile(r"[\u2e80-\u9fff\uff00-\uffef\u3000-\u303f]")
+
+
+def _char_units(ch: str) -> float:
+    """字符宽度估算：CJK 全角 ≈ 1 个字宽，西文 ≈ 0.55。"""
+    return 1.0 if _CJK_RE.match(ch) else 0.55
+
+
+def _split_subtitle_line(text: str, w: int, h: int) -> list[str]:
+    """字幕单行硬约束：按成片宽度估算一行容量，超宽的台词切成多段顺序显示。
+
+    容量 = 画面宽的 92% ÷ 字宽；分段优先在标点/空格处断，西文单词不拆字母。
+    """
+    if not (text or "").strip():
+        return [text or ""]
+    max_units = max(8.0, (w * 0.92) / _subtitle_font_px(w, h))
+    # 切 token：CJK 单字一枚，西文连续串（单词+尾随标点）一枚
+    tokens = re.findall(r"[A-Za-z0-9]+[\.,!?'’]*|.", text)
+    lines, cur, cur_u = [], "", 0.0
+    for tk in tokens:
+        u = sum(_char_units(c) for c in tk)
+        if cur and cur_u + u > max_units:
+            lines.append(cur.strip())
+            cur, cur_u = "", 0.0
+        cur += tk
+        cur_u += u
+    if cur.strip():
+        lines.append(cur.strip())
+    return lines or [text]
+
+
 def _subtitle_style(w: int, h: int) -> str:
     """按画幅算字幕样式：字号 = 画面高的 ~3.8%（横）/ 宽的 4.8%（竖），底部居中留安全边距。
 
     ffmpeg 把 SRT 转 ASS 时 PlayRes 固定 384x288，force_style 的 FontSize/MarginV
     都在 288 高的坐标系里，随视频高度线性放大 → 换算 px * 288 / h。
+    WrapStyle=2 禁止 libass 自动折行（超宽已在 _split_subtitle_line 里分段）。
     """
+    font_px = _subtitle_font_px(w, h)
     if w >= h:                                  # 横屏：字号贴视频高度
-        font_px = h * 0.038                     # 1080p ≈ 41px（默认 60px 太大）
         margin_px = h * 0.045                   # 贴底但留出安全区
-    else:                                       # 竖屏：字号贴视频宽度，位置略抬高避 UI 遮挡
-        font_px = w * 0.048
+    else:                                       # 竖屏：位置略抬高避 UI 遮挡
         margin_px = h * 0.085
     font_size = max(8, round(font_px * 288 / h))
     margin_v = max(4, round(margin_px * 288 / h))
     return (f"FontName=Microsoft YaHei,FontSize={font_size},Alignment=2,MarginV={margin_v},"
+            "WrapStyle=2,"
             "PrimaryColour=&H00FFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,"
             "BorderStyle=1,Outline=1.1,Shadow=0,Spacing=0.4")
 
@@ -332,6 +369,7 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
     _run_ff([str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
              "-c", "copy", str(novoice)], "无损拼接")
     total_dur = _ffprobe_duration(novoice) or total_dur
+    sub_w, sub_h = _video_size(novoice)   # 字幕单行容量基准（成片实际分辨率）
 
     # 2) 台词音频 + SRT：按镜头起点 adelay 混入；镜内多行平分时长
     # 配音文件必须已由「生成台词配音」产出（音色已锁死校验过），缺失直接报错而不是自动兜底
@@ -358,8 +396,21 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
                 f"atrim=0:{remain}[a{n}]")
             mix_inputs.append(f"[a{n}]")
             n += 1
-            # 字幕只放台词本身，不带说话人名（说话人由配音音色区分）
-            srt_rows.append((start, min(start + adur, shot_end), text))
+            # 字幕只放台词本身，不带说话人名（说话人由配音音色区分）；
+            # 单行硬约束：超宽台词按段长加权切成多段顺序显示（各段区间不重叠）
+            chunks = _split_subtitle_line(text, sub_w, sub_h)
+            span = min(start + adur, shot_end) - start
+            if len(chunks) == 1:
+                srt_rows.append((start, start + span, text))
+            else:
+                weights = [sum(_char_units(c) for c in ch) for ch in chunks]
+                total_w = sum(weights) or 1
+                cur = start
+                for k, ch in enumerate(chunks):
+                    end_k = start + span if k == len(chunks) - 1 \
+                        else cur + span * weights[k] / total_w
+                    srt_rows.append((cur, end_k, ch))
+                    cur = end_k
             cur_line = start + adur + 0.35   # 行间 0.35s 呼吸间隔
         cursor += s["dur"]
 
