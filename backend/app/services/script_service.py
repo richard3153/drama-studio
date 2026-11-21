@@ -571,6 +571,73 @@ def _load_asset_lists(db, project_id: int) -> dict:
     }
 
 
+_PROP_STOPWORDS = {"black", "white", "large", "small", "modern", "metal", "metallic",
+                   "wooden", "plastic", "digital", "glass", "with", "and", "the", "of",
+                   "blue", "light", "screen", "standard", "matte", "silver", "finish",
+                   "transparent", "projection", "pattern", "motion", "facial", "expression",
+                   "repetitive", "avatar", "figure"}
+
+
+def _match_prop_names(texts: list[str], props_db: dict) -> list[str]:
+    """props_json 为空时的兜底：用道具 subject 槽位英文词在动作/走位文本里做词边界匹配。
+
+    拆解产出的动作文本是英文而道具名是中文，中文名永远匹配不上——
+    所以从道具槽位 subject 提英文关键词（≥3 字母，去通用材质/颜色词），
+    如「全息投影」→ holographic/mannequin、「签字笔」→ pen/ballpoint。
+    只用 subject 槽位（details/purpose 里的 blue/light/screen 等通用词会全局误匹配）。
+    """
+    blob = " ".join(t or "" for t in texts).lower()
+    if not blob.strip():
+        return []
+    hits: list[str] = []
+    for n, row in props_db.items():
+        slots = json.loads(getattr(row, "prompt_json", "{}") or "{}")
+        kws = [w for w in re.findall(r"[a-zA-Z]{3,}", (slots.get("subject") or "").lower())
+               if w not in _PROP_STOPWORDS]
+        if any(re.search(rf"\b{re.escape(k)}\b", blob) for k in kws):
+            hits.append(n)
+    return hits
+
+
+def _prop_tokens_for(prop_names: list[str] | None, props_rows: dict) -> str:
+    """镜头引用道具 → 英文 token + 角色-道具互动整合词。
+
+    此前 props_json 只存在镜头卡里、从未进提示词——角色与道具结合差的根因。
+    token 来源：道具槽位 subject/details/material（interaction 槽位若有则带上互动方式）；
+    未确认入库的道具名跳过（噪声不入）。
+    """
+    toks, interacts = [], []
+    for n in prop_names or []:
+        if not (n or "").strip():
+            continue
+        row = props_rows.get(n)
+        if row is None:
+            for name, r in props_rows.items():
+                if name and (name in n or n in name):
+                    row = r
+                    break
+        if row is None:
+            continue
+        slots = json.loads(getattr(row, "prompt_json", "{}") or "{}")
+        t = _clean(", ".join(v for k in ("subject", "details", "material")
+                             if (v := _clean(slots.get(k)))))
+        if not t:
+            t = _clean(getattr(row, "base_prompt", "") or "")
+        if t and re.search(r"[A-Za-z]", t):
+            toks.append(t)
+        it = _clean(slots.get("interaction") or "")
+        if it and re.search(r"[A-Za-z]", it):
+            interacts.append(it)
+    if not toks:
+        return ""
+    out = "props in scene: " + "; ".join(toks)
+    if interacts:
+        out += ", " + "; ".join(interacts)
+    out += (", characters naturally holding and using the props, "
+            "props and characters integrated in one coherent scene")
+    return out
+
+
 def _slots_concept(slots: dict) -> str:
     return ", ".join(v for k in ("space", "era", "elements", "light", "mood")
                      if (v := _clean(slots.get(k))))
@@ -871,7 +938,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
     2. 每个 stage 取可编辑模板（项目默认 > 全局默认 > 内置），变量由代码算好注入；
     3. 模板缺失/写坏时回退到原代码组装函数，保证链路不断。
     """
-    from ..db import Character, Scene
+    from ..db import Character, Prop, Scene
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
 
@@ -880,6 +947,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                                  .where(Character.project_id == project_id)).all()}
     scenes_db = {s.name: s for s in db.scalars(select(Scene)
                  .where(Scene.project_id == project_id)).all()}
+    props_db = {p.name: p for p in db.scalars(select(Prop)
+                .where(Prop.project_id == project_id)).all()}
     base_looks = {c.name: (c.base_prompt or "")
                   for c in db.scalars(select(Character)
                                       .where(Character.project_id == project_id)).all()}
@@ -917,6 +986,10 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "scene": _clean(scene_concept),
             "characters": (", ".join(_clean(x) for x in char_looks)
                            + _multi_layout_hint(shot.get("characters"), char_looks)),
+            "props": _prop_tokens_for(
+                shot.get("props") or _match_prop_names(
+                    [shot.get("action", ""), shot.get("blocking", "")], props_db),
+                props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
             "quality": QUALITY_SUFFIX,
@@ -927,6 +1000,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
         vars_ff.update({
             "action": _clean(pick_beat(beats, "trigger") or slots_en.get("subject_action", "")),
             "atmosphere": _clean(shot.get("atmosphere", "")),
+            "prev": _clean(shot.get("prev_summary", "")),
             "framing": _en_size(slots_en.get("shot_size", "")),
             "angle": _en_angle(shot.get("camera_angle", "")),
             "light": _clean(slots_en.get("light", "")),
@@ -943,6 +1017,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             vars_ef = dict(common)
             vars_ef.update({
                 "end_action": _clean(pick_beat(beats, "aftermath") or slots_en.get("end_action", "")),
+                "prev": _clean(shot.get("prev_summary", "")),
                 "framing_end": _en_size(slots_en.get("framing_end", "")),
                 "composition": _clean(slots_en.get("composition", "")),
             })
@@ -956,6 +1031,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
         vars_kf = dict(common)
         vars_kf.update({
             "action": _clean(pick_beat(beats, "peak") or slots_en.get("subject_action", "")),
+            "atmosphere": _clean(shot.get("atmosphere", "")),
+            "prev": _clean(shot.get("prev_summary", "")),
             "framing": _en_size(slots_en.get("shot_size", "")),
             "angle": _en_angle(shot.get("camera_angle", "")),
             "light": _clean(slots_en.get("light", "")),
@@ -988,6 +1065,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "blocking": _clean(shot.get("blocking", "")),
             "character_path": _clean(shot.get("character_path", "")),
             "focus": shot.get("focus_transition", "") if shot.get("focus_transition") != "none" else "",
+            "prev": _clean(shot.get("prev_summary", "")),
             "continuity": _clean(shot.get("continuity_guidance", "")),
             "duration": shot.get("duration", 4),
         })
@@ -1066,7 +1144,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
     改提示词模板、改运镜向量、勾尾帧之后，用这个接口让结果立刻重算，
     不必再等一次 2 分钟的拆解——这是压住随机性的关键操作。
     """
-    from ..db import Character, Scene, Shot
+    from ..db import Character, Prop, Scene, Shot
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
 
@@ -1079,6 +1157,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                                  .where(Character.project_id == project_id)).all()}
     scenes_db = {s.name: s for s in db.scalars(select(Scene)
                  .where(Scene.project_id == project_id)).all()}
+    props_db = {p.name: p for p in db.scalars(select(Prop)
+                .where(Prop.project_id == project_id)).all()}
     base_looks = {c.name: (c.base_prompt or "")
                   for c in db.scalars(select(Character)
                                       .where(Character.project_id == project_id)).all()}
@@ -1092,6 +1172,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "action": r.subject_action, "blocking": r.blocking,
             "character_path": r.character_path, "duration": r.duration,
             "characters": json.loads(r.characters_json or "[]"),
+            "props": json.loads(r.props_json or "[]"),
             "image_slots": {"subject_action": r.subject_action, "light": r.light,
                             "composition": r.composition, "shot_size": r.shot_size,
                             "framing_end": r.framing_end},
@@ -1118,6 +1199,10 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "scene": _clean(scene_concept),
             "characters": (", ".join(_clean(x) for x in char_looks)
                            + _multi_layout_hint(d.get("characters"), char_looks)),
+            "props": _prop_tokens_for(
+                d.get("props") or _match_prop_names(
+                    [d.get("action", ""), d.get("blocking", "")], props_db),
+                props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
             "quality": QUALITY_SUFFIX,
@@ -1126,6 +1211,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         v.update({
             "action": _clean(pick_beat(d["action_beats"], "trigger") or d["action"]),
             "atmosphere": _clean(r.atmosphere), "framing": _en_size(r.shot_size),
+            "prev": _clean(d.get("prev_summary", "")),
             "angle": _en_angle(r.camera_angle), "light": _clean(r.light),
             "composition": _clean(", ".join(x for x in [
                 r.composition, d.get("composition_anchor", "")] if x)),
@@ -1134,12 +1220,15 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         r.prompt_template_id = tid_x
         v2 = dict(common)
         v2.update({"end_action": _clean(pick_beat(d["action_beats"], "aftermath") or d["action"]),
+                   "prev": _clean(d.get("prev_summary", "")),
                    "framing_end": _en_size(r.framing_end or r.shot_size),
                    "composition": _clean(r.composition)})
         r.end_frame_prompt = render(tpl_ef, v2) if r.needs_end_frame else ""
         v3 = dict(common)
         v3.update({
             "action": _clean(pick_beat(d["action_beats"], "peak") or d["action"]),
+            "atmosphere": _clean(r.atmosphere),
+            "prev": _clean(d.get("prev_summary", "")),
             "framing": _en_size(r.shot_size), "angle": _en_angle(r.camera_angle),
             "light": _clean(r.light), "composition": _clean(r.composition),
         })
@@ -1166,6 +1255,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "camera": ", ".join(motion), "blocking": _clean(r.blocking),
             "character_path": _clean(r.character_path),
             "focus": r.focus_transition if r.focus_transition != "none" else "",
+            "prev": _clean(d.get("prev_summary", "")),
             "continuity": _clean(d.get("continuity_guidance", "")),
             "duration": r.duration,
         })

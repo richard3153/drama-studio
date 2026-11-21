@@ -128,7 +128,13 @@ def apply_continuity(shots: list[dict]) -> None:
         prev_summary = ""
         guidance = ""
         if prev is not None and prev.get("scene_name") == sh.get("scene_name"):
-            prev_summary = f"continues from previous shot: {prev.get('action', '')[:60]}"
+            # 承接摘要只进英文 token：上一镜动作若为中文（CLIP/Wan 噪声）就只保留通用承接短语
+            act = (prev.get("action") or "").strip()
+            en_act = act if act and all(ord(c) < 128 for c in act) else ""
+            prev_summary = ("continuous scene from the previous shot"
+                            + (f" ({en_act[:60]})" if en_act else "")
+                            + ", same location, consistent environment, "
+                              "lighting and character appearance")
             pd, cd = prev.get("screen_direction", ""), sh.get("screen_direction", "")
             if pd and cd and pd != cd:
                 guidance = ("axis warning: keep each subject on its own side of the frame, "

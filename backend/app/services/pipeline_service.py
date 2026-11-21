@@ -300,7 +300,8 @@ def export_jianying(db, t: TaskRecord, params: dict) -> dict:
                 start = cursor_us + int(j * slot * 1_000_000)
                 # slot 极短（0.2s 以下）时 span 会被减成负数 → 剪映导入报错，钳到 0.1s
                 span = int(max(0.1, min(slot - 0.2, 4.0)) * 1_000_000)
-                text = f"{who}：{line}" if who else line
+                # 字幕只放台词本身，不带说话人名（与烧录字幕口径一致）
+                text = line
                 texts.append({"id": f"txt_{s.id}_{j}", "text": text,
                               "duration": span})
                 t_segs.append({"id": f"seg_t_{s.id}_{j}", "material_id": f"txt_{s.id}_{j}",

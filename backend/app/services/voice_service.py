@@ -269,6 +269,37 @@ def _srt_ts(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def _video_size(path: Path) -> tuple[int, int]:
+    """探测视频宽高（字幕字号/边距按分辨率自适应的基准）。"""
+    r = subprocess.run([str(FFPROBE), "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height",
+                        "-of", "csv=p=0:s=x", str(path)], capture_output=True, text=True)
+    try:
+        w, h = r.stdout.strip().split("x")
+        return int(w), int(h)
+    except Exception:
+        return (1280, 720)
+
+
+def _subtitle_style(w: int, h: int) -> str:
+    """按画幅算字幕样式：字号 = 画面高的 ~3.8%（横）/ 宽的 4.8%（竖），底部居中留安全边距。
+
+    ffmpeg 把 SRT 转 ASS 时 PlayRes 固定 384x288，force_style 的 FontSize/MarginV
+    都在 288 高的坐标系里，随视频高度线性放大 → 换算 px * 288 / h。
+    """
+    if w >= h:                                  # 横屏：字号贴视频高度
+        font_px = h * 0.038                     # 1080p ≈ 41px（默认 60px 太大）
+        margin_px = h * 0.045                   # 贴底但留出安全区
+    else:                                       # 竖屏：字号贴视频宽度，位置略抬高避 UI 遮挡
+        font_px = w * 0.048
+        margin_px = h * 0.085
+    font_size = max(8, round(font_px * 288 / h))
+    margin_v = max(4, round(margin_px * 288 / h))
+    return (f"FontName=Microsoft YaHei,FontSize={font_size},Alignment=2,MarginV={margin_v},"
+            "PrimaryColour=&H00FFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,"
+            "BorderStyle=1,Outline=1.1,Shadow=0,Spacing=0.4")
+
+
 def export_final(db, t: TaskRecord, params: dict) -> dict:
     """成片合成：拼接 → 混音 → SRT → NVENC 烧字幕。全同步 ffmpeg，fn 内直接跑。"""
     update_progress(db, t, 0.02, "收集镜头")
@@ -327,8 +358,8 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
                 f"atrim=0:{remain}[a{n}]")
             mix_inputs.append(f"[a{n}]")
             n += 1
-            srt_rows.append((start, min(start + adur, shot_end),
-                             f"{who}：{text}" if who else text))
+            # 字幕只放台词本身，不带说话人名（说话人由配音音色区分）
+            srt_rows.append((start, min(start + adur, shot_end), text))
             cur_line = start + adur + 0.35   # 行间 0.35s 呼吸间隔
         cursor += s["dur"]
 
@@ -350,14 +381,17 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
         f"{i + 1}\n{_srt_ts(a)} --> {_srt_ts(b)}\n{text}\n\n"
         for i, (a, b, text) in enumerate(srt_rows)), encoding="utf-8")
 
-    # 4) 烧字幕：NVENC 硬编重编码（无 libx264 的替代）；无台词时只拼不烧
+    # 4) 烧字幕：NVENC 硬编重编码（无 libx264 的替代）；无台词时只拼不烧。
+    #    字号/边距按成片分辨率自适应，底部居中（横竖屏各自基准，见 _subtitle_style）
     if srt_rows:
         update_progress(db, t, 0.85, "烧录字幕（h264_nvenc）")
         sub_arg = str(srt_path).replace("\\", "/").replace(":", "\\:")
+        w, h = _video_size(mixed)
+        style = _subtitle_style(w, h)
         _run_ff(
             [str(FFMPEG), "-y", "-i", str(mixed), "-vf",
-             f"subtitles='{sub_arg}'", "-c:v", "h264_nvenc", "-preset", "p4",
-             "-cq", "23", "-c:a", "copy", str(final)],
+             f"subtitles='{sub_arg}':force_style='{style}'", "-c:v", "h264_nvenc",
+             "-preset", "p4", "-cq", "23", "-c:a", "copy", str(final)],
             "烧录字幕")
     else:
         final.write_bytes(mixed.read_bytes())

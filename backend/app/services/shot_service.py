@@ -269,6 +269,16 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     prompt = shot.end_frame_prompt if frame_type == "end" else shot.image_prompt
     if not prompt:
         raise RuntimeError(f"镜头 #{shot.idx} 的{'尾帧' if frame_type == 'end' else '首帧'}提示词为空，先点「重组装提示词」")
+    # 生成时兜底承接：独立生成（无接力源）的同场景镜头也带上镜连续性提示，
+    # 压"每个镜头都重新开始"的断裂感（接力 img2img 走 chain_shot_frame 自有承接词）
+    if frame_type == "first":
+        prev = db.scalars(select(Shot).where(
+            Shot.episode_id == shot.episode_id,
+            Shot.idx == shot.idx - 1)).first()
+        if prev is not None and (prev.scene_name or "") == (shot.scene_name or "") \
+                and "continuous" not in prompt:
+            prompt = (prompt + ", continuous scene from the previous shot, same location, "
+                      "consistent lighting and character appearance")
 
     update_progress(db, task, 0.15, f"生成{ '尾帧' if frame_type=='end' else '首帧' }（{model_key}）")
     comfy = ComfyUIAdapter()
@@ -639,7 +649,7 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
     seed = random.randint(0, 2**31 - 1)
     # img2img 本身锁住构图/光影/人物位置，提示词只引导本镜的动作与景别变化
     prompt = (f"{dst.image_prompt}, continuous scene from previous shot, "
-              f"seamless match cut, consistent lighting and location")
+              f"seamless match cut, consistent lighting, location and character appearance")
     neg = neg_for("shot_first_frame", NEGATIVE)
     update_progress(db, task, 0.4, f"末帧接力重绘（denoise {denoise}，承接 #{src.idx} → #{dst.idx}）")
     out = await _img2img(comfy, model, prompt, neg, src_frame, w, h, denoise,
