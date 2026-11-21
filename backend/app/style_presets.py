@@ -556,6 +556,9 @@ def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
         parts.append(lifelike_tokens(preset_key, human=True,
                                      pose=(mode == "single"),
                                      consistent=(mode != "single") and not full_identity))
+    from .style_vocab import style_vocab_positive
+    # 风格词库（只取 style 锚词）：特效/氛围词留给镜头，设定图保持干净版式
+    parts.append(style_vocab_positive(preset_key, kinds=("style",)))
     parts.append(QUALITY_SUFFIX)
     return ", ".join(p for p in parts if p)
 
@@ -581,6 +584,8 @@ def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     parts.append(SCENE_EMPTY_SPEC)
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=False))
+    from .style_vocab import style_vocab_positive
+    parts.append(style_vocab_positive(preset_key))   # 场景吃全量词库（含特效/氛围）
     parts.append(QUALITY_SUFFIX)
     return ", ".join(p for p in parts if p)
 
@@ -619,6 +624,8 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     parts.append(PROP_SPEC)
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=False))
+    from .style_vocab import style_vocab_positive
+    parts.append(style_vocab_positive(preset_key, kinds=("style",)))
     parts.append(QUALITY_SUFFIX)
     return ", ".join(p for p in parts if p)
 

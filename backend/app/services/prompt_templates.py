@@ -50,7 +50,7 @@ NEG_BASE = {
 SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
     "shot_first_frame": (
         "镜头首帧（默认）",
-        "{{ style_lock }}{% if scene %}, {{ scene }}{% endif %}"
+        "{{ style_lock }}{% if vocab %}, {{ vocab }}{% endif %}{% if scene %}, {{ scene }}{% endif %}"
         "{% if characters %}, {{ characters }}{% endif %}"
         "{% if props %}, {{ props }}{% endif %}"
         "{% if action %}, {{ action }}{% endif %}"
@@ -67,7 +67,7 @@ SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
     ),
     "shot_end_frame": (
         "镜头尾帧（默认）",
-        "{{ style_lock }}{% if scene %}, {{ scene }}{% endif %}"
+        "{{ style_lock }}{% if vocab %}, {{ vocab }}{% endif %}{% if scene %}, {{ scene }}{% endif %}"
         "{% if characters %}, {{ characters }}{% endif %}"
         "{% if props %}, {{ props }}{% endif %}"
         "{% if end_action %}, final pose after the action: {{ end_action }}{% endif %}"
@@ -80,7 +80,7 @@ SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
     ),
     "shot_video": (
         "镜头视频（默认：I2V 公式——图定义实体，文只管运动）",
-        "{{ style_lock }}{% if scene %}, {{ scene }}{% endif %}"
+        "{{ style_lock }}{% if vocab %}, {{ vocab }}{% endif %}{% if scene %}, {{ scene }}{% endif %}"
         "{% if beats %}, action beats: {{ beats }}{% endif %}"
         "{% if motion_cues %}, subject motion: {{ motion_cues }}{% endif %}"
         "{% if camera %}, camera: {{ camera }}{% endif %}"

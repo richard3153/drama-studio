@@ -316,6 +316,23 @@ def _motion_video_tokens(shot: Shot) -> str:
     return ", ".join(x for x in parts if x)
 
 
+def _vocab_positive(preset: str) -> str:
+    """风格词库正向 token（anime cel 词系 / xianxia 仙侠词系 / 特效词系…）。"""
+    from ..style_vocab import style_vocab_positive
+    return style_vocab_positive(preset)
+
+
+def _shot_neg(stage: str, preset: str, extra: str = "") -> str:
+    """stage 负面基线 + 全局负面 + 风格词库负面。
+
+    风格串味治理：动漫模型必须禁摄影词（photorealistic 会拉出脏中间态），
+    写实模型禁动漫词，词库按风格自动给出。
+    """
+    from ..style_vocab import style_vocab_negative
+    parts = [neg_for(stage, extra), style_vocab_negative(preset)]
+    return ", ".join(x for x in parts if x)
+
+
 def _scene_anchor(db, shot: Shot) -> str | None:
     """场景参考图三级回退（2026-11-22 治理：此前只认手动锚图，覆盖率≈0）：
 
@@ -396,12 +413,16 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     mtok = _motion_static_tokens(shot)
     if mtok and mtok[:24].lower() not in prompt.lower():
         prompt = prompt + ", " + mtok
+    # 运行时兜底：风格词库（按风格锁挂载的领域词）未进提示词时补上
+    vtok = _vocab_positive(preset)
+    if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
+        prompt = prompt + ", " + vtok
 
     update_progress(db, task, 0.15, f"生成{ '尾帧' if frame_type=='end' else '首帧' }（{model_key}）")
     comfy = ComfyUIAdapter()
     w, h = _res(project)
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
-    neg = neg_for("shot_first_frame", NEGATIVE)
+    neg = _shot_neg("shot_first_frame", preset, NEGATIVE)
     seed = random.randint(0, 2**31 - 1)
     prefix = f"drama_studio/p{shot.project_id}_s{shot.idx}_{frame_type}"
 
@@ -530,9 +551,13 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     prompt = wrap_video_prompt(shot.video_prompt, family, duration,
                                has_end_frame=bool(shot.needs_end_frame))
     # 运行时兜底：motion_json 动作控制 + 稳定性约束（编辑即时生效，旧提示词也补）
+    preset = (project.style_preset if project else "") or "anime_2d"
     mtok = _motion_video_tokens(shot)
     if mtok and "no morphing" not in prompt:
         prompt = f"{prompt}, {mtok}"
+    vtok = _vocab_positive(preset)
+    if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
+        prompt = f"{prompt}, {vtok}"
 
     update_progress(db, task, 0.1, f"上传首帧/尾帧（{model_key}，{duration}s / {length} 帧）")
     comfy = ComfyUIAdapter()
@@ -542,7 +567,7 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     seed = random.randint(0, 2**31 - 1)
     overrides = {
         "positive_text": prompt,
-        "negative_text": dialect_negative(family, neg_for("shot_video")),
+        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset)),
         "LoadImage@0.image": start_name,
         f"{samp_prefix}.seed": seed,
         "WanFirstLastFrameToVideo.length": length,
@@ -636,7 +661,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
             # 宫格也用 IPAdapter 锁脸：9 格构图不同、但必须是同一张脸
             try:
                 out = await _ipa_gen(comfy, model, prompt_i,
-                                     neg_for("shot_first_frame", NEGATIVE), ref, w, h,
+                                     _shot_neg("shot_first_frame", preset, NEGATIVE), ref, w, h,
                                      base_seed + i, 22, 6.0,
                                      float(params.get("ipa_weight", 0.65)), save_root,
                                      prefix, timeout=600)
@@ -647,7 +672,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
             continue
         overrides = {
             "positive_text": prompt_i,
-            "negative_text": neg_for("shot_first_frame", NEGATIVE),
+            "negative_text": _shot_neg("shot_first_frame", preset, NEGATIVE),
             "EmptyLatentImage.width": w,
             "EmptyLatentImage.height": h,
             "KSampler.seed": base_seed + i,
@@ -754,6 +779,7 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
         raise RuntimeError(f"镜头 #{dst.idx} 的首帧提示词为空，先「重组装提示词」")
 
     project = db.get(Project, src.project_id)
+    preset = (project.style_preset if project else "") or "anime_2d"
     model_key, model = await pick_model("scene", "low", style_family=style_family(
         (project.style_preset if project else "") or "anime_2d"),
         allowed_families=frozenset(("sdxl",)))
@@ -771,7 +797,7 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
     # img2img 本身锁住构图/光影/人物位置，提示词只引导本镜的动作与景别变化
     prompt = (f"{dst.image_prompt}, continuous scene from previous shot, "
               f"seamless match cut, consistent lighting, location and character appearance")
-    neg = neg_for("shot_first_frame", NEGATIVE)
+    neg = _shot_neg("shot_first_frame", preset, NEGATIVE)
     update_progress(db, task, 0.4, f"末帧接力重绘（denoise {denoise}，承接 #{src.idx} → #{dst.idx}）")
     out = await _img2img(comfy, model, prompt, neg, src_frame, w, h, denoise,
                          26, 5.0, seed, save_root,
@@ -826,14 +852,18 @@ async def extend_shot_video(db, task, params: dict) -> dict:
     wf = comfy.load_template(wf_name)
     start_name = await comfy.upload_image(str(last_png))
     # 续写段提示词：保持人物/场景/运镜基调，仅自然延续动作
+    preset = (project.style_preset if project else "") or "anime_2d"
     prompt = wrap_video_prompt(shot.video_prompt, family, duration, has_end_frame=False)
     mtok = _motion_video_tokens(shot)
     if mtok and "no morphing" not in prompt:
         prompt = f"{prompt}, {mtok}"
+    vtok = _vocab_positive(preset)
+    if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
+        prompt = f"{prompt}, {vtok}"
     seed = random.randint(0, 2**31 - 1)
     overrides = {
         "positive_text": prompt,
-        "negative_text": dialect_negative(family, neg_for("shot_video")),
+        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset)),
         "LoadImage@0.image": start_name,
         f"{samp_prefix}.seed": seed,
         "WanFirstLastFrameToVideo.length": length,
@@ -967,15 +997,19 @@ async def generate_shot_talk(db, task, params: dict) -> dict:
     w, h = _res(project)
     seed = random.randint(0, 2 ** 31 - 1)
     wf = comfy.load_template(TALK_WF)
+    preset = (project.style_preset if project else "") or "anime_2d"
     prompt = shot.video_prompt or shot.image_prompt or "a person talking"
     mtok = _motion_video_tokens(shot)
     if mtok:
         prompt = f"{prompt}, {mtok}"
+    vtok = _vocab_positive(preset)
+    if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
+        prompt = f"{prompt}, {vtok}"
     overrides = {
         "WanVideoTextEncode.positive_prompt":
             f"{prompt}, the character is speaking, natural talking expressions, "
             "lip movements match speech, consistent character appearance",
-        "WanVideoTextEncode.negative_prompt": dialect_negative("wan22", neg_for("shot_video")),
+        "WanVideoTextEncode.negative_prompt": dialect_negative("wan22", _shot_neg("shot_video", preset)),
         "LoadImage@0.image": start_name,
         "LoadAudio.audio": audio_name,
         "MultiTalkWav2VecEmbeds.num_frames": frames,
