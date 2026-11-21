@@ -10,6 +10,18 @@ from ..db import SessionLocal, TaskRecord, task_to_dict, now
 _subscribers: set[asyncio.Queue] = set()
 # 重模型互斥：同一时刻仅一个重任务（TTS/ASR/拼接等走 parallel 通道）
 _heavy_lock = asyncio.Lock()
+# 后台任务强引用集合：asyncio 事件循环只对 Task 持弱引用，
+# 无引用任务会被 GC 中途销毁（asyncio 文档明确警告）——表现为任务跑着跑着悄悄消失，
+# 且与页面刷新/内存抖动时机相关。所有 fire-and-forget 任务必须经 spawn_bg 持引用。
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def spawn_bg(coro) -> asyncio.Task:
+    """fire-and-forget 派发：强引用防 GC 中途销毁，完成自动清引用。"""
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
 
 
 async def publish(event: str, data: dict):

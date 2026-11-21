@@ -223,7 +223,7 @@ async def create_character(pid: int, body: CharacterIn):
         task_id = t.id
         resp = {"character_id": ch.id, "task_id": task_id}
     # 锁外启动异步执行
-    asyncio.create_task(_run_portrait(task_id))
+    task_queue.spawn_bg(_run_portrait(task_id))
     return resp
 
 
@@ -335,7 +335,7 @@ async def retry_task(tid: int):
         t.error = ""
         t.progress = 0.0
         db.commit()
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "status": "requeued"}
 
 
@@ -374,7 +374,7 @@ async def generate_outline(pid: int, body: OutlineIn):
         params = {"project_id": pid, "idea": body.idea,
                   "num_episodes": body.num_episodes, "genre": body.genre}
         t = task_queue.create_task(db, "outline", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -393,7 +393,7 @@ async def continue_outline(pid: int, body: ContinueOutlineIn):
         params = {"project_id": pid, "idea": body.idea,
                   "add_episodes": body.add_episodes, "genre": body.genre}
         t = task_queue.create_task(db, "continue_outline", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -454,7 +454,7 @@ async def write_script(eid: int, model: str | None = None):
         if not db.get(Episode, eid):
             raise HTTPException(404, "分集不存在")
         t = task_queue.create_task(db, "script", {"episode_id": eid, "model": model})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -465,7 +465,7 @@ async def breakdown(eid: int, model: str | None = None):
         if not ep or not ep.script_text:
             raise HTTPException(400, "分集不存在或剧本正文为空")
         t = task_queue.create_task(db, "breakdown", {"episode_id": eid, "model": model})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -520,7 +520,7 @@ async def refine(body: RefineIn):
     with SessionLocal() as db:
         t = task_queue.create_task(db, "refine",
                                    {"text": body.text, "action": body.action})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -653,7 +653,7 @@ async def confirm_candidates(pid: int, body: ConfirmIn):
                 created["task_ids"].append(t.id)
     # 全部入队后再统一启动（heavy 锁保证串行）
     for tid in created["task_ids"]:
-        asyncio.create_task(_run_task(tid))
+        task_queue.spawn_bg(_run_task(tid))
     return created
 
 
@@ -1013,7 +1013,7 @@ async def rebuild_slots(etype: str, eid: int):
         params = {"entity_type": etype, "entity_id": eid, "project_id": row.project_id,
                   "name": row.name, "description": row.description}
         t = task_queue.create_task(db, "rebuild_slots", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -1084,7 +1084,7 @@ async def gen_from_reference(etype: str, eid: int, body: dict):
     with SessionLocal() as db:
         t = task_queue.create_task(db, "ref_redraw",
                                    {"entity_type": etype, "entity_id": eid, **body})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "ref_redraw"}
 
 
@@ -1142,7 +1142,7 @@ async def regenerate(body: RegenerateIn):
                       "width": width, "height": height, "auto_polish": auto_polish,
                       "style_preset": preset}
         t = task_queue.create_task(db, type_, params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": type_}
 
 
@@ -1163,7 +1163,7 @@ async def refine_image(body: RefineIn):
         params = {"project_id": src.project_id, "asset_id": src.id, "role": role,
                   "strength": max(0.08, min(0.2, float(body.strength)))}
         t = task_queue.create_task(db, "polish", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -1183,7 +1183,7 @@ async def upscale_image(body: UpscaleIn):
         params = {"project_id": src.project_id, "asset_id": src.id,
                   "model": body.model}
         t = task_queue.create_task(db, "upscale", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id}
 
 
@@ -1401,7 +1401,7 @@ async def gen_shot_frame(sid: int, body: ShotGenBody | None = None):
         db.commit()
         db.refresh(t)
         tid = t.id
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "task_type": "shot_frame"}
 
 
@@ -1419,7 +1419,7 @@ async def gen_shot_video_api(sid: int, body: ShotGenBody | None = None):
         db.commit()
         db.refresh(t)
         tid = t.id
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "task_type": "shot_video"}
 
 
@@ -1439,7 +1439,7 @@ async def gen_shot_talk_api(sid: int, body: ShotGenBody | None = None):
         db.commit()
         db.refresh(t)
         tid = t.id
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "task_type": "shot_talk"}
 
 
@@ -1457,7 +1457,7 @@ async def gen_shot_grid(sid: int, body: ShotGenBody | None = None):
         db.commit()
         db.refresh(t)
         tid = t.id
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "task_type": "grid9"}
 
 
@@ -1481,7 +1481,7 @@ async def chain_next_frame(sid: int, body: ChainNextBody | None = None):
         db.commit()
         db.refresh(t)
         tid = t.id
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "task_type": "shot_chain"}
 
 
@@ -1504,7 +1504,7 @@ async def extend_shot_video_api(sid: int, body: ExtendBody | None = None):
         db.commit()
         db.refresh(t)
         tid = t.id
-    asyncio.create_task(_run_task(tid))
+    task_queue.spawn_bg(_run_task(tid))
     return {"task_id": tid, "task_type": "shot_extend"}
 
 
@@ -1687,7 +1687,7 @@ async def episode_tts(eid: int):
             raise HTTPException(404, "剧集不存在")
         t = task_queue.create_task(db, "tts", {"episode_id": eid,
                                                "project_id": ep.project_id})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "tts"}
 
 
@@ -1700,7 +1700,7 @@ async def episode_export_final(eid: int):
             raise HTTPException(404, "剧集不存在")
         t = task_queue.create_task(db, "stitch", {"episode_id": eid,
                                                   "project_id": ep.project_id})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "stitch"}
 
 
@@ -1722,7 +1722,7 @@ async def episode_batch_frames(eid: int, body: BatchIn = None):
                   "ipa_weight": body.ipa_weight if body else None,
                   "chain": body.chain if body else True}
         t = task_queue.create_task(db, "batch_frames", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "batch_frames"}
 
 
@@ -1737,7 +1737,7 @@ async def episode_batch_videos(eid: int, body: BatchIn = None):
                   "ipa_weight": body.ipa_weight if body else None,
                   "duration": body.duration if body else None}
         t = task_queue.create_task(db, "batch_videos", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "batch_videos"}
 
 
@@ -1755,7 +1755,7 @@ async def episode_rechain_from(eid: int, body: BatchIn = None):
                   "duration": body.duration if body else None,
                   "from_idx": from_idx}
         t = task_queue.create_task(db, "rechain_from", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "rechain_from", "from_idx": from_idx}
 
 
@@ -1770,7 +1770,7 @@ async def episode_full_pipeline(eid: int, body: BatchIn = None):
                   "ipa_weight": body.ipa_weight if body else None,
                   "duration": body.duration if body else None}
         t = task_queue.create_task(db, "full_pipeline", params)
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "full_pipeline"}
 
 
@@ -1783,7 +1783,7 @@ async def episode_export_jianying(eid: int):
             raise HTTPException(404, "剧集不存在")
         t = task_queue.create_task(db, "export_jianying",
                                    {"episode_id": eid, "project_id": ep.project_id})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "export_jianying"}
 
 
@@ -1796,7 +1796,7 @@ async def episode_export_fcpxml(eid: int):
             raise HTTPException(404, "剧集不存在")
         t = task_queue.create_task(db, "export_fcpxml",
                                    {"episode_id": eid, "project_id": ep.project_id})
-    asyncio.create_task(_run_task(t.id))
+    task_queue.spawn_bg(_run_task(t.id))
     return {"task_id": t.id, "task_type": "export_fcpxml"}
 
 
