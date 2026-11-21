@@ -532,23 +532,28 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
           {/* 主体：参考图清单 | 视频 | 操作 */}
           <div style={{ display: 'flex', gap: 12, marginTop: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
             <div style={{ display: 'flex', gap: 8 }}>
-              <div>
-                <div style={{ fontSize: 11, color: 'var(--dim)' }}>首帧{s.first_frame_path ? '' : '（未生成）'}</div>
-                {s.first_frame_path
-                  ? <img src={`/api/shots/${s.id}/frame-file?which=first&t=${Date.now()}`}
-                      style={{ width: 128, borderRadius: 6, border: '1px solid #556', cursor: 'pointer' }}
-                      onClick={() => window.open(`/api/shots/${s.id}/frame-file?which=first`)} />
-                  : <div style={{ width: 128, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)' }}>待生成</div>}
-              </div>
-              {s.needs_end_frame &&
+              {/* 有视频时不再单独显示首帧缩略图：视频第一帧即首帧，避免重复占位 */}
+              {!s.video_path &&
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--dim)' }}>尾帧{s.end_frame_path ? '' : '（未生成）'}</div>
-                  {s.end_frame_path
-                    ? <img src={`/api/shots/${s.id}/frame-file?which=end&t=${Date.now()}`}
+                  <div style={{ fontSize: 11, color: 'var(--dim)' }}>首帧{s.first_frame_path ? '' : '（未生成）'}</div>
+                  {s.first_frame_path
+                    ? <img src={`/api/shots/${s.id}/frame-file?which=first&t=${Date.now()}`}
                         style={{ width: 128, borderRadius: 6, border: '1px solid #556', cursor: 'pointer' }}
-                        onClick={() => window.open(`/api/shots/${s.id}/frame-file?which=end`)} />
+                        onClick={() => window.open(`/api/shots/${s.id}/frame-file?which=first`)} />
                     : <div style={{ width: 128, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)' }}>待生成</div>}
                 </div>}
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--dim)' }}>
+                  尾帧{s.end_frame_path ? '' : (s.needs_end_frame ? '（未生成）' : '（固定镜·无需）')}
+                </div>
+                {s.end_frame_path
+                  ? <img src={`/api/shots/${s.id}/frame-file?which=end&t=${Date.now()}`}
+                      style={{ width: 128, borderRadius: 6, border: '1px solid #556', cursor: 'pointer' }}
+                      onClick={() => window.open(`/api/shots/${s.id}/frame-file?which=end`)} />
+                  : <div style={{ width: 128, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)', textAlign: 'center', lineHeight: 1.4 }}>
+                      {s.needs_end_frame ? '待生成' : <><span>固定镜无需尾帧</span><span style={{ fontSize: 10 }}>接力自动抽视频末帧</span></>}
+                    </div>}
+              </div>
               {s.scene_anchor_path &&
                 <div>
                   <div style={{ fontSize: 11, color: '#d0a030' }}>场景锚⚓</div>
@@ -572,7 +577,8 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
             <div>
               <div style={{ fontSize: 11, color: 'var(--dim)' }}>视频{s.video_path ? '' : '（未生成）'}</div>
               {s.video_path
-                ? <video controls src={`/api/shots/${s.id}/video-file`} style={{ width: 200, borderRadius: 6, border: '1px solid #556' }} />
+                ? <video controls src={`/api/shots/${s.id}/video-file`} title="视频第一帧即本镜首帧"
+                    style={{ width: 200, borderRadius: 6, border: '1px solid #556' }} />
                 : <div style={{ width: 200, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)' }}>
                     {s.first_frame_path ? '有首帧，可生成视频' : '需先生成首帧'}</div>}
             </div>
