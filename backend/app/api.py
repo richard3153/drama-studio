@@ -1042,12 +1042,14 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
     slots = _json.loads(getattr(entity, "prompt_json", "{}") or "{}")
     gm = getattr(entity, "gen_mode", "auto") or "auto"
     if gm == "auto":
-        # 实测：compose 三视角同 seed 独立采样不锁脸，写实角色身份漂移（老陈三视图
-        # 灰发/黑发/插画化三人）；sheet 单张版式同图内三视图一致性稳定（小安/神秘
-        # 顾客验收通过）。自动档一律走 sheet，compose 仅用户显式选择。
-        gm = "sheet"
+        # 实测：sheet 单张版式同图内三视图一致性稳定（小安/神秘顾客验收通过），但仅限
+        # anime 族；photo 族（写实/电影感）SDXL 对"左特写+三视图+信息栏"复杂排版服从度
+        # 差，赵总实测崩成单人半身像 → 写实族自动档走 compose（程序拼版保证版式），
+        # 同 seed + 背面 img2img 缓解身份漂移。
+        gm = "compose" if (slots and style_family(preset) == "photo") else "sheet"
     base = {"project_id": pid, "role": "portrait", "entity_type": "character",
-            "entity_id": entity.id, "style_preset": preset,
+            "entity_id": entity.id, "entity_name": entity.name,
+            "style_preset": preset,
             "lifelike": lifelike, "lifelike_full": lifelike_full,
             "auto_polish": auto_polish}
     if gm == "compose" and slots:
@@ -1056,12 +1058,14 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
         return "asset_compose", base
     if gm == "layout":
         base.update({"task_type": "asset", "base_prompt": entity.base_prompt,
-                     "portrait_mode": "sheet", "prefer_tier": "mid"})
+                     "portrait_mode": "sheet", "prefer_tier": "mid",
+                     "entity_name": entity.name})
         return "asset", base
     # 【硬性要求】角色资产必须三视图：gm single/board 通道废弃，一律 sheet
     mode = "sheet"
     base.update({"task_type": "asset", "base_prompt": entity.base_prompt,
                  "portrait_mode": mode, "prefer_tier": tier, "model_key": model_key,
+                 "entity_name": entity.name,
                  "width": w, "height": h})
     return "asset", base
 

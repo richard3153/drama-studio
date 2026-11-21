@@ -400,6 +400,19 @@ async def _run_polish_task(task_id: int):
         await task_queue.run_task(db, t, lambda: refine_asset(db, t, params))
 
 
+def _cjk_font(size: int = 40):
+    """信息栏中文字体：按平台探测 truetype，全部失败回退默认（中文会变方框但不出错）。"""
+    from PIL import ImageFont
+    for p in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
+              "/System/Library/Fonts/PingFang.ttc",
+              "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"):
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
 async def generate_portrait_composed(db, task, params: dict) -> dict:
     """方案 A：正/侧/背三次单视角出图（同 seed）→ PIL 横向拼三视图 + 面部参考裁切。
     params: project_id/entity_id/slots/style_preset/prefer_tier/model_key/lifelike/lifelike_full"""
@@ -481,17 +494,47 @@ async def generate_portrait_composed(db, task, params: dict) -> dict:
                               save_root=save_root, timeout=600)
         files.extend(out)
 
-    update_progress(db, task, 0.85, "PIL 拼版三视图 + 面部参考裁切")
-    from PIL import Image
+    update_progress(db, task, 0.85, "PIL 拼版：左面部特写 + 三视图 + 底部信息栏")
+    from PIL import Image, ImageDraw
     panels = [Image.open(f).convert("RGB") for f in files[:3]]
-    ph = min(p.height for p in panels)
-    panels = [p.resize((int(p.width * ph / p.height), ph), Image.LANCZOS) for p in panels]
-    total_w = sum(p.width for p in panels)
-    sheet = Image.new("RGB", (total_w, ph), (245, 245, 245))
-    x = 0
-    for p in panels:
-        sheet.paste(p, (x, 0))
-        x += p.width
+    # 定稿版式（与 CHAR_SHEET_SPEC 一致，程序保证不崩版）：
+    # 左半 = 面部特写放大；右半 = 正/侧/背三视图并排；底部 = 信息栏（角色名·国家形象 + 配色色块）
+    PH = 864                                   # 主体区高
+    pw = int(PH * 2 / 3)                       # 单视图面板宽（2:3 出图比例）
+    panels = [p.resize((pw, PH), Image.LANCZOS) for p in panels]
+    strip_h = 96
+    W, H = pw * 4, PH + strip_h
+    sheet = Image.new("RGB", (W, H), (255, 255, 255))
+    # 左半：正面图上部中央裁切 → cover 放大填满左区
+    front = panels[0]
+    fw, fh = front.size
+    face = front.crop((int(fw * 0.25), 0, int(fw * 0.75), int(fh * 0.42)))
+    scale = max(pw / face.width, PH / face.height)
+    face = face.resize((max(int(face.width * scale), pw) + 1,
+                        max(int(face.height * scale), PH) + 1), Image.LANCZOS)
+    fx, fy = (face.width - pw) // 2, (face.height - PH) // 2
+    sheet.paste(face.crop((fx, fy, fx + pw, fy + PH)), (0, 0))
+    # 右半：三视图从左到右（正/侧/背）
+    for i, p in enumerate(panels):
+        sheet.paste(p, (pw + i * pw, 0))
+    # 底部信息栏：角色名 · 国家形象（中文）+ 服装主色色块
+    draw = ImageDraw.Draw(sheet)
+    name = params.get("entity_name") or ""
+    eth_label = ""
+    eth_v = (slots.get("ethnicity") or "").strip().lower()
+    if eth_v:
+        from ..style_presets import ETHNICITY_PRESETS
+        eth_label = ETHNICITY_PRESETS.get(eth_v, (eth_v, ""))[0]
+    label = " · ".join(x for x in (name, eth_label) if x)
+    draw.text((16, PH + 28), label, fill=(40, 40, 40), font=_cjk_font(40))
+    # 色块：从正面图下半（服装区）取平均色 + 明暗两个变体
+    base = front.crop((0, int(fh * 0.55), fw, fh)).resize((1, 1)).getpixel((0, 0))[:3]
+    lighter = tuple(min(255, c + 45) for c in base)
+    darker = tuple(max(0, c - 45) for c in base)
+    sx = W - 200
+    for c in (base, lighter, darker):
+        draw.rectangle((sx, PH + 24, sx + 48, PH + 72), fill=c, outline=(210, 210, 210))
+        sx += 56
     # 实测坑：输出文件名曾是固定 sheet_composed.png/face_ref.png —— 多角色共用
     # 同一物理文件互相覆盖（后生成的角色覆盖先前的，且旧 AssetImage 行指向的
     # 内容悄然变化）。文件名必须带角色 id + seed 唯一化。
