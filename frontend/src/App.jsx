@@ -1347,9 +1347,9 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                         setGenMode(gm)
                         if (gm === 'layout' || gm === 'compose') { setW(1344); setH(768) }
                       }} style={{ flex: 1 }}>
-                        <option value="auto">自动（程序拼版三视图：左特写+正/侧/背+信息栏，版式最稳）</option>
-                        <option value="compose">程序拼版三视图（正/侧/背分3次出图+PIL拼版，同seed）｜ 8G 显存足够，耗时约 3 倍</option>
-                        <option value="layout">版式模型整张多视图（Qwen-Image/Flux2）｜ 10G 以上推荐，8G 可跑但慢 3–5 倍</option>
+                        <option value="auto">自动（Qwen-Image 整张版式：左特写+三视图+信息栏，转向/服装最准，约 8 分钟）</option>
+                        <option value="compose">SDXL 三视角拼版（正/侧/背分3次+PIL拼版，服装锁定）｜ 约 5 分钟</option>
+                        <option value="layout">Qwen-Image 整张版式｜ 8G 显存可跑（offload），单张一次成型</option>
                       </select>
                     </div>
                     <div className="row" style={{ marginBottom: 6 }}>

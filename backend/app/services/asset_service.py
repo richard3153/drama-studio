@@ -453,6 +453,9 @@ async def generate_portrait_composed(db, task, params: dict) -> dict:
             overrides["CheckpointLoaderSimple.ckpt_name"] = model["weight"]
         elif family == "flux2_klein":
             overrides["UNETLoader.unet_name"] = model["weight"]
+        elif family == "qwen_image":
+            # Qwen-Image 走 UNETLoader（diffusion_models 目录）；weight 随注册表可换
+            overrides["UNETLoader.unet_name"] = model["weight"]
 
         wf = comfy.load_template(template_name)
 

@@ -1042,11 +1042,11 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
     slots = _json.loads(getattr(entity, "prompt_json", "{}") or "{}")
     gm = getattr(entity, "gen_mode", "auto") or "auto"
     if gm in ("auto", "sheet"):
-        # 【硬性要求 2026-11-21】版式稳定性优先：单张 sheet 依赖底模服从复杂排版，
-        # 实测 anime 族偶稳、photo 族崩版（赵总单人像），且底模会在单视角图里自由
-        # 发挥出"特写+三视图"拼贴 → 一律走 compose 程序拼版，版式由 PIL 硬保证。
-        # layout（Qwen/Flux2 版式模型）仅用户显式选择时保留。
-        gm = "compose" if slots else "sheet"
+        # 【默认通道 2026-11-21】Qwen-Image 整张版式（实测赵总：左特写+正/侧/背三视图
+        # 一次成型，纯侧/纯背转向正确，服装跨视图一致，信息栏+色卡自带）——
+        # SDXL 单张必崩、compose img2img 转向弱，Qwen 版式/多视图服从度最强。
+        # compose（SDXL 三视角拼版）保留为 gen_mode=compose 显式兜底通道。
+        gm = "layout" if slots else "sheet"
     base = {"project_id": pid, "role": "portrait", "entity_type": "character",
             "entity_id": entity.id, "entity_name": entity.name,
             "style_preset": preset,
@@ -1057,8 +1057,13 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
                      "prefer_tier": tier, "model_key": model_key})
         return "asset_compose", base
     if gm == "layout":
-        base.update({"task_type": "asset", "base_prompt": entity.base_prompt,
-                     "portrait_mode": "sheet", "prefer_tier": "mid",
+        # 版式模型整张多视图：默认 Qwen-Image（版式/多视图/中文小字渲染能力最强，
+        # 实测 SDXL 整张版式必崩、compose img2img 转向弱）——8G 显存 offload 可跑。
+        # 信息栏文字注入真实角色名（实测不注入时 Qwen 自由发挥伪文字）。
+        caption = f', caption strip shows the Chinese text "{entity.name}" in small neat font'
+        base.update({"task_type": "asset", "base_prompt": entity.base_prompt + caption,
+                     "portrait_mode": "sheet", "prefer_tier": tier,
+                     "model_key": model_key or "img_qwen_image",
                      "entity_name": entity.name})
         return "asset", base
     # 【硬性要求】角色资产必须三视图：gm single/board 通道废弃，一律 sheet
