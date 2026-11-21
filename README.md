@@ -7,7 +7,7 @@
 
 ## 标签 / Tags
 
-`local-first` `offline` `ai-video` `short-drama` `comfyui` `ollama` `fastapi` `react` `sdxl` `wan2.1` `infinitetalk` `ipadapter` `edge-tts` `text-to-video` `image-to-video` `storyboard` `film-production` `low-vram` `rtx-4070` `self-hosted`
+`local-first` `offline` `ai-video` `short-drama` `comfyui` `ollama` `fastapi` `react` `sdxl` `wan2.1` `infinitetalk` `ipadapter` `edge-tts` `text-to-video` `image-to-video` `storyboard` `film-production` `low-vram` `rtx-4070` `self-hosted` `prompt-engineering` `vertical-drama` `face-consistency` `scene-anchoring` `motion-control`
 
 ---
 
@@ -28,10 +28,11 @@
 | 模块 | 功能 | 技术 |
 |---|---|---|
 | 剧本工坊 | 一句话 → 高概念 → 分集大纲 → 标准剧本（场号/△动作行/紧凑对白/音效字幕）；**集数硬保证**（分批生成+自动补齐，最高 60 集，LLM 偷懒也凑满）；**续写分集**（保留已有集接写后 10 集，逐集自动 AI 写剧本，单集失败可单独重试）；分集列表分页浏览 | 本地 Ollama (qwen) |
-| 导演拆解 | 分镜拆解（切镜八原则）+ 运镜多样性 + 每镜组装好的首帧/尾帧/视频提示词；角色**国家/地区形象**槽位（中/韩/日/美/欧/非/印等 11 预设，拆解按剧本背景自动推断，也可手动下拉改） | 规则解析 + LLM |
+| 导演拆解 | **大师级导演/编剧分镜**：12 条专业覆盖语法（定场镜/正反打+过肩/180° 轴线锁视线/反应镜/插入镜/cut-on-action）+ **竖屏留存波形节奏编排**（hook 开场钩子→压迫→激化→反转峰值→集尾 cliffhanger 五段情绪循环，拍点张力词直落提示词）+ 运镜多样性启发式兜底；角色**国家/地区形象**槽位（11 预设） | 规则解析 + LLM |
+| 词库系统 | **风格词库**（26 个风格包：动漫 Danbooru 词系/仙侠/国风水墨/cyberpunk/VFX 特效四要素，负面链防风格串味）× **题材词库**（14 个红果爆款题材包反向解析：战神/赘婿/霸总/宫斗…，setting/wardrobe/mood/hooks/negative 五类，光比公式+名场面钩子词），双层正交叠加，角色三视图只取风格锚防特效污染设定图 | style_vocab.py |
 | 角色资产 | 三视图定妆照**硬锁**（左半面部特写 + 右半正/侧/背全身 + 底部信息栏含角色名与配色卡）：默认 **Qwen-Image 2.1 整张版式一次成型**（转向/服装跨视图最准），SDXL 三视角拼版为备选通道；三视图版式全链路归一，任何入口不会漏出单人像 | Qwen-Image 2.1 int8 / SDXL |
-| 一致性 | IPAdapter 锁脸（单人/双人链式双 IPA）+ 场景锚定图 + 末帧接力 | ComfyUI |
-| 视频生成 | 双帧 i2v / 单帧续写 / 镜内延长（ffmpeg 无损拼接） | Wan2.1 480P fp8 |
+| 一致性 | IPAdapter 锁脸（单人/双人链式双 IPA）+ **锁脸治理**（meta 感知判定不再误拒裁脸图、特写/像素面积择优喂参考、角色级默认脸锁钉死参考版本）+ 场景锚定图（**三级回退**：手动锚→iso 布局图→最新场景图，一键批量补齐）+ 末帧接力 | ComfyUI |
+| 视频生成 | 双帧 i2v / 单帧续写 / 镜内延长（ffmpeg 无损拼接）；**六槽位身体部位级动作控制**（posture/gesture/expression/gaze/intensity/secondary）+ 运镜稳定性约束（no jitter/no morphing/feet not slide/单主力运镜） | Wan2.1 480P fp8 |
 | 口型对齐 | 台词 → 逐句 TTS → 音频驱动说话视频，口型全程跟音频 | InfiniteTalk |
 | 配音成片 | 音色跨集锁定 + 语气层（11 种情绪映射语速音调）+ 混音 + SRT 烧录 | edge-tts + ffmpeg |
 | 批量编排 | 一键全流程 / 断点续跑 / 向后重链 / 剪映 & FCPXML 导出 | FastAPI 编排 |
@@ -43,7 +44,9 @@
 
 - **第三章 · 高概念公式**：熟悉设定 + 颠覆性反差 = 高概念；三幕剧拆集，每集解决一个具体矛盾、结尾设强钩子。**集数硬保证**：小模型对"共 N 集"服从度差（实测 4B 模型要 3 集只给 2 集），大纲按 6 集/批循环补齐；续写分集与重建式生成分离，重建清空重走、续写只追加。
 - **第一章 · 影视标准格式**：场号仅在场景/时间切换时新增（严禁每节拍开新场）、动作行只写可视化内容、心理描写强制转动作。
-- **切镜八原则**：情绪转变/动作三段/对话视线乒乓/景别循序渐进；LLM 偷懒全"固定慢"时由启发式重排兜底（首镜缓推定场、位移镜跟走、末镜拉收场）。
+- **导演覆盖语法 + 留存波形**：切镜从"八原则"升级为 12 条专业覆盖语法（正反打锁 180° 轴线、反应镜给戏眼、插入镜给证据、cut on action），节奏按竖屏留存波形编排（0-3s 钩子截停→压迫→激化→反转峰值→集尾 cliffhanger 留扣），拍点张力词注入提示词；LLM 偷懒全"固定慢"时由启发式重排兜底。
+- **双层提示词词库**：风格词库（画风层：动漫 Danbooru 词系配"禁摄影词"负面、仙侠三段式、VFX 特效=颜色+形状+粒子+动势）× 题材词库（题材层：红果爆款反向解析的光比公式——甜宠 1-2:1/悬疑 6:1/权谋伦勃朗 10:1——与名场面钩子词），负面链自动防风格/题材串味。
+- **运动动作控制**：六槽位身体部位级公式（谁+身体部位+做什么+朝向），I2V 遵循 Wan 官方运动公式——图定义实体、文只管运动，稳定性词必备。
 - **第二章 · 九段式角色公式**：identity → appearance → face → hair → clothing → makeup → accessories → expression → pose，抽象形容词一律转为可视觉化符号（"帅气"→"嘴角微翘、下颌线利落"）。
 - **道具三分类**：核心叙事 / 角色连接 / 环境氛围——氛围道具不独立生成并入场景，出现 ≥2 次的引用道具才自动晋升。
 - **活人感五机制**：质感瑕疵（皮肤毛孔/发丝凌乱/布料褶皱）+ 物理光源（单一主光源+色温混合）+ 非模板姿态 + 10% 自动微调 + 防过度渲染负面词——专治"AI 塑料感"。三视图/定妆照自动切换身份安全版瑕疵，保跨集五官稳定。
@@ -104,6 +107,7 @@ backend/
     api.py               # FastAPI 全部路由
     db.py                # SQLAlchemy 模型 + 轻量迁移
     style_presets.py     # 30+ 风格预设 / 方法论提示词组装 / 活人感词库
+    style_vocab.py       # 双层词库：26 风格包 × 14 红果爆款题材包（风格/题材/负面词）
     aspect.py            # 全局画幅桶（SDXL 分辨率桶 + IPA 压长边策略）
     adapters/            # ComfyUI（D 范式结构化覆盖）/ Ollama 适配器
     scheduler/           # 串行任务队列 + SSE + 显存感知选档
