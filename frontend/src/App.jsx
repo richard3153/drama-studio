@@ -1524,9 +1524,26 @@ function AssetsPage({ project, refreshTasks, setStage }) {
 }
 
 /* ---------- 底部任务栏 ---------- */
-function TaskBar({ tasks, vram }) {
+function TaskBar({ tasks, vram, refreshTasks }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(null)
   const active = tasks.filter(t => t.status === 'running' || t.status === 'pending')
   const shown = active.length ? active : tasks.slice(0, 2)
+  const act = async (tid, action) => {
+    setBusy(tid)
+    try { await post(`/tasks/${tid}/${action}`) }
+    catch (e) { alert(String(e.message || e).slice(0, 200)) }
+    await refreshTasks()
+    setBusy(null)
+  }
+  // 每种状态可用的控制按钮
+  const ctl = t => {
+    if (t.status === 'running') return [['取消', 'cancel']]
+    if (t.status === 'pending') return [['暂停', 'pause'], ['取消', 'cancel']]
+    if (t.status === 'paused') return [['继续', 'resume'], ['取消', 'cancel']]
+    if (t.status === 'failed') return [['重试', 'retry']]
+    return []
+  }
   return (
     <div className="taskbar">
       <span className="vram">GPU 空闲 {vram?.vram_free_gb ?? '—'} / {vram?.vram_total_gb ?? '—'} GB</span>
@@ -1538,6 +1555,34 @@ function TaskBar({ tasks, vram }) {
           <span>{t.stage || t.status}</span>
         </div>
       )) : <span style={{ color: 'var(--dim)' }}>空闲</span>}
+      <button className="ghost" style={{ marginLeft: 'auto', fontSize: 12, padding: '3px 12px', borderRadius: 8, cursor: 'pointer' }}
+              onClick={() => setOpen(o => !o)}>
+        {open ? '收起队列 ▾' : `队列详情 ▴ (${tasks.length})`}
+      </button>
+      {open && (
+        <div className="task-detail-panel">
+          <div className="task-detail-head">任务详情（最近 {Math.min(tasks.length, 15)} 条 · 排队中可暂停，推理中只能取消）</div>
+          {tasks.slice(0, 15).map(t => (
+            <div key={t.id} className="task-detail-row">
+              <span className="task-id">#{t.id}</span>
+              <span className={`badge ${t.status}`}>{t.status}</span>
+              <span className="task-desc" title={t.error || ''}>{t.desc || t.type}</span>
+              <div className="progress-track" style={{ flex: 1, minWidth: 80 }}>
+                <div className="progress-fill" style={{ width: `${Math.round((t.progress || 0) * 100)}%` }} />
+              </div>
+              <span className="task-pct">{Math.round((t.progress || 0) * 100)}%</span>
+              <span className="task-stage" title={t.error || t.stage}>
+                {t.error ? '✗ ' + t.error.split('\n')[0] : (t.stage || '')}
+              </span>
+              {ctl(t).map(([label, action]) => (
+                <button key={action} className="ghost" style={{ fontSize: 12, padding: '2px 10px', borderRadius: 8, cursor: 'pointer' }}
+                        disabled={busy === t.id}
+                        onClick={() => act(t.id, action)}>{label}</button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1596,7 +1641,7 @@ export default function App() {
           {stage === 'export' && project && <ExportPage project={project} setStage={setStage} />}
         </div>
       </div>
-      <TaskBar tasks={tasks} vram={vram} />
+      <TaskBar tasks={tasks} vram={vram} refreshTasks={refreshTasks} />
     </>
   )
 }

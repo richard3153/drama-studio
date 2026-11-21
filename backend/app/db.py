@@ -282,10 +282,53 @@ def _migrate():
         conn.commit()
 
 
+def task_desc(type_: str, params: dict) -> str:
+    """任务一句话中文描述（任务队列详细列表用）。"""
+    p = params or {}
+    eid = p.get("episode_id")
+    ep = f"第{eid}集" if eid else ""
+    try:
+        n = int(p.get("num_episodes") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    from_ = p.get("from_idx")
+    m = {
+        "outline": lambda: f"生成分集大纲（{n or '?'} 集）",
+        "continue_outline": lambda: f"续写分集大纲（{ep or '追加 10 集'}）",
+        "script": lambda: f"写{ep}剧本",
+        "breakdown": lambda: f"{ep}分镜拆解",
+        "refine": lambda: "润色文本",
+        "rebuild_slots": lambda: "重建资产槽位",
+        "portrait": lambda: f"角色「{p.get('entity_name', '')}」定妆照（Qwen 整张版式）",
+        "asset": lambda: f"生成资产（{p.get('entity_type', '')}）",
+        "asset_compose": lambda: f"角色「{p.get('entity_name', '')}」三视图拼版",
+        "ref_redraw": lambda: "实物参考图重绘",
+        "upscale": lambda: "图片超分放大",
+        "polish": lambda: "资产微调重生成",
+        "shot_frame": lambda: f"镜头 #{p.get('shot_id', '?')} {p.get('frame_type', 'first')} 帧",
+        "shot_video": lambda: f"镜头 #{p.get('shot_id', '?')} i2v 视频",
+        "shot_talk": lambda: f"镜头 #{p.get('shot_id', '?')} 口型说话（InfiniteTalk，耗时较长）",
+        "shot_chain": lambda: f"末帧接力首帧（承上一镜）",
+        "shot_extend": lambda: f"镜头 #{p.get('shot_id', '?')} 镜内延长",
+        "grid9": lambda: "九宫格故事板",
+        "tts": lambda: f"{ep}台词配音（edge-tts）",
+        "stitch": lambda: f"{ep}成片合成（拼接/混音/烧字幕）",
+        "batch_frames": lambda: f"{ep}批量首帧（链式接力）",
+        "batch_videos": lambda: f"{ep}批量视频",
+        "rechain_from": lambda: f"{ep}向后重链（从 s{from_ or 1} 起）",
+        "full_pipeline": lambda: f"{ep}一键全流程（首帧→视频→配音→成片）",
+        "export_jianying": lambda: f"{ep}导出剪映草稿",
+        "export_fcpxml": lambda: f"{ep}导出 FCPXML",
+    }
+    fn = m.get(type_)
+    return fn() if fn else type_
+
+
 def task_to_dict(t: TaskRecord) -> dict:
     return {
         "id": t.id, "type": t.type, "status": t.status, "progress": t.progress,
-        "stage": t.stage, "params": json.loads(t.params_json or "{}"),
+        "stage": t.stage, "desc": task_desc(t.type, json.loads(t.params_json or "{}")),
+        "params": json.loads(t.params_json or "{}"),
         "result": json.loads(t.result_json or "{}"), "error": t.error,
         "model_key": t.model_key, "vram_gb": t.vram_gb,
         "created_at": str(t.created_at),

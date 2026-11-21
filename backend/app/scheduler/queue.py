@@ -14,6 +14,8 @@ _heavy_lock = asyncio.Lock()
 # 无引用任务会被 GC 中途销毁（asyncio 文档明确警告）——表现为任务跑着跑着悄悄消失，
 # 且与页面刷新/内存抖动时机相关。所有 fire-and-forget 任务必须经 spawn_bg 持引用。
 _bg_tasks: set[asyncio.Task] = set()
+# 任务 id → 运行中的 asyncio.Task（取消运行中任务用）
+_run_map: dict[int, asyncio.Task] = {}
 
 
 def spawn_bg(coro) -> asyncio.Task:
@@ -22,6 +24,21 @@ def spawn_bg(coro) -> asyncio.Task:
     _bg_tasks.add(t)
     t.add_done_callback(_bg_tasks.discard)
     return t
+
+
+def register_runner(task_id: int, at: asyncio.Task):
+    """登记任务执行协程，供 cancel 按 task_id 定位；结束自动摘除。"""
+    _run_map[task_id] = at
+    at.add_done_callback(lambda _: _run_map.pop(task_id, None))
+
+
+def cancel_running(task_id: int) -> bool:
+    """取消运行中（含排队等锁）任务的执行协程；没有在跑的返回 False。"""
+    at = _run_map.get(task_id)
+    if at is not None and not at.done():
+        at.cancel()
+        return True
+    return False
 
 
 async def publish(event: str, data: dict):
@@ -61,12 +78,22 @@ def _set(db, t: TaskRecord, **fields):
 
 async def run_task(db, t: TaskRecord, fn: Callable[[], Awaitable[dict]],
                    *, heavy: bool = True):
-    """执行任务并全程推送 SSE 进度；heavy 任务持互斥锁保证 GPU 串行。"""
+    """执行任务并全程推送 SSE 进度；heavy 任务持互斥锁保证 GPU 串行。
+
+    暂停语义：排队期间（等锁前/等锁中）状态被标 paused → 拿到锁后直接让位不执行，
+    等待「继续」重新派发；已进入 GPU 推理的任务不支持暂停（只能取消）。
+    """
+    if t.status in ("paused", "cancelled"):   # 派发前已被暂停/取消：不启动
+        await publish("task_update", {"task": task_to_dict(t)})
+        return
     _set(db, t, status="running", started_at=now())
     await publish("task_update", {"task": task_to_dict(t)})
     try:
         if heavy:
             async with _heavy_lock:
+                if t.status == "paused":      # 排队期间被暂停：持锁即让位
+                    await publish("task_update", {"task": task_to_dict(t)})
+                    return
                 result = await fn()
         else:
             result = await fn()
