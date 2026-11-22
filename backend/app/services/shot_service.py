@@ -439,17 +439,10 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     scene_ref = None if params.get("use_scene_ref") is False else _scene_anchor(db, shot)
     scene_ipa_w = float(params.get("scene_ipa_weight") or 0.4)
     real = fam == "photo"   # 写实底模需要额外锁脸负面（脸型变异治理）
-    # 场景锁定优先（方案五：有锚图时默认开启，镜头卡显式 scene_lock=False 才关）：
-    # 直接以锚图为底图 img2img，环境还原度最高，压同场景背景漂移；
-    # 代价是构图被锚图约束、无 IPA 锁脸（写实风格下脸可能漂移，用户权衡）。
-    if scene_ref and params.get("scene_lock") is not False:
-        update_progress(db, task, 0.2,
-                        f"场景锁定：锚图 img2img（denoise {params.get('scene_denoise', 0.45)}）")
-        out = await _img2img(comfy, model, prompt, neg, scene_ref, w, h,
-                             float(params.get("scene_denoise") or 0.45), 26, 6.0,
-                             seed, save_root, prefix)
-        if out:
-            return out[0]
+    # 场景锁定（方案五）只作用于【无角色入镜】的镜头：锚图是无人场景图，
+    # 对有人镜做锚图 img2img 等于从提示词凭空重画人物，IPA 锁脸被完全跳过
+    # → 后期分镜人物变形/换人（#74 修复：有人镜一律先走 IPA 锁脸通道，
+    #   场景一致性由双 IPA 的场景锚槽位（weight 0.4）承担，两全）。
     if refs:
         multi = len(refs) >= 2
         if multi:
@@ -472,8 +465,17 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
                 return out[0]
         except Exception as e:  # 锁脸失败不阻断出图，回落文生图
             update_progress(db, task, 0.25, f"IPAdapter 失败 → 回落文生图：{e}")
+    elif scene_ref and params.get("scene_lock") is not False:
+        # 空镜/无人镜 + 场景锁定（默认开）：直接以锚图为底图 img2img，环境还原度最高
+        update_progress(db, task, 0.2,
+                        f"场景锁定：空镜锚图 img2img（denoise {params.get('scene_denoise', 0.45)}）")
+        out = await _img2img(comfy, model, prompt, neg, scene_ref, w, h,
+                             float(params.get("scene_denoise") or 0.45), 26, 6.0,
+                             seed, save_root, prefix)
+        if out:
+            return out[0]
     elif scene_ref:
-        # 纯空镜 + 场景锚图：单 IPA 挂锚图（锁环境风格与元素，构图交给提示词）
+        # 空镜 + 场景锁定显式关闭：单 IPA 挂锚图（锁环境风格与元素，构图交给提示词）
         update_progress(db, task, 0.2, f"IPAdapter 场景锚图（{Path(scene_ref).name}，weight {scene_ipa_w}）")
         try:
             out = await _ipa_gen(comfy, model, prompt, neg, scene_ref, w, h, seed, 26, 6.0,
