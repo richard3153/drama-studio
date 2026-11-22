@@ -906,6 +906,7 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
+    comfy = ComfyUIAdapter()
     wf = comfy.load_template("i2v_first_last.json")   # 转场镜必须双帧约束（首=A末帧 尾=B首帧）
 
     fps = 16
@@ -921,7 +922,6 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
         f"consistent lighting and character appearance", family, duration, has_end_frame=True)
 
     update_progress(db, task, 0.3, f"双帧过渡推理（s{src.idx}→s{dst.idx}，{duration}s）")
-    comfy = ComfyUIAdapter()
     start_name = await comfy.upload_image(src_frame)
     end_name = await comfy.upload_image(dst.first_frame_path)
     seed = random.randint(0, 2 ** 31 - 1)
