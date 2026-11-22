@@ -14,7 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from ..db import Episode, Shot, TaskRecord
+from ..db import Episode, Project, Shot, TaskRecord
 from ..scheduler.queue import update_progress
 from . import shot_service, voice_service
 
@@ -43,6 +43,12 @@ def _has_chainable_src(s: Shot) -> bool:
     return _ok(s.video_path) or (s.needs_end_frame and _ok(s.end_frame_path))
 
 
+def _same_scene(a: Shot, b: Shot) -> bool:
+    """方案一：接力只在同场景相邻镜之间进行——跨场景边界背景本该变化，
+    接力会把上一个场景的画面带进新场景，反而制造断裂。""" 
+    return (a.scene_name or "") == (b.scene_name or "")
+
+
 async def batch_frames(db, t: TaskRecord, params: dict) -> dict:
     """批量首帧（链式）：跳过已有首帧；缺首帧的镜若上一镜已有视频/尾帧，
     自动接力上一镜末帧 img2img 重绘（衔接+人物外观继承），否则独立生成。
@@ -57,7 +63,8 @@ async def batch_frames(db, t: TaskRecord, params: dict) -> dict:
     for i, sh in enumerate(todo):
         prev = prev_by_idx.get(sh.idx - 1)
         coro = None
-        if use_chain and prev is not None and _has_chainable_src(prev) and prev.idx == sh.idx - 1:
+        if (use_chain and prev is not None and _has_chainable_src(prev)
+                and prev.idx == sh.idx - 1 and _same_scene(prev, sh)):
             coro = shot_service.chain_shot_frame(db, t, {"shot_id": prev.id})
             label = f"接力首帧 s{sh.idx}"
         if coro is not None:
@@ -142,6 +149,45 @@ async def batch_videos(db, t: TaskRecord, params: dict) -> dict:
     return {"videos": len(todo) - len(failed), "failed": failed}
 
 
+async def batch_transitions(db, t: TaskRecord, params: dict) -> dict:
+    """批量转场镜（方案二，可选开关）：场景切换边界 → 上镜末帧+下镜首帧双帧 i2v 生成
+    1-2s 过渡镜。幂等：已有产物跳过；单边缺产物（A 无视频/尾帧、B 无首帧）跳过并记录。
+    params: episode_id"""
+    eid = params["episode_id"]
+    shots = _collect(db, eid)
+    if not shots:
+        raise RuntimeError("本集没有镜头")
+    pid = shots[0].project_id
+    boundaries = [(a, b) for a, b in zip(shots, shots[1:])
+                  if (a.scene_name or "") != (b.scene_name or "")]
+    update_progress(db, t, 0.02, f"场景切换边界 {len(boundaries)} 处，检查产物")
+    todo, skipped = [], []
+    for a, b in boundaries:
+        out_path = shot_service.transition_clip_path(pid, a.idx, b.idx)
+        if out_path.exists():
+            skipped.append({"from": a.idx, "to": b.idx, "reason": "已有转场镜"})
+        elif not _has_chainable_src(a):
+            skipped.append({"from": a.idx, "to": b.idx, "reason": "上镜缺视频/尾帧"})
+        elif not _ok(b.first_frame_path):
+            skipped.append({"from": a.idx, "to": b.idx, "reason": "下镜缺首帧"})
+        else:
+            todo.append((a, b))
+    done, failed = [], []
+    for i, (a, b) in enumerate(todo):
+        err = await _run_step(db, t, f"转场镜 s{a.idx}→s{b.idx}", i, len(todo),
+                              shot_service.generate_transition_clip(
+                                  db, t, {"from_shot_id": a.id, "to_shot_id": b.id,
+                                          "mechanism": (b.transition_in or "")}))
+        if err:
+            failed.append({"from": a.idx, "to": b.idx, "error": err})
+        else:
+            done.append({"from": a.idx, "to": b.idx})
+    update_progress(db, t, 1.0,
+                    f"转场镜完成：生成 {len(done)}，跳过 {len(skipped)}，失败 {len(failed)}")
+    return {"boundaries": len(boundaries), "generated": done,
+            "skipped": skipped, "failed": failed}
+
+
 async def rechain_from(db, t: TaskRecord, params: dict) -> dict:
     """向后重链（衔接一致性主入口）：从 from_idx 镜开始，以上一镜现有视频/尾帧为源，
     逐镜 末帧→接力首帧→（缺尾帧先补）→i2v 视频，向后连锁重生成。
@@ -169,8 +215,15 @@ async def rechain_from(db, t: TaskRecord, params: dict) -> dict:
         else:
             if not _has_chainable_src(prev):
                 raise RuntimeError(f"上一镜 #{prev.idx} 没有视频也没有尾帧，无法接力；先补齐它再重链")
-            err = await _run_step(db, t, f"[重链] 接力首帧 s{sh.idx}（承 #{prev.idx}）", step, total_steps,
-                                  shot_service.chain_shot_frame(db, t, {"shot_id": prev.id}))
+            if not _same_scene(prev, sh):
+                # 跨场景边界：不接力（接力会把旧场景带进新场景），改独立生成走场景锚图
+                err = await _run_step(db, t, f"[重链] 首帧 s{sh.idx}（跨场景独立）", step, total_steps,
+                                      shot_service.generate_shot_frame(
+                                          db, t, {"shot_id": sh.id, "frame_type": "first",
+                                                  "ipa_weight": params.get("ipa_weight", 0.7)}))
+            else:
+                err = await _run_step(db, t, f"[重链] 接力首帧 s{sh.idx}（承 #{prev.idx}）", step, total_steps,
+                                      shot_service.chain_shot_frame(db, t, {"shot_id": prev.id}))
         step += 1
         if err:
             failed.append({"shot_idx": sh.idx, "stage": "first_frame", "error": err})
@@ -204,14 +257,16 @@ async def full_pipeline(db, t: TaskRecord, params: dict) -> dict:
     shots = _collect(db, eid)
     no_first = [s for s in shots if not _ok(s.first_frame_path)]
     no_video = [s for s in shots if _ok(s.first_frame_path) and not _ok(s.video_path)]
-    steps_total = len(no_first) + len(no_video) + 2     # +TTS +合成
+    proj = db.get(Project, shots[0].project_id) if shots else None
+    want_bridge = bool(getattr(proj, "transition_bridge", 0)) if proj else False
+    steps_total = len(no_first) + len(no_video) + (1 if want_bridge else 0) + 2  # +转场镜?+TTS +合成
     step = 0
 
     summary = {}
     prev_by_idx = {s.idx: s for s in shots}
     for sh in no_first:
         prev = prev_by_idx.get(sh.idx - 1)
-        if prev is not None and _has_chainable_src(prev):
+        if (prev is not None and _has_chainable_src(prev) and _same_scene(prev, sh)):
             err = await _run_step(db, t, f"[全流程] 接力首帧 s{sh.idx}", step, steps_total,
                                   shot_service.chain_shot_frame(db, t, {"shot_id": prev.id}))
             if err:
@@ -246,7 +301,15 @@ async def full_pipeline(db, t: TaskRecord, params: dict) -> dict:
         if err:
             summary.setdefault("failed", []).append({"shot_idx": sh.idx, "error": err})
 
-    update_progress(db, t, step / steps_total, "[全流程] 台词配音（edge-tts）")
+    if want_bridge:
+        update_progress(db, t, step / max(steps_total, 1), "[全流程] 生成转场镜（场景切换边界）")
+        try:
+            summary["transitions"] = await batch_transitions(db, t, params)
+        except Exception as e:
+            summary.setdefault("failed", []).append({"stage": "transitions", "error": str(e)[:200]})
+        step += 1
+
+    update_progress(db, t, step / max(steps_total, 1), "[全流程] 台词配音（edge-tts）")
     try:
         summary["tts"] = await voice_service.tts_episode(db, t, params)
     except Exception as e:

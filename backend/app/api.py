@@ -96,6 +96,8 @@ class ProjectUpdate(BaseModel):
     grid_storyboard: int | None = None # 宫格故事板（仅动漫风格建议开）
     aspect_ratio: str | None = None    # 全局画幅：16:9/21:9/4:3/1:1/3:4/9:16
     genre: str | None = None           # 题材锁（红果爆款题材词库 key，""=不挂题材词库）
+    transition_bridge: int | None = None  # 转场镜开关：场景切换边界双帧 i2v 生成过渡镜
+    transition_fx: str | None = None   # 成片兜底转场：''=不加 / fadeblack / fadewhite
 
 
 @router.put("/projects/{pid}")
@@ -106,6 +108,8 @@ def update_project(pid: int, body: ProjectUpdate):
         raise HTTPException(400, "未知风格预设")
     if body.genre and body.genre not in GENRE_VOCAB:
         raise HTTPException(400, "未知题材词库 key")
+    if body.transition_fx and body.transition_fx not in ("fadeblack", "fadewhite"):
+        raise HTTPException(400, "兜底转场仅支持 fadeblack/fadewhite")
     with SessionLocal() as db:
         p = db.get(Project, pid)
         if not p:
@@ -128,9 +132,15 @@ def update_project(pid: int, body: ProjectUpdate):
             p.aspect_ratio = normalize_aspect(body.aspect_ratio)
         if body.genre is not None:
             p.genre = body.genre
+        if body.transition_bridge is not None:
+            p.transition_bridge = body.transition_bridge
+        if body.transition_fx is not None:
+            p.transition_fx = body.transition_fx
         db.commit()
         return {"id": p.id, "name": p.name, "style_preset": p.style_preset,
                 "genre": getattr(p, "genre", ""),
+                "transition_bridge": getattr(p, "transition_bridge", 0),
+                "transition_fx": getattr(p, "transition_fx", ""),
                 "lifelike": p.lifelike, "lifelike_full": p.lifelike_full,
                 "auto_polish": p.auto_polish, "grid_storyboard": p.grid_storyboard,
                 "aspect_ratio": p.aspect_ratio}
@@ -143,6 +153,8 @@ def list_projects():
         return [{"id": p.id, "name": p.name, "description": p.description,
                  "style_preset": p.style_preset,
                  "genre": getattr(p, "genre", ""),
+                 "transition_bridge": getattr(p, "transition_bridge", 0),
+                 "transition_fx": getattr(p, "transition_fx", ""),
                  "lifelike": p.lifelike, "lifelike_full": p.lifelike_full,
                  "auto_polish": p.auto_polish, "grid_storyboard": p.grid_storyboard,
                  "aspect_ratio": p.aspect_ratio,
@@ -282,6 +294,7 @@ async def _run_task(task_id: int):
             "tts": lambda: voice_service.tts_episode(db, t, params),
             "stitch": lambda: asyncio.to_thread(voice_service.export_final, db, t, params),
             "batch_frames": lambda: pipeline_service.batch_frames(db, t, params),
+            "batch_transitions": lambda: pipeline_service.batch_transitions(db, t, params),
             "batch_videos": lambda: pipeline_service.batch_videos(db, t, params),
             "rechain_from": lambda: pipeline_service.rechain_from(db, t, params),
             "full_pipeline": lambda: pipeline_service.full_pipeline(db, t, params),
@@ -1327,6 +1340,8 @@ def _shot_dict(s: Shot, scene_anchor: str | None = None) -> dict:
         "framing_start": s.framing_start, "framing_end": s.framing_end,
         "camera_angle": s.camera_angle, "focal_length": s.focal_length,
         "focus_transition": s.focus_transition, "blocking": s.blocking,
+        "transition_in": getattr(s, "transition_in", ""),
+        "beat": getattr(s, "beat", ""),
         "character_path": s.character_path, "subject_action": s.subject_action,
         "light": s.light, "composition": s.composition,
         "characters": json.loads(s.characters_json or "[]"),
@@ -1398,6 +1413,7 @@ class ShotUpdate(BaseModel):
     action_beats: list[dict] | None = None
     screen_direction: str | None = None
     continuity_guidance: str | None = None
+    transition_in: str | None = None   # 与上镜的转场方式：''/hard_cut/match_cut/whip_pan/object_pass/light_flash/dissolve
 
 
 @router.patch("/shots/{sid}")
@@ -1886,6 +1902,26 @@ async def episode_batch_videos(eid: int, body: BatchIn = None):
         t = task_queue.create_task(db, "batch_videos", params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": "batch_videos"}
+
+
+@router.post("/episodes/{eid}/batch-transitions")
+async def episode_batch_transitions(eid: int):
+    """批量转场镜（方案二可选开关）：场景切换边界 → 上镜末帧+下镜首帧双帧 i2v 过渡镜。
+    幂等：已有产物跳过；单边缺产物（上镜缺视频/尾帧、下镜缺首帧）跳过并记录原因。"""
+    with SessionLocal() as db:
+        ep = db.get(Episode, eid)
+        if not ep:
+            raise HTTPException(404, "剧集不存在")
+        dup = next((t for t in db.scalars(select(TaskRecord).where(
+            TaskRecord.type == "batch_transitions",
+            TaskRecord.status.in_(("running", "pending")))).all()
+            if json.loads(t.params_json or "{}").get("episode_id") == eid), None)
+        if dup:
+            raise HTTPException(400, f"该集已有转场镜任务在跑（任务 #{dup.id}）")
+        t = task_queue.create_task(db, "batch_transitions",
+                                   {"episode_id": eid, "project_id": ep.project_id})
+    task_queue.spawn_bg(_run_bg(t.id))
+    return {"task_id": t.id, "task_type": "batch_transitions"}
 
 
 @router.post("/episodes/{eid}/rechain-from")

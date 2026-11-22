@@ -80,6 +80,7 @@ SHOT_SCHEMA = {
         "light": "本镜头光影（英文）",
         "composition": "构图与角度，如过肩/仰视（英文）",
         "beat": "叙事拍点：hook|pressure|escalation|turn|peak|cliffhanger|atmosphere（按留存波形分配，见拆解要求）",
+        "transition_in": "hard_cut|match_cut|whip_pan|object_pass|light_flash|dissolve（与上一镜的转场方式）",
     }],
     "new_characters": [], "new_scenes": [], "new_props": [],
 }
@@ -689,6 +690,45 @@ def _beat_tokens(beat: str) -> str:
     return BEAT_TOKENS.get((beat or "").strip().lower(), "")
 
 
+# 转场方式（Domer/Versely AI 转场方法论）：transition_in 标注在本镜上，
+# 描述本镜如何从上一镜过渡。tail 词进上一镜视频提示词（镜尾），head 词进本镜视频提示词（镜首）。
+# 图片提示词不注入转场词——首帧/尾帧必须是干净可用的静帧，模糊/白闪只发生在视频运动里。
+TRANSITIONS: dict[str, dict[str, str]] = {
+    # ''/hard_cut 不注入任何词（同场景连续镜头直接切，接力 img2img 保证背景连续）
+    "match_cut": {
+        "tail": "composition settles on the match point, subject scale and position locked",
+        "head": "match cut from previous shot, same composition geometry and subject scale, continuity preserved",
+    },
+    "whip_pan": {
+        "tail": "camera whips rapidly sideways, strong directional motion blur, frame smears into streaks of color",
+        "head": "camera decelerating from a fast whip pan, motion blur settling into a stable sharp frame",
+    },
+    "object_pass": {
+        "tail": "a foreground silhouette sweeps across the frame, briefly obscuring the view",
+        "head": "background revealed as the foreground silhouette finishes passing, camera already stable",
+    },
+    "light_flash": {
+        "tail": "the frame brightens into a blooming burst of light",
+        "head": "the new scene emerges from a receding bloom of light, exposure settling to normal",
+    },
+}
+TRANSITION_SET = set(TRANSITIONS) | {"hard_cut", "dissolve", ""}
+TRANSITION_GUIDE = (
+    "- transition_in 字段标注本镜与上一镜的转场方式（按节拍选，不许全部默认）：\n"
+    "  同场景连续镜头 = hard_cut（直接切，靠末帧接力保证连续）；同场景时间流逝 = match_cut；\n"
+    "  地点切换 = whip_pan（甩镜）或 object_pass（遮挡物过渡）或 light_flash（光闪）；\n"
+    "  情绪转折/回忆闪回 = dissolve（剪辑层叠化，不注入提示词）"
+)
+
+
+def _transition_tokens(transition: str) -> tuple[str, str]:
+    """返回 (head_tokens, tail_tokens)。head 注入本镜视频提示词，tail 注入上一镜视频提示词。"""
+    t = TRANSITIONS.get((transition or "").strip().lower())
+    if not t:
+        return "", ""
+    return t["head"], t["tail"]
+
+
 def _load_asset_lists(db, project_id: int) -> dict:
     """已确认资产清单（拆解必须引用，消灭二次理解）。"""
     from ..db import Character, Prop, Scene
@@ -801,7 +841,7 @@ async def _breakdown_scene(scene: dict, assets: dict, project_name: str,
                          "new_props": CANDIDATE_SCHEMA["props"]}, ensure_ascii=False)
     system = (
         f"你是拥有20年资历的影视导演与分镜设计师，为短剧《{project_name}》拆解分镜。\n"
-        f"{CUTTING_RULES}\n\n{RHYTHM_RULES}\n"
+        f"{CUTTING_RULES}\n\n{RHYTHM_RULES}\n\n{TRANSITION_GUIDE}\n"
         "输出 JSON，结构严格遵守：\n" + schema +
         "\n要求：\n"
         "- characters/scene/props 只能引用资产清单中的名字；清单没有的新实体放入 new_*（同样格式）\n"
@@ -1000,6 +1040,9 @@ async def breakdown_episode(db, task, params: dict) -> dict:
             beat = (shot.get("beat") or "").strip().lower()
             if beat not in BEAT_SET:
                 beat = ""   # LLM 偶发编造拍点值 → 丢弃，宁缺勿错
+            trans = (shot.get("transition_in") or "").strip().lower()
+            if trans not in TRANSITION_SET:
+                trans = ""
             # 决策：位移/运镜镜自动出尾帧，纯对话镜不出
             needs_end = 1 if (move in MOVING_CAMERA or path) else 0
             all_shots.append({
@@ -1008,6 +1051,7 @@ async def breakdown_episode(db, task, params: dict) -> dict:
                 "int_ext": scene["int_ext"], "tod": scene["tod"],
                 "duration": int(shot.get("duration") or 4),
                 "beat": beat,
+                "transition_in": trans,
                 "shot_size": shot.get("shot_size", "中景"),
                 "camera": shot.get("camera", "固定"),
                 "camera_move": move,
@@ -1120,6 +1164,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
     tpl_ff, tid_ff = resolve(db, project_id, "shot_first_frame")
     tpl_ef, tid_ef = resolve(db, project_id, "shot_end_frame")
     tpl_vd, tid_vd = resolve(db, project_id, "shot_video")
+    trans_by_idx = {sh["idx"]: (sh.get("transition_in") or "").strip().lower() for sh in shots}
 
     for shot in shots:
         scene_concept = _scene_concept_for(shot["scene_name"], scenes_db)
@@ -1230,6 +1275,13 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                 _clean(shot["image_slots"].get("subject_action")),
                 motion_vid, cam_seg, MOTION_STABILITY, _en_size(shot["shot_size"]),
                 _en_angle(shot.get("camera_angle", "")), s["motion_hint"]] if x)
+        # 转场词注入（方案三）：head=本镜如何从上镜过渡，tail=本镜镜尾如何过渡到下镜。
+        # 只进视频提示词（运动层），不进图片提示词——静帧必须干净可用。
+        _t_head, _ = _transition_tokens(shot.get("transition_in"))
+        _, _t_tail = _transition_tokens(trans_by_idx.get(shot["idx"] + 1, ""))
+        _t_extra = ", ".join(x for x in (_t_head, _t_tail) if x)
+        if _t_extra:
+            shot["video_prompt"] = f"{shot['video_prompt']}, {_t_extra}"
         shot["video_template_id"] = tid_vd
 
 
@@ -1270,6 +1322,8 @@ def persist_shots(db, episode_id: int, project_id: int, shots: list[dict]):
             composition_anchor=sh.get("composition_anchor", ""),
             prev_summary=sh.get("prev_summary", ""), next_goal=sh.get("next_goal", ""),
             continuity_guidance=sh.get("continuity_guidance", ""),
+            transition_in=sh.get("transition_in", ""),
+            beat=(sh.get("beat") or "").strip().lower(),
             needs_end_frame=int(sh.get("needs_end_frame", 0)))
         # 闭环保护：同序号镜头已生成过首帧/尾帧/视频 → 继承成果引用与状态。
         # 重拆是"回退重走流程"，不是丢弃已生成的产物；提示词变了用户可手动重新生成。
@@ -1330,6 +1384,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "characters": json.loads(r.characters_json or "[]"),
             "props": json.loads(r.props_json or "[]"),
             "motion": json.loads(getattr(r, "motion_json", "") or "{}"),
+            "transition_in": (getattr(r, "transition_in", "") or "").strip().lower(),
+            "beat": (getattr(r, "beat", "") or "").strip().lower(),
             "focal_length": getattr(r, "focal_length", "") or "",
             "image_slots": {"subject_action": r.subject_action, "light": r.light,
                             "composition": r.composition, "shot_size": r.shot_size,
@@ -1366,7 +1422,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
             # 更强的表演张力词，把留存波形落到提示词层面）
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
-                                           _beat_tokens(shot.get("beat"))) if x),
+                                           _beat_tokens(d.get("beat"))) if x),
             "quality": QUALITY_SUFFIX,
         }
         v = dict(common)
@@ -1416,6 +1472,13 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "duration": r.duration,
         })
         r.video_prompt = render(tpl_vd, v4)
+        # 转场词注入（方案三，重组装链路）：head=本镜承接上镜，tail=本镜过渡到下镜
+        _t_head, _ = _transition_tokens(d.get("transition_in"))
+        _nxt = next((x for x in dicts if x["idx"] == d["idx"] + 1), None)
+        _, _t_tail = _transition_tokens((_nxt or {}).get("transition_in", ""))
+        _t_extra = ", ".join(x for x in (_t_head, _t_tail) if x)
+        if _t_extra:
+            r.video_prompt = f"{r.video_prompt}, {_t_extra}"
 
         r.action_beats_json = json.dumps(d["action_beats"], ensure_ascii=False)
         r.screen_direction = d.get("screen_direction", "")

@@ -339,18 +339,47 @@ def _subtitle_style(w: int, h: int) -> str:
             "BorderStyle=1,Outline=1.1,Shadow=0,Spacing=0.4")
 
 
+def _make_fade_seg(a_video: Path, b_img: str, out_dir: Path, style: str,
+                   a_idx: int, b_idx: int) -> Path | None:
+    """兜底转场段（方案四）：A 末帧淡出 → B 首帧淡入（黑场/白闪），0.8s NVENC 编码。
+
+    幂等：同边界产物已存在直接复用。失败抛异常由调用方吞掉退化硬切。
+    """
+    out = out_dir / f"transition_fade_{style}_s{a_idx}_s{b_idx}.mp4"
+    if out.exists():
+        return out
+    out_dir.mkdir(parents=True, exist_ok=True)
+    a_png = out_dir / f".tfade_{style}_s{a_idx}_s{b_idx}_a.png"
+    _run_ff([str(FFMPEG), "-y", "-sseof", "-0.2", "-i", str(a_video),
+             "-frames:v", "1", str(a_png)], "抽A末帧")
+    color = "white" if style == "fadewhite" else "black"
+    _run_ff([str(FFMPEG), "-y",
+             "-loop", "1", "-t", "0.4", "-i", str(a_png),
+             "-loop", "1", "-t", "0.4", "-i", str(b_img),
+             "-filter_complex",
+             f"[0:v]format=yuv420p,fade=t=out:st=0.2:d=0.2:color={color}[a];"
+             f"[1:v]format=yuv420p,fade=t=in:st=0:d=0.3:color={color}[b];"
+             f"[a][b]concat=n=2:v=1:a=0,setsar=1",
+             "-r", "16", "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M",
+             str(out)], "生成兜底转场段")
+    a_png.unlink(missing_ok=True)
+    return out if out.exists() else None
+
+
 def export_final(db, t: TaskRecord, params: dict) -> dict:
     """成片合成：拼接 → 混音 → SRT → NVENC 烧字幕。全同步 ffmpeg，fn 内直接跑。"""
     update_progress(db, t, 0.02, "收集镜头")
     eid, pid = params["episode_id"], params["project_id"]
     shots = db.scalars(select(Shot).where(Shot.episode_id == eid)
                        .order_by(Shot.idx)).all()
-    segs = []   # {idx, video, dur, lines:[(seq,text)]}
+    segs = []   # {idx, video, dur, lines:[(seq,text)], scene}
     skipped = []
     for sh in shots:
         if sh.video_path and Path(sh.video_path).exists():
             segs.append({"idx": sh.idx, "video": Path(sh.video_path),
                          "dur": _ffprobe_duration(Path(sh.video_path)),
+                         "scene": sh.scene_name or "",
+                         "first_frame": sh.first_frame_path or "",
                          "lines": _parse_lines(sh.dialogue or "")})
         elif (sh.dialogue or "").strip() or sh.video_path:
             skipped.append(sh.idx)
@@ -358,18 +387,60 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
         raise RuntimeError("本集没有任何可用镜头视频，先去分镜页生成镜头视频")
     total_dur = sum(s["dur"] for s in segs)
 
+    # 转场插入（方案二/四）：场景切换边界优先用已生成的双帧转场镜；
+    # 没有转场镜且项目配了兜底转场（fadeblack/fadewhite）→ 用 A 末帧淡出+B 首帧淡入
+    # 生成插入段（0.8s，NVENC 编码）。插入段无台词无字幕，时长计入游标，配音起点自动后移。
+    from .shot_service import transition_clip_path
+    proj = db.get(Project, pid)
+    fx = (getattr(proj, "transition_fx", "") or "").strip().lower() if proj else ""
+    inserts = 0
+    export_dir0 = _proj_dir(pid) / "export"
+    i = 0
+    while i < len(segs) - 1:
+        a, b = segs[i], segs[i + 1]
+        if (a["scene"] or "") == (b["scene"] or ""):
+            i += 1
+            continue
+        bridge = transition_clip_path(pid, a["idx"], b["idx"])
+        if bridge.exists():
+            segs.insert(i + 1, {"idx": a["idx"], "video": bridge,
+                                "dur": _ffprobe_duration(bridge) or 1.0,
+                                "scene": "", "first_frame": "", "lines": []})
+            inserts += 1
+        elif fx in ("fadeblack", "fadewhite") and b.get("first_frame"):
+            try:
+                seg = _make_fade_seg(a["video"], b["first_frame"], export_dir0,
+                                     fx, pid, a["idx"], b["idx"])
+                if seg:
+                    segs.insert(i + 1, {"idx": a["idx"], "video": seg,
+                                        "dur": _ffprobe_duration(seg) or 0.8,
+                                        "scene": "", "first_frame": "", "lines": []})
+                    inserts += 1
+            except Exception:
+                pass   # 兜底段生成失败不阻塞成片，退化为硬切
+            i += 1
+            continue
+        i += 1
+    if inserts:
+        update_progress(db, t, 0.06, f"插入转场段 {inserts} 处")
+
     export_dir = _proj_dir(pid) / "export"
     novoice = export_dir / f"final_ep{eid}_mute.mp4"
     final = export_dir / f"final_ep{eid}.mp4"
     srt_path = export_dir / f"final_ep{eid}.srt"
 
-    # 1) 无损拼接（-c copy；文件名转义走 concat demuxer 清单文件）
-    update_progress(db, t, 0.1, f"拼接 {len(segs)} 段（无损 copy）")
+    # 1) 拼接（转场段与镜头段编码参数不一致时不能 -c copy，走 NVENC 重编码一次）
+    update_progress(db, t, 0.1, f"拼接 {len(segs)} 段" + ("（含转场段，重编码）" if inserts else "（无损 copy）"))
     lst = export_dir / "concat_list.txt"
     lst.write_text("".join(f"file '{s['video'].as_posix()}'\n" for s in segs),
                    encoding="utf-8")
-    _run_ff([str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-             "-c", "copy", str(novoice)], "无损拼接")
+    if inserts:
+        _run_ff([str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                 "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M",
+                 "-pix_fmt", "yuv420p", "-an", str(novoice)], "拼接（含转场段）")
+    else:
+        _run_ff([str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                 "-c", "copy", str(novoice)], "无损拼接")
     total_dur = _ffprobe_duration(novoice) or total_dur
     sub_w, sub_h = _video_size(novoice)   # 字幕单行容量基准（成片实际分辨率）
 

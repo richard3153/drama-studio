@@ -11,6 +11,7 @@ import asyncio
 import json
 import math
 import random
+import shutil
 from pathlib import Path
 
 from sqlalchemy import select
@@ -438,9 +439,10 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     scene_ref = None if params.get("use_scene_ref") is False else _scene_anchor(db, shot)
     scene_ipa_w = float(params.get("scene_ipa_weight") or 0.4)
     real = fam == "photo"   # 写实底模需要额外锁脸负面（脸型变异治理）
-    # 场景锁定优先（镜头卡开关）：直接以锚图为底图 img2img，环境还原度最高，
+    # 场景锁定优先（方案五：有锚图时默认开启，镜头卡显式 scene_lock=False 才关）：
+    # 直接以锚图为底图 img2img，环境还原度最高，压同场景背景漂移；
     # 代价是构图被锚图约束、无 IPA 锁脸（写实风格下脸可能漂移，用户权衡）。
-    if params.get("scene_lock") and scene_ref:
+    if scene_ref and params.get("scene_lock") is not False:
         update_progress(db, task, 0.2,
                         f"场景锁定：锚图 img2img（denoise {params.get('scene_denoise', 0.45)}）")
         out = await _img2img(comfy, model, prompt, neg, scene_ref, w, h,
@@ -825,6 +827,106 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
     db.commit()
     return {"src_shot": src.id, "dst_shot": dst.id, "dst_idx": dst.idx,
             "source": src_kind, "denoise": denoise, "path": str(out[0])}
+
+
+# ---------- 转场镜（方案二，可选开关）：场景切换边界双帧 i2v 过渡 ----------
+
+# 转场机制提示词（Domer/Versely：双端首尾帧约束 + 明确的过渡机制词，避免糊状叠化）
+_TRANSITION_MECHANISM = {
+    "whip_pan": "rapid whip pan sweeping from the previous scene into the new scene, "
+                "heavy motion blur at the seam, blur settling into a sharp new frame",
+    "object_pass": "a foreground silhouette sweeps across the frame and briefly blocks "
+                   "the view, revealing the new scene as it passes",
+    "light_flash": "a burst of light blooms over the frame and fades, revealing the new scene",
+    "match_cut": "smooth morphing transition where the composition geometry carries over "
+                 "into the new scene",
+    "generic": "the camera moves continuously as the scene transforms smoothly into a new location",
+}
+
+
+def transition_clip_path(project_id: int, from_idx: int, to_idx: int) -> Path:
+    """转场镜产物规范路径（成片拼接按此查找边界转场镜）。"""
+    return ASSETS_ROOT / str(project_id) / "shots" / f"transition_s{from_idx}_s{to_idx}.mp4"
+
+
+async def generate_transition_clip(db, task, params: dict) -> dict:
+    """转场镜：上镜末帧（A）→ 双帧 i2v → 下镜首帧（B），1-2s 过渡镜。
+
+    Domer 方法论：双端都锁帧时生成的过渡几乎不可见；桥接镜 1-2 秒足够，
+    太长会漂移。params: {from_shot_id, to_shot_id, mechanism?}
+    """
+    src = db.get(Shot, params["from_shot_id"])
+    dst = db.get(Shot, params["to_shot_id"])
+    if not src or not dst:
+        raise RuntimeError("边界镜头不存在")
+    if dst.project_id != src.project_id or dst.episode_id != src.episode_id:
+        raise RuntimeError("边界镜头必须同集相邻")
+
+    project = db.get(Project, src.project_id)
+    save_root = ASSETS_ROOT / str(src.project_id) / "shots"
+    update_progress(db, task, 0.1, "提取上镜末帧（尾帧 > 视频末帧）")
+    src_frame, src_kind = _chain_source_frame(db, src, save_root)
+    if not dst.first_frame_path or not Path(dst.first_frame_path).exists():
+        raise RuntimeError(f"下镜 #{dst.idx} 缺首帧，先生成它再出转场镜")
+
+    model_key, model = await pick_model("video", params.get("prefer_tier"),
+                                        params.get("model_key") or "vid_wan21_480p")
+    task.model_key = model_key
+    task.vram_gb = model["vram_gb"]
+    family = model.get("family", "wan22")
+    wf = comfy.load_template("i2v_first_last.json")   # 转场镜必须双帧约束（首=A末帧 尾=B首帧）
+
+    fps = 16
+    duration = max(1, min(2, int(params.get("duration") or 1)))
+    length = max(17, int(round(duration * fps / 4.0)) * 4 + 1)
+    mech = _TRANSITION_MECHANISM.get(
+        (params.get("mechanism") or "").strip().lower(),
+        _TRANSITION_MECHANISM["generic"])
+    preset = (project.style_preset if project else "") or "anime_2d"
+    genre = (getattr(project, "genre", "") if project else "") or ""
+    prompt = wrap_video_prompt(
+        f"{mech}, smooth cinematic transition between scenes, "
+        f"consistent lighting and character appearance", family, duration, has_end_frame=True)
+
+    update_progress(db, task, 0.3, f"双帧过渡推理（s{src.idx}→s{dst.idx}，{duration}s）")
+    comfy = ComfyUIAdapter()
+    start_name = await comfy.upload_image(src_frame)
+    end_name = await comfy.upload_image(dst.first_frame_path)
+    seed = random.randint(0, 2 ** 31 - 1)
+    w, h = _res(project)
+    overrides = {
+        "positive_text": prompt,
+        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
+        "LoadImage@0.image": start_name,
+        "LoadImage@1.image": end_name,
+        "WanFirstLastFrameToVideo.length": length,
+        "WanFirstLastFrameToVideo.width": w,
+        "WanFirstLastFrameToVideo.height": h,
+        "CreateVideo.fps": fps,
+        "KSamplerAdvanced@0.noise_seed": seed,
+        "KSamplerAdvanced@1.noise_seed": seed,
+    }
+    wf = comfy.apply_overrides(wf, overrides)
+    out = await comfy.run(wf, timeout=2400, save_root=save_root,
+                          filename_prefix=f"drama_studio/p{src.project_id}_trans_{src.idx}_{dst.idx}")
+    await comfy.free_memory()
+    if not out:
+        raise ComfyUIError("转场镜没有返回文件")
+
+    # 产物规范路径：成片拼接按 transition_s{a}_s{b}.mp4 约定查找
+    final_path = transition_clip_path(src.project_id, src.idx, dst.idx)
+    if Path(out[0]) != final_path:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(out[0], final_path)
+    db.add(AssetImage(project_id=src.project_id, kind="transition",
+                      file_path=str(final_path), prompt=prompt,
+                      meta_json=json.dumps({"from_idx": src.idx, "to_idx": dst.idx,
+                                            "from_shot": src.id, "to_shot": dst.id,
+                                            "frames": length, "model_key": model_key,
+                                            "source": src_kind}, ensure_ascii=False)))
+    db.commit()
+    update_progress(db, task, 1.0, f"转场镜完成（s{src.idx}→s{dst.idx}）")
+    return {"from_idx": src.idx, "to_idx": dst.idx, "path": str(final_path), "frames": length}
 
 
 async def extend_shot_video(db, task, params: dict) -> dict:

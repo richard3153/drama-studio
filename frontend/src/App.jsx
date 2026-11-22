@@ -150,6 +150,8 @@ function BatchBar({ episodeId, onDone }) {
       <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
         <button disabled={!!busy} onClick={() => go('batch-frames', '批量首帧')}>🖼 批量生成缺的首帧</button>
         <button disabled={!!busy} onClick={() => go('batch-videos', '批量视频')}>🎥 批量生成缺的视频</button>
+        <button disabled={!!busy} title="场景切换边界：上镜末帧+下镜首帧双帧 i2v 生成 1-2s 过渡镜（需两侧产物齐全，成片拼接时自动插入）"
+          onClick={() => go('batch-transitions', '转场镜')}>🪄 生成转场镜</button>
         <button disabled={!!busy} style={{ borderColor: '#d0a030' }} onClick={() => go('full-pipeline', '一键全流程')}>⚡ 一键全流程（帧→视频→配音→成片）</button>
         <button disabled={!!busy} style={{ borderColor: '#d0a030' }} title="从第 1 镜开始逐镜用上镜视频末帧重绘下镜首帧再出视频，全链衔接+人物外观继承（覆盖所有镜的现有首帧和视频）"
           onClick={() => { if (confirm('⛓ 全链重刷：从第 1 镜起向后连锁重生成所有镜头（末帧接力），现有首帧和视频全部被覆盖，约 40-60 分钟。确定？')) go('rechain-from', '全链重刷', { from_idx: 1 }) }}>⛓ 全链重刷</button>
@@ -890,6 +892,10 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const currentPreset = project.style_preset || 'anime_2d'
   const saveGenre = async (key) => { await put(`/projects/${project.id}`, { genre: key }); project.genre = key }
   const currentGenre = project.genre || ''
+  const [bridge, setBridge] = useState(project.transition_bridge === 1)
+  const [fx, setFx] = useState(project.transition_fx || '')
+  const toggleBridge = async (v) => { setBridge(v); await put(`/projects/${project.id}`, { transition_bridge: v ? 1 : 0 }) }
+  const saveFx = async (v) => { setFx(v); await put(`/projects/${project.id}`, { transition_fx: v }) }
   const [lifelike, setLifelike] = useState(project.lifelike !== 0)
   const [lifelikeFull, setLifelikeFull] = useState(project.lifelike_full === 1)
   const [autoPolish, setAutoPolish] = useState(project.auto_polish !== 0)
@@ -1162,6 +1168,21 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
             ))}
           </select>
           <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{genres[currentGenre]?.sample_setting || ''}</span>
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}
+            title="开启后：批量视频/一键全流程会在场景切换边界自动生成双帧过渡镜（上镜末帧→下镜首帧 i2v，1-2s），成片拼接时自动插入">
+            <input type="checkbox" checked={bridge} onChange={e => toggleBridge(e.target.checked)} />
+            转场镜（场景切换生成过渡镜，每边界约 2 分钟）
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginLeft: 18 }}>
+            成片兜底转场（无转场镜的场景切换边界）：
+            <select value={fx} onChange={e => saveFx(e.target.value)}>
+              <option value="">不加（硬切）</option>
+              <option value="fadeblack">黑场过渡</option>
+              <option value="fadewhite">白闪过渡</option>
+            </select>
+          </label>
         </div>
         <div className="row" style={{ marginTop: 8 }}>
           <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>

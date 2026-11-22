@@ -27,6 +27,8 @@ class Project(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     style_preset: Mapped[str] = mapped_column(String(40), default="anime_2d")  # 风格锁
     genre: Mapped[str] = mapped_column(String(40), default="")  # 题材锁（红果爆款题材词库 key，空=不挂题材词库）
+    transition_bridge: Mapped[int] = mapped_column(Integer, default=0)  # 转场镜开关：场景切换边界用双帧 i2v 生成 1-2s 过渡镜
+    transition_fx: Mapped[str] = mapped_column(String(20), default="")  # 成片兜底转场：''=不加 / fadeblack=黑场 / fadewhite=白闪（仅场景切换硬切边界）
     lifelike: Mapped[int] = mapped_column(Integer, default=1)      # 活人感提示词机制
     lifelike_full: Mapped[int] = mapped_column(Integer, default=0) # 全量瑕疵（含五官不完美，仅建议分镜用）
     auto_polish: Mapped[int] = mapped_column(Integer, default=1)   # 初图 10% 微调（按资产类型分级生效）
@@ -143,6 +145,8 @@ class Shot(Base):
     camera_angle: Mapped[str] = mapped_column(String(40), default="")   # 平视/俯拍/仰拍/过肩/POV/航拍
     focal_length: Mapped[str] = mapped_column(String(20), default="")
     focus_transition: Mapped[str] = mapped_column(String(24), default="none")  # none/rack-focus/pull-focus/follow-focus
+    transition_in: Mapped[str] = mapped_column(String(24), default="")  # 与上镜的转场方式：''/hard_cut/match_cut/whip_pan/object_pass/light_flash/dissolve（拆解标注，驱动转场词注入）
+    beat: Mapped[str] = mapped_column(String(16), default="")  # 叙事拍点：hook/pressure/escalation/turn/peak/cliffhanger/atmosphere（留存波形，驱动张力词注入）
     blocking: Mapped[str] = mapped_column(Text, default="")             # 人物画面占位关系
     character_path: Mapped[str] = mapped_column(Text, default="")       # 人物活动轨迹（起→终）
     subject_action: Mapped[str] = mapped_column(Text, default="")
@@ -243,6 +247,8 @@ def _migrate():
         "projects": [
             ("style_preset", "VARCHAR(40) DEFAULT 'anime_2d'"),
             ("genre", "VARCHAR(40) DEFAULT ''"),
+            ("transition_bridge", "INTEGER DEFAULT 0"),
+            ("transition_fx", "VARCHAR(20) DEFAULT ''"),
             ("lifelike", "INTEGER DEFAULT 1"),
             ("lifelike_full", "INTEGER DEFAULT 0"),
             ("auto_polish", "INTEGER DEFAULT 1"),
@@ -262,6 +268,8 @@ def _migrate():
         "props": [("prompt_json", "TEXT DEFAULT '{}'")],
         "shots": [
             ("action_beats_json", "TEXT DEFAULT '[]'"),
+            ("transition_in", "VARCHAR(24) DEFAULT ''"),
+            ("beat", "VARCHAR(16) DEFAULT ''"),
             ("atmosphere", "TEXT DEFAULT ''"),
             ("mood_tags_json", "TEXT DEFAULT '[]'"),
             ("vfx_type", "VARCHAR(30) DEFAULT 'none'"),
@@ -321,6 +329,7 @@ def task_desc(type_: str, params: dict) -> str:
         "tts": lambda: f"{ep}台词配音（edge-tts）",
         "stitch": lambda: f"{ep}成片合成（拼接/混音/烧字幕）",
         "batch_frames": lambda: f"{ep}批量首帧（链式接力）",
+        "batch_transitions": lambda: f"{ep}批量转场镜（场景切换边界双帧过渡）",
         "batch_videos": lambda: f"{ep}批量视频",
         "rechain_from": lambda: f"{ep}向后重链（从 s{from_ or 1} 起）",
         "full_pipeline": lambda: f"{ep}一键全流程（首帧→视频→配音→成片）",
