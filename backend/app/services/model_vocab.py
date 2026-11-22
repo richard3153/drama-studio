@@ -60,8 +60,10 @@ MODEL_PROMPT_VOCAB = {
     },
     # 视频族（组装期用于 video_prompt）
     "wan": {
+        # 官方 I2V 公式：图已定主体/场景/风格 → 提示词只描述运动+镜头；
+        # 一个片段一个动作（多动作必 morphing）；描述结果而非命令。
         "video": ("smooth continuous motion, natural physics, "
-                  "actions unfold step by step"),
+                  "actions unfold step by step, one clear action per clip"),
         "negative": "static, flicker, jump cut",   # dialects.negative_for 已有同源词，此处供组装层引用
     },
     "infinitalk": {

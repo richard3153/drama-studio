@@ -59,8 +59,10 @@ def wrap_video_prompt(prompt: str, family: str, seconds: float,
 
 
 def negative_for(family: str, base: str = "") -> str:
-    """方言层负面词：wan 系不认自然语言负面，尽量短标签；seedance 认句子。"""
+    """方言层负面词：wan 系不认自然语言负面，尽量短标签；seedance 认句子。
+    core 含 Wan 官方基线（morphing/warping/distorted face/extra fingers）。"""
     if family in ("wan22", "minimax_h3"):
-        core = "static, blurry, watermark, text, deformed limbs, flicker, jump cut"
+        core = ("static, blurry, watermark, text, deformed limbs, flicker, jump cut, "
+                "morphing, warping, distorted face, extra fingers")
         return ", ".join(x for x in (core, base) if x)
     return base
