@@ -237,7 +237,8 @@ PRESET_VOCAB: dict[str, dict[str, list[str]]] = {
         "negative": ["anime, cartoon, dramatic studio lighting"],
     },
     "cinematic_film": {
-        "style": ["cinematic film still", "anamorphic widescreen framing",
+        # 不用 anamorphic widescreen framing：竖屏画布下会诱发上下拼接构图（#78）
+        "style": ["cinematic film still", "shallow depth of field",
                   "teal-orange color grading"],
         "atmosphere": ["motivated practical lighting", "atmospheric depth"],
         "fx": ["subtle anamorphic lens flare", "drifting dust in light beams"],

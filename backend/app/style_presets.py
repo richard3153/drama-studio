@@ -106,9 +106,11 @@ STYLE_PRESETS = {
     },
     "cinematic_film": {
         "category": "摄影写实", "label": "电影写实",
+        # 注意：不写画幅词（2.39:1/widescreen）——竖屏出图时模型会把宽银幕构图
+        # letterbox 进竖画布，剩余空间被人物特写填满，产生上下拼接画面（#78）
         "style_lock": ("cinematic film still, movie-grade lighting, anamorphic lens flare, "
-                       "teal-orange color grading, dramatic rim light, 2.39:1 widescreen feel, "
-                       "photorealistic detail"),
+                       "teal-orange color grading, dramatic rim light, "
+                       "shallow depth of field, photorealistic detail"),
         "motion_hint": "电影运镜（推拉摇移）、光影氛围变化",
     },
     "hk_retro": {
