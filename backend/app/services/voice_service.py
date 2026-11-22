@@ -407,19 +407,21 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
                                 "dur": _ffprobe_duration(bridge) or 1.0,
                                 "scene": "", "first_frame": "", "lines": []})
             inserts += 1
+            i += 2   # 跳过刚插入的转场段（A→转场段→B）：转场段 scene="" 会被误判成新边界造成死循环
+            continue
         elif fx in ("fadeblack", "fadewhite") and b.get("first_frame"):
             try:
                 seg = _make_fade_seg(a["video"], b["first_frame"], export_dir0,
-                                     fx, pid, a["idx"], b["idx"])
+                                     fx, a["idx"], b["idx"])
                 if seg:
                     segs.insert(i + 1, {"idx": a["idx"], "video": seg,
                                         "dur": _ffprobe_duration(seg) or 0.8,
                                         "scene": "", "first_frame": "", "lines": []})
                     inserts += 1
+                    i += 2   # 同上：跳过插入段，防重复插入死循环
+                    continue
             except Exception:
                 pass   # 兜底段生成失败不阻塞成片，退化为硬切
-            i += 1
-            continue
         i += 1
     if inserts:
         update_progress(db, t, 0.06, f"插入转场段 {inserts} 处")
