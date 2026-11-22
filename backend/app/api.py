@@ -466,6 +466,15 @@ async def task_stream():
 
     async def gen():
         try:
+            # 重连回放（#79）：页面重开时只靠 SSE 增量推送，正在跑的任务不会出现，
+            # 任务栏一直显示"空闲"直到下一个事件。连接建立时先回放
+            # 进行中/排队中/暂停的任务快照，前端 onmessage 会自然并入列表。
+            with SessionLocal() as db:
+                rows = db.scalars(select(TaskRecord).where(
+                    TaskRecord.status.in_(("running", "pending", "paused"))
+                ).order_by(TaskRecord.id.desc()).limit(30)).all()
+            for t in rows:
+                yield f"data: {json.dumps({'event': 'task_update', 'task': task_to_dict(t)}, ensure_ascii=False, default=str)}\n\n"
             while True:
                 try:
                     msg = await asyncio.wait_for(q.get(), timeout=15)

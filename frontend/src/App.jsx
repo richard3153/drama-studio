@@ -1743,6 +1743,9 @@ export default function App() {
 
   const project = projects.find(p => p.id === projectId)
   const refreshTasks = () => api('/tasks?limit=10').then(setTasks)
+  // 页面加载/重开时先 REST 拉一次任务列表：SSE 只推增量事件，
+  // 不回放正在跑的任务，缺这次拉取会导致重开页面任务栏一直"空闲"（#79）
+  useEffect(() => { refreshTasks() }, [])
   const needProject = stage !== 'projects' && !project
 
   return (
