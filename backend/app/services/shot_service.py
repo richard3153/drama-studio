@@ -339,6 +339,18 @@ def _action_tokens(shot, kind: str) -> str:
     return action_tokens(_action_level(shot), kind)
 
 
+def _vfx_tokens(shot, kind: str) -> str:
+    """特效词库 token（#81，kind: image/video）：vfx_type/vfx_note 显式优先，
+    正文关键词兜底；非特效镜返回空串。"""
+    from .vfx_vocab import detect_vfx, vfx_tokens
+    return vfx_tokens(detect_vfx(getattr(shot, "vfx_type", "") or "",
+                                 getattr(shot, "vfx_note", "") or "",
+                                 getattr(shot, "subject_action", "") or "",
+                                 getattr(shot, "blocking", "") or "",
+                                 getattr(shot, "atmosphere", "") or "",
+                                 getattr(shot, "sfx", "") or ""), kind)
+
+
 def _shot_neg(stage: str, preset: str, extra: str = "", genre: str = "") -> str:
     """stage 负面基线 + 全局负面 + 风格词库负面 + 题材词库负面。
 
@@ -441,6 +453,10 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     atok = _action_tokens(shot, "image")
     if atok and atok[:24].lower() not in prompt.lower():
         prompt = prompt + ", " + atok
+    # 运行时兜底：特效词库（#81 特效镜编排词）
+    xtok = _vfx_tokens(shot, "image")
+    if xtok and xtok[:24].lower() not in prompt.lower():
+        prompt = prompt + ", " + xtok
 
     update_progress(db, task, 0.15, f"生成{ '尾帧' if frame_type=='end' else '首帧' }（{model_key}）")
     comfy = ComfyUIAdapter()
@@ -593,6 +609,10 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     atok = _action_tokens(shot, "video")
     if atok and atok[:24].lower() not in prompt.lower():
         prompt = f"{prompt}, {atok}"
+    # 运行时兜底：特效词库（#81 特效镜动态编排）
+    xtok = _vfx_tokens(shot, "video")
+    if xtok and xtok[:24].lower() not in prompt.lower():
+        prompt = f"{prompt}, {xtok}"
 
     update_progress(db, task, 0.1, f"上传首帧/尾帧（{model_key}，{duration}s / {length} 帧）")
     comfy = ComfyUIAdapter()

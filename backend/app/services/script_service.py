@@ -20,6 +20,7 @@ from ..style_presets import (_clean, QUALITY_SUFFIX, assemble_character_prompt,
                              style_lock_for, lifelike_tokens)
 from .model_vocab import model_tokens   # 模型提示词库（组装期按预判的下游模型组词）
 from .action_vocab import detect_action, action_tokens   # 打斗词库（动作镜自动识别+编排词）
+from .vfx_vocab import detect_vfx, vfx_tokens   # 特效词库（特效镜自动识别+编排词）
 
 LLM_TEMP = 0.3
 
@@ -83,6 +84,9 @@ SHOT_SCHEMA = {
         "composition": "构图与角度，如过肩/仰视（英文）",
         "beat": "叙事拍点：hook|pressure|escalation|turn|peak|cliffhanger|atmosphere（按留存波形分配，见拆解要求）",
         "transition_in": "hard_cut|match_cut|whip_pan|object_pass|light_flash|dissolve（与上一镜的转场方式）",
+        "atmosphere": "本镜头氛围描述（英文，如 tense pre-dawn office with cold blue shadows；无则空串）",
+        "vfx_type": "none|slow_motion|time_freeze|glow|energy|explosion|lightning|rain|fog|petals|light_rays|wind|shatter|water|flashback（无特效填 none；每镜最多 2 种）",
+        "vfx_note": "特效描述（英文：特效是什么+触发时机+环境反应，如 'golden light flares at the counterattack, illuminating the floor'；无特效空串）",
     }],
     "new_characters": [], "new_scenes": [], "new_props": [],
 }
@@ -704,6 +708,15 @@ def _act_level(shot: dict) -> str:
                          shot.get("dialogue", ""), shot.get("sfx", ""))
 
 
+def _vfx_tokens(shot: dict, kind: str) -> str:
+    """特效镜识别（特效词库 #81）：vfx_type/vfx_note 显式标注优先，正文关键词兜底。
+    允许多特效并存但封顶 2 个（词库层控制），词序稳定可断言。"""
+    return vfx_tokens(detect_vfx(shot.get("vfx_type", ""), shot.get("vfx_note", ""),
+                                 shot.get("action", ""), shot.get("blocking", ""),
+                                 shot.get("atmosphere", ""), shot.get("sfx", ""),
+                                 shot.get("dialogue", "")), kind)
+
+
 # 转场方式（Domer/Versely AI 转场方法论）：transition_in 标注在本镜上，
 # 描述本镜如何从上一镜过渡。tail 词进上一镜视频提示词（镜尾），head 词进本镜视频提示词（镜首）。
 # 图片提示词不注入转场词——首帧/尾帧必须是干净可用的静帧，模糊/白闪只发生在视频运动里。
@@ -870,6 +883,10 @@ async def _breakdown_scene(scene: dict, assets: dict, project_name: str,
         "谁用什么部位/武器打向谁哪里、对方如何格挡或受击（如 'he swings a right fist toward "
         "the man's jaw, the man raises his forearm to block'）；"
         "禁止只写'激烈打斗/扭打在一起'这类不可执行的概括；每镜一个完整动作回合\n"
+        "- 有特效的镜头必须填 vfx_type（none/slow_motion/time_freeze/glow/energy/"
+        "explosion/lightning/rain/fog/petals/light_rays/wind/shatter/water/flashback）"
+        "并在 vfx_note 写清楚：特效是什么+什么时机触发+环境如何反应"
+        "（如 '金光在反击瞬间爆发，照亮地面'）；每镜特效不超过 2 种，堆特效画面必糊\n"
         "- shot_size 服从信息量原则：交代空间用远景/全景、对话用中景/近景、情绪转折用特写；"
         "camera_angle 服务于心理表达（仰拍=压迫/俯拍=弱势/平视=客观记录），禁止随机选；"
         "focal_length 按透视需要选（24mm/35mm 空间感、50mm 客观、85mm/135mm 人物压缩），没有把握就留空\n"
@@ -1088,6 +1105,10 @@ async def breakdown_episode(db, task, params: dict) -> dict:
                 "props": shot.get("props", []),
                 "dialogue": shot.get("dialogue", ""),
                 "sfx": shot.get("sfx", ""),
+                "atmosphere": shot.get("atmosphere", ""),
+                "mood_tags": shot.get("mood_tags", []),
+                "vfx_type": shot.get("vfx_type", "none"),
+                "vfx_note": shot.get("vfx_note", ""),
                 "needs_end_frame": needs_end,
                 "image_slots": {"subject_action": shot.get("subject_action", ""),
                                 "end_action": shot.get("end_action", ""),
@@ -1207,9 +1228,11 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
             # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词
+            # 特效镜识别（特效词库 #81）：金光/慢镜/雨夜等 → 注入特效编排词
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
                                            _beat_tokens(shot.get("beat")),
-                                           action_tokens(_act_level(shot), "image")) if x),
+                                           action_tokens(_act_level(shot), "image"),
+                                           _vfx_tokens(shot, "image")) if x),
             # 首帧/尾帧/关键帧恒走 SDXL（scene_sdxl/IPA 链路）→ 组装期就喂 SDXL 方言
             "quality": ", ".join(x for x in (QUALITY_SUFFIX,
                                              model_tokens("sdxl", "image")) if x),
@@ -1283,7 +1306,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             # 动作镜追加打斗编排词（重量感三要素：发力→命中→受击）
             "motion_constraints": ", ".join(x for x in (
                 MOTION_STABILITY, model_tokens("wan", "video"),
-                action_tokens(_act_level(shot), "video")) if x),
+                action_tokens(_act_level(shot), "video"),
+                _vfx_tokens(shot, "video")) if x),
             "blocking": _clean(shot.get("blocking", "")),
             "character_path": _clean(shot.get("character_path", "")),
             "focus": shot.get("focus_transition", "") if shot.get("focus_transition") != "none" else "",
@@ -1412,6 +1436,9 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "transition_in": (getattr(r, "transition_in", "") or "").strip().lower(),
             "beat": (getattr(r, "beat", "") or "").strip().lower(),
             "dialogue": r.dialogue or "", "sfx": r.sfx or "",
+            "atmosphere": getattr(r, "atmosphere", "") or "",
+            "vfx_type": getattr(r, "vfx_type", "") or "",
+            "vfx_note": getattr(r, "vfx_note", "") or "",
             "focal_length": getattr(r, "focal_length", "") or "",
             "image_slots": {"subject_action": r.subject_action, "light": r.light,
                             "composition": r.composition, "shot_size": r.shot_size,
@@ -1448,9 +1475,11 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
             # 更强的表演张力词，把留存波形落到提示词层面）
             # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词（与拆解组装一致）
+            # 特效镜识别（特效词库 #81）：与拆解组装一致
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
                                            _beat_tokens(d.get("beat")),
-                                           action_tokens(_act_level(d), "image")) if x),
+                                           action_tokens(_act_level(d), "image"),
+                                           _vfx_tokens(d, "image")) if x),
             # 同上：重组装也喂 SDXL 方言（与拆解组装保持一致）
             "quality": ", ".join(x for x in (QUALITY_SUFFIX,
                                              model_tokens("sdxl", "image")) if x),
@@ -1496,7 +1525,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "camera": cam_seg,
             "motion_constraints": ", ".join(x for x in (
                 MOTION_STABILITY, model_tokens("wan", "video"),
-                action_tokens(_act_level(d), "video")) if x),
+                action_tokens(_act_level(d), "video"),
+                _vfx_tokens(d, "video")) if x),
             "blocking": _clean(r.blocking),
             "character_path": _clean(r.character_path),
             "focus": r.focus_transition if r.focus_transition != "none" else "",
