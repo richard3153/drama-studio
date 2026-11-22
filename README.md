@@ -7,7 +7,7 @@
 
 ## 标签 / Tags
 
-`local-first` `offline` `ai-video` `short-drama` `comfyui` `ollama` `fastapi` `react` `sdxl` `wan2.1` `infinitetalk` `ipadapter` `edge-tts` `text-to-video` `image-to-video` `storyboard` `film-production` `low-vram` `rtx-4070` `self-hosted` `prompt-engineering` `vertical-drama` `face-consistency` `scene-anchoring` `motion-control`
+`local-first` `ai-video` `short-drama` `comfyui` `ollama` `fastapi` `sdxl` `wan21` `infinitetalk` `ipadapter` `image-to-video` `storyboard` `film-production` `low-vram` `rtx-4070` `prompt-engineering` `vertical-drama` `face-consistency` `scene-anchoring` `motion-control`
 
 ---
 
