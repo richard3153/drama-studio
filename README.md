@@ -121,6 +121,8 @@ backend/
       continuity.py      # 动作节拍/轴线/承接
       dialects.py        # 模型方言层（生成期兜底：时长/负面/收尾约束）
       model_vocab.py     # 模型提示词库（组装期预判下游模型并按模型习惯组词）
+      action_vocab.py    # 打斗词库（动作镜自动识别：打击/追逐动量链编排词）
+      vfx_vocab.py       # 特效词库（14 类特效镜识别：慢镜/金光/气浪/爆炸…）
   workflows/             # 13 个 ComfyUI API 工作流模板
 frontend/
   src/App.jsx            # 单文件 React 应用（剧本/资产/分镜/成片四页面）
@@ -145,12 +147,12 @@ frontend/
 
 ## 演示截图
 
-> 以下截图来自真实生产会话（演示项目：《游戏入侵》，电影写实风格，2 集 23 镜）。
+> 以下截图来自真实生产会话（演示项目：《游戏入侵》，电影写实风格，20 集 / 第 1 集 17 镜完整生产链）。
 
 | 模块 | 截图 |
 |---|---|
 | 项目中心（一句话描述 → 全局画幅） | ![项目](docs/screenshots/01_projects.png) |
 | 剧本工坊（创意带入 / 风格锁 / 活人感开关） | ![剧本](docs/screenshots/02_script.png) |
 | 资产工坊（角色三视图 / 音色锁定） | ![资产](docs/screenshots/03_assets.png) |
-| 分镜时间轴（23 镜镜头卡 / 批量编排 / 说话镜） | ![分镜](docs/screenshots/04_storyboard.png) |
+| 分镜时间轴（17 镜镜头卡 / 批量编排 / 说话镜） | ![分镜](docs/screenshots/04_storyboard.png) |
 | 成片导出（配音 / 混音 / 剪映 & FCPXML） | ![成片](docs/screenshots/05_export.png) |
