@@ -324,6 +324,21 @@ def _vocab_positive(preset: str, genre: str = "") -> str:
     return combined_shot_vocab(preset, genre)
 
 
+def _action_level(shot) -> str:
+    """动作镜识别（打斗词库）：subject_action/blocking/dialogue/sfx 命中打击/追逐词。"""
+    from .action_vocab import detect_action
+    return detect_action(getattr(shot, "subject_action", "") or "",
+                         getattr(shot, "blocking", "") or "",
+                         getattr(shot, "dialogue", "") or "",
+                         getattr(shot, "sfx", "") or "")
+
+
+def _action_tokens(shot, kind: str) -> str:
+    """打斗词库 token（kind: image/video/negative）；非动作镜返回空串。"""
+    from .action_vocab import action_tokens
+    return action_tokens(_action_level(shot), kind)
+
+
 def _shot_neg(stage: str, preset: str, extra: str = "", genre: str = "") -> str:
     """stage 负面基线 + 全局负面 + 风格词库负面 + 题材词库负面。
 
@@ -422,12 +437,19 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = prompt + ", " + vtok
+    # 运行时兜底：打斗词库（动作镜动态姿态词，负面词在 neg 定义后追加）
+    atok = _action_tokens(shot, "image")
+    if atok and atok[:24].lower() not in prompt.lower():
+        prompt = prompt + ", " + atok
 
     update_progress(db, task, 0.15, f"生成{ '尾帧' if frame_type=='end' else '首帧' }（{model_key}）")
     comfy = ComfyUIAdapter()
     w, h = _res(project)
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
     neg = _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre)
+    aneg = _action_tokens(shot, "negative")
+    if aneg:
+        neg += f", {aneg}"
     seed = random.randint(0, 2**31 - 1)
     prefix = f"drama_studio/p{shot.project_id}_s{shot.idx}_{frame_type}"
 
@@ -567,6 +589,10 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = f"{prompt}, {vtok}"
+    # 运行时兜底：打斗词库（动作镜编排词 + 平台安全负面）
+    atok = _action_tokens(shot, "video")
+    if atok and atok[:24].lower() not in prompt.lower():
+        prompt = f"{prompt}, {atok}"
 
     update_progress(db, task, 0.1, f"上传首帧/尾帧（{model_key}，{duration}s / {length} 帧）")
     comfy = ComfyUIAdapter()
@@ -574,9 +600,13 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     start_name = await comfy.upload_image(shot.first_frame_path)
 
     seed = random.randint(0, 2**31 - 1)
+    neg = dialect_negative(family, _shot_neg("shot_video", preset, genre=genre))
+    aneg = _action_tokens(shot, "negative")
+    if aneg:
+        neg += f", {aneg}"
     overrides = {
         "positive_text": prompt,
-        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
+        "negative_text": neg,
         "LoadImage@0.image": start_name,
         f"{samp_prefix}.seed": seed,
         "WanFirstLastFrameToVideo.length": length,

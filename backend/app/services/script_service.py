@@ -19,6 +19,7 @@ from ..style_presets import (_clean, QUALITY_SUFFIX, assemble_character_prompt,
                              assemble_scene_prompt, assemble_shot_prompt, get_style,
                              style_lock_for, lifelike_tokens)
 from .model_vocab import model_tokens   # 模型提示词库（组装期按预判的下游模型组词）
+from .action_vocab import detect_action, action_tokens   # 打斗词库（动作镜自动识别+编排词）
 
 LLM_TEMP = 0.3
 
@@ -691,6 +692,12 @@ def _beat_tokens(beat: str) -> str:
     return BEAT_TOKENS.get((beat or "").strip().lower(), "")
 
 
+def _act_level(shot: dict) -> str:
+    """动作镜识别（打斗词库）：看 subject_action/blocking/dialogue/sfx 命中打击/追逐词。"""
+    return detect_action(shot.get("action", ""), shot.get("blocking", ""),
+                         shot.get("dialogue", ""), shot.get("sfx", ""))
+
+
 # 转场方式（Domer/Versely AI 转场方法论）：transition_in 标注在本镜上，
 # 描述本镜如何从上一镜过渡。tail 词进上一镜视频提示词（镜尾），head 词进本镜视频提示词（镜首）。
 # 图片提示词不注入转场词——首帧/尾帧必须是干净可用的静帧，模糊/白闪只发生在视频运动里。
@@ -853,6 +860,10 @@ async def _breakdown_scene(scene: dict, assets: dict, project_name: str,
         "- subject_action 必须写到身体部位级（谁+身体部位+做什么+朝向），"
         "如 'she grips the pen tightly, knuckles white, eyes fixed on the contract'；"
         "禁止整段氛围式描写；表情写微表情状态不写形容词\n"
+        "- 打斗/追逐镜头的 subject_action 必须写成可执行的动作分解："
+        "谁用什么部位/武器打向谁哪里、对方如何格挡或受击（如 'he swings a right fist toward "
+        "the man's jaw, the man raises his forearm to block'）；"
+        "禁止只写'激烈打斗/扭打在一起'这类不可执行的概括；每镜一个完整动作回合\n"
         "- shot_size 服从信息量原则：交代空间用远景/全景、对话用中景/近景、情绪转折用特写；"
         "camera_angle 服务于心理表达（仰拍=压迫/俯拍=弱势/平视=客观记录），禁止随机选；"
         "focal_length 按透视需要选（24mm/35mm 空间感、50mm 客观、85mm/135mm 人物压缩），没有把握就留空\n"
@@ -1189,10 +1200,10 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                 props_db),
             "lifelike": lifelike_tokens(preset, human=True, pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
-            # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
-            # 更强的表演张力词，把留存波形落到提示词层面）
+            # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
-                                           _beat_tokens(shot.get("beat"))) if x),
+                                           _beat_tokens(shot.get("beat")),
+                                           action_tokens(_act_level(shot), "image")) if x),
             # 首帧/尾帧/关键帧恒走 SDXL（scene_sdxl/IPA 链路）→ 组装期就喂 SDXL 方言
             "quality": ", ".join(x for x in (QUALITY_SUFFIX,
                                              model_tokens("sdxl", "image")) if x),
@@ -1262,9 +1273,11 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "beats": beats_text(beats, shot.get("duration", 4)),
             "motion_cues": motion_vid,
             "camera": cam_seg,
-            # 视频默认 vid_wan21_480p（wan 系方言：动作分解/连续运镜），说话镜生成期再叠 infinitalk 词
+            # 视频默认 vid_wan21_480p（wan 系方言：动作分解/连续运镜），说话镜生成期再叠 infinitalk 词；
+            # 动作镜追加打斗编排词（重量感三要素：发力→命中→受击）
             "motion_constraints": ", ".join(x for x in (
-                MOTION_STABILITY, model_tokens("wan", "video")) if x),
+                MOTION_STABILITY, model_tokens("wan", "video"),
+                action_tokens(_act_level(shot), "video")) if x),
             "blocking": _clean(shot.get("blocking", "")),
             "character_path": _clean(shot.get("character_path", "")),
             "focus": shot.get("focus_transition", "") if shot.get("focus_transition") != "none" else "",
@@ -1392,6 +1405,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "motion": json.loads(getattr(r, "motion_json", "") or "{}"),
             "transition_in": (getattr(r, "transition_in", "") or "").strip().lower(),
             "beat": (getattr(r, "beat", "") or "").strip().lower(),
+            "dialogue": r.dialogue or "", "sfx": r.sfx or "",
             "focal_length": getattr(r, "focal_length", "") or "",
             "image_slots": {"subject_action": r.subject_action, "light": r.light,
                             "composition": r.composition, "shot_size": r.shot_size,
@@ -1427,8 +1441,10 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                                         consistent=not lifelike_full) if lifelike else "",
             # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
             # 更强的表演张力词，把留存波形落到提示词层面）
+            # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词（与拆解组装一致）
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
-                                           _beat_tokens(d.get("beat"))) if x),
+                                           _beat_tokens(d.get("beat")),
+                                           action_tokens(_act_level(d), "image")) if x),
             # 同上：重组装也喂 SDXL 方言（与拆解组装保持一致）
             "quality": ", ".join(x for x in (QUALITY_SUFFIX,
                                              model_tokens("sdxl", "image")) if x),
@@ -1473,7 +1489,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "motion_cues": _motion_video_tokens(d.get("motion") or {}),
             "camera": cam_seg,
             "motion_constraints": ", ".join(x for x in (
-                MOTION_STABILITY, model_tokens("wan", "video")) if x),
+                MOTION_STABILITY, model_tokens("wan", "video"),
+                action_tokens(_act_level(d), "video")) if x),
             "blocking": _clean(r.blocking),
             "character_path": _clean(r.character_path),
             "focus": r.focus_transition if r.focus_transition != "none" else "",
