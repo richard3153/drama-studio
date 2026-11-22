@@ -1116,11 +1116,14 @@ async def generate_shot_talk(db, task, params: dict) -> dict:
     vtok = _vocab_positive(preset, genre)
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = f"{prompt}, {vtok}"
+    from .model_vocab import model_tokens, model_negative   # 说话镜方言：微动作+口型同步，负面挡大动作
     overrides = {
         "WanVideoTextEncode.positive_prompt":
-            f"{prompt}, the character is speaking, natural talking expressions, "
-            "lip movements match speech, consistent character appearance",
-        "WanVideoTextEncode.negative_prompt": dialect_negative("wan22", _shot_neg("shot_video", preset, genre=genre)),
+            f"{prompt}, {model_tokens('infinitalk', 'video')}, "
+            "consistent character appearance",
+        "WanVideoTextEncode.negative_prompt": ", ".join(x for x in (
+            dialect_negative("wan22", _shot_neg("shot_video", preset, genre=genre)),
+            model_negative("infinitalk", "video")) if x),
         "LoadImage@0.image": start_name,
         "LoadAudio.audio": audio_name,
         "MultiTalkWav2VecEmbeds.num_frames": frames,

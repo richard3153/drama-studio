@@ -18,6 +18,7 @@ from ..style_presets import (_clean, QUALITY_SUFFIX, assemble_character_prompt,
                              assemble_end_frame_prompt, assemble_prop_prompt,
                              assemble_scene_prompt, assemble_shot_prompt, get_style,
                              style_lock_for, lifelike_tokens)
+from .model_vocab import model_tokens   # 模型提示词库（组装期按预判的下游模型组词）
 
 LLM_TEMP = 0.3
 
@@ -1192,7 +1193,9 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             # 更强的表演张力词，把留存波形落到提示词层面）
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
                                            _beat_tokens(shot.get("beat"))) if x),
-            "quality": QUALITY_SUFFIX,
+            # 首帧/尾帧/关键帧恒走 SDXL（scene_sdxl/IPA 链路）→ 组装期就喂 SDXL 方言
+            "quality": ", ".join(x for x in (QUALITY_SUFFIX,
+                                             model_tokens("sdxl", "image")) if x),
         }
 
         # 运动动作控制（分镜调整项）：静态姿态锚 + 视频运动 token
@@ -1255,10 +1258,13 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                                      shot.get("framing_end", ""))
         vars_vd = dict(common)
         vars_vd.update({
+            "quality": QUALITY_SUFFIX,   # 视频提示词收回纯内容层：SDXL 图像方言不进视频模型
             "beats": beats_text(beats, shot.get("duration", 4)),
             "motion_cues": motion_vid,
             "camera": cam_seg,
-            "motion_constraints": MOTION_STABILITY,
+            # 视频默认 vid_wan21_480p（wan 系方言：动作分解/连续运镜），说话镜生成期再叠 infinitalk 词
+            "motion_constraints": ", ".join(x for x in (
+                MOTION_STABILITY, model_tokens("wan", "video")) if x),
             "blocking": _clean(shot.get("blocking", "")),
             "character_path": _clean(shot.get("character_path", "")),
             "focus": shot.get("focus_transition", "") if shot.get("focus_transition") != "none" else "",
@@ -1423,7 +1429,9 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             # 更强的表演张力词，把留存波形落到提示词层面）
             "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
                                            _beat_tokens(d.get("beat"))) if x),
-            "quality": QUALITY_SUFFIX,
+            # 同上：重组装也喂 SDXL 方言（与拆解组装保持一致）
+            "quality": ", ".join(x for x in (QUALITY_SUFFIX,
+                                             model_tokens("sdxl", "image")) if x),
         }
         v = dict(common)
         v.update({
@@ -1460,10 +1468,12 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                                      r.framing_end or "")
         v4 = dict(common)
         v4.update({
+            "quality": QUALITY_SUFFIX,   # 同上：视频不喂图像方言
             "beats": beats_text(d["action_beats"], r.duration),
             "motion_cues": _motion_video_tokens(d.get("motion") or {}),
             "camera": cam_seg,
-            "motion_constraints": MOTION_STABILITY,
+            "motion_constraints": ", ".join(x for x in (
+                MOTION_STABILITY, model_tokens("wan", "video")) if x),
             "blocking": _clean(r.blocking),
             "character_path": _clean(r.character_path),
             "focus": r.focus_transition if r.focus_transition != "none" else "",

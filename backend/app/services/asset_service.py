@@ -302,7 +302,9 @@ async def generate_asset(db, task, params: dict) -> dict:
         # "text" 会压制它 → 剔除裸 text（watermark/乱码拦截仍在 NEG 与 CHAR_SHEET_NEG 里）。
         neg_parts = [p.strip() for p in NEGATIVE.split(",") if p.strip() and p.strip() != "text"]
         negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
-    prompt = f"{params['base_prompt']}, {suffix}, {QUALITY_SUFFIX}"
+    from .model_vocab import image_dialect   # 模型方言词库（family 已知 → 直接取该族母语词）
+    prompt = ", ".join(x for x in (params['base_prompt'], suffix, QUALITY_SUFFIX,
+                                   image_dialect(family)) if x)
     overrides = {
         "positive_text": prompt,
         "negative_text": negative,
