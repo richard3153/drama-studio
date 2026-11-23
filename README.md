@@ -156,3 +156,7 @@ frontend/
 | 资产工坊（角色三视图 / 音色锁定） | ![资产](docs/screenshots/03_assets.png) |
 | 分镜时间轴（17 镜镜头卡 / 批量编排 / 说话镜） | ![分镜](docs/screenshots/04_storyboard.png) |
 | 成片导出（配音 / 混音 / 剪映 & FCPXML） | ![成片](docs/screenshots/05_export.png) |
+
+## License
+
+本项目基于 [MIT License](LICENSE) 开源。
