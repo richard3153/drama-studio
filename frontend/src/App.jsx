@@ -1505,14 +1505,19 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
             </div>
             <div className="row" style={{ marginTop: 14 }}>
               <button className="ghost" onClick={save} disabled={busy}>保存修改</button>
-              <button onClick={rerender} disabled={busy}>🔁 重新渲染</button>
-              <button className="ghost" onClick={polish} disabled={busy} title="img2img denoise 0.12，构图与身份不变，仅补自然质感">✨ 微调10%</button>
+              <button onClick={rerender} disabled={busy || (!prompt.trim() && !Object.keys(slots).length)} title={!prompt.trim() && !Object.keys(slots).length ? '提示词为空：先「从描述重铸槽位」或手动填写提示词' : ''}>🔁 重新渲染</button>
+              <button className="ghost" onClick={polish} disabled={busy || !versions.length} title="img2img denoise 0.12，构图与身份不变，仅补自然质感">✨ 微调10%</button>
               {asset._etype !== 'character' && <button className="ghost" onClick={redrawFromRef} disabled={busy} title="粘贴网上找的真实物品/场景照片，img2img 重绘：结构、比例、屏幕与键帽文字保真，只换画风">📷 参考图重绘</button>}
               {isScene && <button className="ghost" onClick={genIso} disabled={busy} title="生成 45° 等距空间布局全景图：俯瞰整个场景的结构与陈设排布，作为场景缩略图与锚点候选（镜头首帧 img2img 以此锁环境）">📐 布局图</button>}
-              <button className="ghost" onClick={upscale} disabled={busy} title="像素级超分放大（写实 4xNomos / 动漫 4x-ESRGAN / 通用 RealESRGAN），构图身份不变，追加高清版本">🔍 超分放大</button>
-              {!Object.keys(slots).length && <button className="ghost" onClick={rebuild} disabled={busy} title="本地 LLM 按方法论模板从描述反推结构化槽位">🪄 从描述重铸槽位</button>}
+              <button className="ghost" onClick={upscale} disabled={busy || !versions.length} title="像素级超分放大（写实 4xNomos / 动漫 4x-ESRGAN / 通用 RealESRGAN），构图身份不变，追加高清版本">🔍 超分放大</button>
+              {!Object.keys(slots).length && <button className="ghost" onClick={rebuild} disabled={busy} style={!prompt.trim() ? { background: 'var(--accent2)', color: '#fff' } : undefined} title="本地 LLM 按方法论模板从描述反推结构化槽位；描述为占位文案时自动从剧本正文抽取该实体出场片段补上下文">🪄 从描述重铸槽位</button>}
               <button className="ghost" onClick={() => onClose(false)}>关闭</button>
             </div>
+            {!prompt.trim() && !Object.keys(slots).length && (
+              <div style={{ marginTop: 10, padding: '8px 10px', border: '1px solid var(--accent2)', borderRadius: 8, fontSize: 12, color: 'var(--text)' }}>
+                ⚠ 提示词为空（拆解自动发现的候选）：直接渲染会被拦截。点上方 <b>🪄 从描述重铸槽位</b>，LLM 会自动从剧本正文抽取该角色出场片段反推外观设定。
+              </div>
+            )}
           </div>
         </div>
       </div>

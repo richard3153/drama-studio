@@ -1618,6 +1618,33 @@ def _strip_unspecified(slots: dict) -> dict:
     return out
 
 
+def _entity_script_excerpt(db, project_id: int, name: str, max_lines: int = 30) -> str:
+    """从项目已写剧本正文中抽取实体出场的动作行/对白行（槽位重铸的上下文兜底）。
+
+    只扫 script_text 非空的分集（拆解发现的实体必然在已写剧本里出现过）；
+    每行截断 160 字符，最多 max_lines 行，避免长剧本撑爆本地小模型上下文。
+    """
+    from ..db import Episode
+    name = (name or "").strip()
+    if not name:
+        return ""
+    episodes = db.scalars(select(Episode)
+                          .where(Episode.project_id == project_id)
+                          .order_by(Episode.idx)).all()
+    lines: list[str] = []
+    for ep in episodes:
+        text = ep.script_text or ""
+        if not text or name not in text:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if line and name in line:
+                lines.append(line[:160])
+                if len(lines) >= max_lines:
+                    return "\n".join(lines)
+    return "\n".join(lines)
+
+
 async def rebuild_slots(db, task, params: dict):
     """旧资产槽位重铸：从「名称+描述」按方法论模板反推结构化槽位（本地 LLM）。"""
     from ..db import Character, Scene, Prop, Project
@@ -1638,6 +1665,20 @@ async def rebuild_slots(db, task, params: dict):
     prompt = (f"资产类型：{etype}\n名称：{params['name']}\n描述：{params['description']}\n\n"
               f"填写规则：{SLOT_GUIDE[etype]}\n\n"
               f"输出 JSON：\n{{\n  \"slots\": {{\n{schema}\n  }}\n}}")
+
+    # 【槽位重铸增强】描述是占位文案（拆解自动发现的候选）时，自动从项目剧本正文
+    # 抽取该实体出场的动作行/对白行作为上下文喂给 LLM——否则占位描述反推不出
+    # 任何有效槽位，角色 base_prompt 仍为空 → 渲染守卫拦截，用户卡死。
+    desc = (params.get("description") or "").strip()
+    if not desc or "拆解自动发现" in desc or "需补全槽位" in desc:
+        excerpt = _entity_script_excerpt(db, row.project_id, params["name"])
+        if excerpt:
+            prompt = (f"资产类型：{etype}\n名称：{params['name']}\n"
+                      f"（描述缺失/占位，以下为剧本正文中该实体出场的片段，从中提取外观与设定信息）\n"
+                      f"剧本片段：\n{excerpt}\n\n"
+                      f"填写规则：{SLOT_GUIDE[etype]}\n\n"
+                      f"输出 JSON：\n{{\n  \"slots\": {{\n{schema}\n  }}\n}}")
+
     update_progress(db, task, 0.1, "调用本地 LLM 反推槽位")
     data = await _chat_json(prompt, system)
     slots = data.get("slots") or {}
