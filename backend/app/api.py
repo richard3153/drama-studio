@@ -137,13 +137,37 @@ def update_project(pid: int, body: ProjectUpdate):
         if body.transition_fx is not None:
             p.transition_fx = body.transition_fx
         db.commit()
+        reassembled = 0
+        # 【#85 根治】全局风格锁/活人感变更后，存量实体的 base_prompt 还是旧风格文本
+        # （旧图均为 anime_2d 词块开头）。若不同步重算，角色通道（直接用 base_prompt）
+        # 与无槽位资产会继续按旧锁出图，用户看到"改了锁但画风没变"。
+        # 这里对有槽位的实体按新锁重新组装；手工改过 base_prompt 的（无槽位）不动。
+        if body.style_preset is not None or body.lifelike is not None or body.lifelike_full is not None:
+            lifelike = bool(p.lifelike)
+            lifelike_full = bool(getattr(p, "lifelike_full", 0))
+            for etype, model in (("character", Character), ("scene", Scene), ("prop", Prop)):
+                for row in db.scalars(select(model).where(model.project_id == pid)).all():
+                    slots = json.loads(getattr(row, "prompt_json", "{}") or "{}")
+                    if not slots:
+                        continue
+                    if etype == "character":
+                        row.base_prompt = assemble_character_prompt(
+                            slots, p.style_preset, "sheet", lifelike, lifelike_full)
+                    elif etype == "scene":
+                        row.base_prompt = assemble_scene_prompt(
+                            slots, p.style_preset, lifelike, fallback_subject=row.name)
+                    else:
+                        row.base_prompt = assemble_prop_prompt(
+                            slots, p.style_preset, lifelike, fallback_subject=row.name)
+                    reassembled += 1
+            db.commit()
         return {"id": p.id, "name": p.name, "style_preset": p.style_preset,
                 "genre": getattr(p, "genre", ""),
                 "transition_bridge": getattr(p, "transition_bridge", 0),
                 "transition_fx": getattr(p, "transition_fx", ""),
                 "lifelike": p.lifelike, "lifelike_full": p.lifelike_full,
                 "auto_polish": p.auto_polish, "grid_storyboard": p.grid_storyboard,
-                "aspect_ratio": p.aspect_ratio}
+                "aspect_ratio": p.aspect_ratio, "reassembled_prompts": reassembled}
 
 
 @router.get("/projects")
@@ -1272,6 +1296,11 @@ async def regenerate(body: RegenerateIn):
             else:
                 prompt = assemble_prop_prompt(slots, preset, lifelike,
                                               fallback_subject=entity.name)
+            # 重组结果回写 base_prompt：否则库里/store 里的仍是旧风格锁文本，
+            # 角色 layout 通道与前端提示词框会继续拿旧 2D 词（#85 假象来源之一）
+            if entity.base_prompt != prompt:
+                entity.base_prompt = prompt
+                db.commit()
         else:
             prompt = entity.base_prompt
         if body.iso_layout and body.entity_type == "scene":

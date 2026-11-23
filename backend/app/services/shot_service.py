@@ -466,6 +466,15 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     aneg = _action_tokens(shot, "negative")
     if aneg:
         neg += f", {aneg}"
+    # #84：镜头本身没有人物（空镜/环境镜）→ 人形词必须走负向硬排除。
+    # 判断依据是 characters_json 为空，不是"参考图缺失"（参考图缺失仍是有人的镜头，
+    # 加人形负面会把人物抹掉）。正向提示词里的 "no people" 对 SDXL 基本无效。
+    _shot_chars = json.loads(shot.characters_json or "[]") \
+        if isinstance(shot.characters_json, str) else (shot.characters_json or [])
+    if not [x for x in _shot_chars if str(x).strip()]:
+        neg += (", people, person, human, human figure, man, woman, child, girl, boy, "
+                "character, characters, face, portrait, portrait photography, "
+                "silhouette, back view, hands, arms, legs, body")
     seed = random.randint(0, 2**31 - 1)
     prefix = f"drama_studio/p{shot.project_id}_s{shot.idx}_{frame_type}"
 

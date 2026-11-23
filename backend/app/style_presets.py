@@ -293,22 +293,28 @@ CHAR_BOARD_SPEC = ("professional character design board layout: one large full-b
                    "color palette swatch row, pure white background, clean sheet layout, "
                    "same character in every panel, no text, no other characters")
 
-# 场景（空镜）规格 —— 借鉴 huobao final-prompt：无人物空镜，含背影/剪影/倒影/照片里的人都要剔除
-SCENE_EMPTY_SPEC = ("empty scene with absolutely no people, no human figure, no back view of a person, "
-                    "no silhouette, no reflection of a person, no portrait inside a frame or photo, "
-                    "environment concept design, cinematic composition, "
-                    "clear foreground-midground-background layers, high detail")
+# 场景（空镜）规格 —— 2026-11-23 改为"纯正向空场表述"：
+# SDXL 对正向否定句（no people / no human figure）几乎不响应，反而会因 "people" 这个词
+# 把人物拉进画面（实测「废弃矿洞」出成少女侧身像）。人形排除一律交给 NEGATIVE_ENV 负向词。
+SCENE_EMPTY_SPEC = ("unoccupied interior space, empty set, environment concept art, "
+                    "wide establishing shot, clear foreground-midground-background layers, "
+                    "high detail")
 
-# 道具（白底单品）规格 —— 借鉴 huobao final-prompt：single product shot on pure white background
+# 道具（白底单品）规格 —— 同理只留正向：单品、居中、纯白底、柔光
 PROP_SPEC = ("single product shot, one isolated item, centered composition, "
              "seamless pure white studio background, soft top light with subtle contact shadow, "
-             "macro material detail, no hands, no people, no other objects")
+             "macro material detail")
 
 # 2026-11-22 强化（hyper-realism 方法论）：去掉泛化赞美词（masterpiece/8K 类只抬高饱和度
 # 与塑料感），换成摄影机/材质语言——给模型"怎么拍"而不是"拍得好"。
 QUALITY_SUFFIX = ("natural texture, authentic detail, subtle film grain, realistic fabric "
                   "weight, visible pores and flyaway hairs, natural color grade, "
                   "unretouched look, restrained rendering")
+
+# 无人像画质尾巴（场景/道具/空镜专用）：去掉了 pores and flyaway hairs / fabric weight
+# ——皮肤毛孔+发丝是"这里有人"的最强诱导词，实测场景/道具出人形的主因之一。
+QUALITY_SUFFIX_ENV = ("natural texture, authentic detail, subtle film grain, "
+                      "natural color grade, unretouched look, restrained rendering")
 
 # ---------- 活人感机制（去 AI 塑料感） ----------
 # 依据：生活化瑕疵 + 真实光影 + 非模板姿态 + 10%微调 + 规避过度渲染
@@ -385,22 +391,68 @@ def style_family(preset_key: str) -> str:
 _PORTRAIT_ONLY_RE = re.compile(
     r"portrait photography|skin texture and pores|realistic hair strands|softbox lighting", re.I)
 
+# ---------- 非角色资产的人像词语块剔除（2026-11-23 #84） ----------
+# 事故：场景「2-1-青云界·废弃矿洞」出成二次元少女侧身像、道具「系统提示框」出成少女+悬浮框。
+# 提示词主体词齐全、也带了空镜约束，真正的源头是风格锁里的人像词——
+#   anime_2d: expressive detailed eyes（"在画眼睛"=画人）
+#   guofeng_3d: oriental stylized characters / smooth glossy skin / hanfu cloth simulation
+#   korean_webtoon: tall elegant figures, porcelain skin
+#   pixar_3d: subsurface skin scattering；chibi_q: big head small body
+# 这些词在角色上是对的，落到场景/道具上就把人形拽进画面。这里逐词块剔除，只留画风与光效。
+_CHAR_WORD_RE = re.compile(
+    r"(expressive|detailed)\s+(eyes?|faces?)|"
+    r"(stylized\s+)?characters?|character design|"
+    r"(smooth\s+)?glossy skin|porcelain skin|skin texture|skin pores?|"
+    r"subsurface skin scattering|"
+    r"hanfu|cloth simulation|costume|outfit|clothing|dress|"
+    r"(tall\s+)?elegant figures?|big head small body|"
+    r"facial features|beautiful face|handsome|"
+    r"person|people|human|portrait|silhouette|hair strands?", re.I)
+
+# 剔除人像词后，按"资产类型 + 风格族"补回画风锚词（防止锁变得没有画风倾向）
+ENV_LOCK_TAIL = {
+    "scene": {
+        "photo": "environmental photography, wide establishing view, natural location lighting",
+        "anime": "anime background art, cel-shaded environment painting, detailed background scenery",
+        "3d": ("stylized 3D animation render, toon-shaded 3D environment, "
+               "clean stylized geometry, carved ornament detail, physically based materials, "
+               "volumetric lighting, set dressing"),
+        "paint": "painterly environment painting, atmospheric perspective, visible brush texture",
+    },
+    "prop": {
+        "photo": "product still life, macro material detail, natural location lighting",
+        "anime": "anime object illustration, cel-shaded still object, thin clean lineart",
+        "3d": ("stylized 3D animation asset, toon-shaded 3D object, clean stylized geometry, "
+               "physically based materials, soft studio lighting"),
+        "paint": "painterly object study, visible brush texture, even value shifts",
+    },
+}
+
 PROP_PHOTO_LOCK = ("photorealistic product photography, 60mm macro lens, studio softbox lighting, "
                    "raw photo, film grain")
 SCENE_PHOTO_LOCK = ("photorealistic environmental photography, wide angle lens, natural location "
                     "lighting, raw photo, film grain")
 
 
+def _env_lock(lock_text: str) -> str:
+    """逐词块剔除人像词（眼睛/皮肤/发丝/服饰/人物），保留画风与光效词块。"""
+    keep = [c.strip() for c in lock_text.split(",")
+            if c.strip() and not _CHAR_WORD_RE.search(c)]
+    return ", ".join(keep)
+
+
 def style_lock_for(kind: str, preset_key: str) -> str:
     """按资产类型适配风格锁。kind: character / prop / scene / shot。
-    角色与人像镜头沿用原 style_lock；道具/场景遇到人像专用词时替换为对应摄影版。
-    非写实 preset 的 style_lock 不含人像专用词，原样返回（不受影响）。"""
+    角色与人像镜头沿用原 style_lock；
+    道具/场景：人像摄影锁换成静物/环境摄影版，并把所有人像/皮肤/服饰词块剔除，
+    再补回该风格族的画风锚词（避免非角色资产被风格锁带出人物）。"""
     lock = get_style(preset_key)["style_lock"]
-    if kind == "prop" and _PORTRAIT_ONLY_RE.search(lock):
-        return PROP_PHOTO_LOCK
-    if kind == "scene" and _PORTRAIT_ONLY_RE.search(lock):
-        return SCENE_PHOTO_LOCK
-    return lock
+    if kind not in ("scene", "prop"):
+        return lock
+    if _PORTRAIT_ONLY_RE.search(lock):
+        lock = PROP_PHOTO_LOCK if kind == "prop" else SCENE_PHOTO_LOCK
+    fam = style_family(preset_key)
+    return ", ".join(x for x in (_env_lock(lock), ENV_LOCK_TAIL[kind][fam]) if x)
 
 
 # ---------- 国家/地区形象（ethnicity）预设：value=槽位值（英文 token），label=前端显示 ----------
@@ -492,7 +544,7 @@ def assemble_end_frame_prompt(shot_slots: dict, preset_key: str, scene_concept: 
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=bool(char_looks),
                                      consistent=not full_identity))
-    parts.append(QUALITY_SUFFIX)
+    parts.append(QUALITY_SUFFIX if char_looks else QUALITY_SUFFIX_ENV)
     return ", ".join(p for p in parts if p)
 
 # 道具三分类（第二章：核心叙事/角色连接/环境氛围）
@@ -573,10 +625,16 @@ def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     避免提示词没有空间主体词导致出图不对题。
     """
     s = get_style(preset_key)
-    parts = [style_lock_for("scene", preset_key)]
+    # 权重顺序：空间主体词前置（SDXL 前 75 token 权重最高），风格锁随后——
+    # 主体弱、风格锁里的人像词靠前，就会出人（#84 事故）。
+    head = []
     if not (slots.get("space") or "").strip() and fallback_subject:
-        parts.append(fallback_subject.strip())
-    for key in ("space", "era", "elements", "light"):
+        head.append(fallback_subject.strip())
+    space = _take(slots, "space")
+    if space:
+        head.append(space)
+    parts = head + [style_lock_for("scene", preset_key)]
+    for key in ("era", "elements", "light"):
         v = _take(slots, key)
         if v:
             parts.append(v)
@@ -588,7 +646,7 @@ def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
         parts.append(lifelike_tokens(preset_key, human=False))
     from .style_vocab import style_vocab_positive
     parts.append(style_vocab_positive(preset_key))   # 场景吃全量词库（含特效/氛围）
-    parts.append(QUALITY_SUFFIX)
+    parts.append(QUALITY_SUFFIX_ENV)
     return ", ".join(p for p in parts if p)
 
 
@@ -603,10 +661,10 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     """
     s = get_style(preset_key)
     category = _take(slots, "category") or "core"
-    parts = [style_lock_for("prop", preset_key)]
     subject = _take(slots, "subject") or (fallback_subject or "").strip()
-    if subject:
-        parts.append(subject)
+    # 物品主体词前置（同场景：主体弱 → 风格锁/质感动词把人形拽进画面）
+    head = [subject] if subject else []
+    parts = head + [style_lock_for("prop", preset_key)]
     purpose = _take(slots, "purpose")
     if purpose:
         parts.append(f"story function: {purpose}")
@@ -628,7 +686,7 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
         parts.append(lifelike_tokens(preset_key, human=False))
     from .style_vocab import style_vocab_positive
     parts.append(style_vocab_positive(preset_key, kinds=("style",)))
-    parts.append(QUALITY_SUFFIX)
+    parts.append(QUALITY_SUFFIX_ENV)
     return ", ".join(p for p in parts if p)
 
 
@@ -659,5 +717,5 @@ def assemble_shot_prompt(shot_slots: dict, preset_key: str,
     if lifelike:
         # 分镜永远用全量瑕疵（这是"活人感"主战场）；full_identity 只影响角色定妆资产
         parts.append(lifelike_tokens(preset_key, human=bool(char_looks), pose=bool(char_looks)))
-    parts.append(QUALITY_SUFFIX)
+    parts.append(QUALITY_SUFFIX if char_looks else QUALITY_SUFFIX_ENV)
     return ", ".join(p for p in parts if p)

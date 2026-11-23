@@ -14,7 +14,8 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..adapters.ollama_adapter import OllamaAdapter, _strip_think
-from ..style_presets import (_clean, QUALITY_SUFFIX, assemble_character_prompt,
+from ..style_presets import (_clean, QUALITY_SUFFIX, QUALITY_SUFFIX_ENV,
+                             assemble_character_prompt,
                              assemble_end_frame_prompt, assemble_prop_prompt,
                              assemble_scene_prompt, assemble_shot_prompt, get_style,
                              style_lock_for, lifelike_tokens)
@@ -1225,7 +1226,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                 shot.get("props") or _match_prop_names(
                     [shot.get("action", ""), shot.get("blocking", "")], props_db),
                 props_db),
-            "lifelike": lifelike_tokens(preset, human=True, pose=False,
+            "lifelike": lifelike_tokens(preset, human=bool(char_looks), pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
             # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词
             # 特效镜识别（特效词库 #81）：金光/慢镜/雨夜等 → 注入特效编排词
@@ -1234,7 +1235,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                                            action_tokens(_act_level(shot), "image"),
                                            _vfx_tokens(shot, "image")) if x),
             # 首帧/尾帧/关键帧恒走 SDXL（scene_sdxl/IPA 链路）→ 组装期就喂 SDXL 方言
-            "quality": ", ".join(x for x in (QUALITY_SUFFIX,
+            # 空镜用无皮肤/发丝的画质尾词（#84：pores/flyaway hairs 会把人物拽进无人画面）
+            "quality": ", ".join(x for x in ((QUALITY_SUFFIX if char_looks else QUALITY_SUFFIX_ENV),
                                              model_tokens("sdxl", "image")) if x),
         }
 
@@ -1470,7 +1472,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                 d.get("props") or _match_prop_names(
                     [d.get("action", ""), d.get("blocking", "")], props_db),
                 props_db),
-            "lifelike": lifelike_tokens(preset, human=True, pose=False,
+            "lifelike": lifelike_tokens(preset, human=bool(char_looks), pose=False,
                                         consistent=not lifelike_full) if lifelike else "",
             # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
             # 更强的表演张力词，把留存波形落到提示词层面）
@@ -1481,7 +1483,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                                            action_tokens(_act_level(d), "image"),
                                            _vfx_tokens(d, "image")) if x),
             # 同上：重组装也喂 SDXL 方言（与拆解组装保持一致）
-            "quality": ", ".join(x for x in (QUALITY_SUFFIX,
+            "quality": ", ".join(x for x in ((QUALITY_SUFFIX if char_looks else QUALITY_SUFFIX_ENV),
                                              model_tokens("sdxl", "image")) if x),
         }
         v = dict(common)
