@@ -46,6 +46,9 @@ body {
 .asset-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .asset-card img { width: 100%; aspect-ratio: 3/4; object-fit: cover; display: block; background: #000; }
 .asset-card.landscape img { aspect-ratio: 16/10; }
+/* 角色三视图为 16:9 横幅（1344x768）：卡片封面用 contain 完整展示整张版式，
+   避免 cover 裁切只露中段造成“图错位”观感 */
+.asset-card.character-sheet img { aspect-ratio: 16/9; object-fit: contain; background: #111; padding: 2px 0; }
 .asset-card .info { padding: 10px 12px; }
 .asset-card .name { font-weight: 600; }
 .asset-card .desc { color: var(--dim); font-size: 12px; margin-top: 4px; max-height: 40px; overflow: hidden; }

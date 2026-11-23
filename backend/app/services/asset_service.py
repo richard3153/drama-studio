@@ -214,6 +214,11 @@ async def upscale_asset(db, task, params: dict) -> dict:
     await comfy.free_memory()
 
     saved = []
+    # 衍生图必须继承源图的实体归属（entity_type/entity_id），
+    # 否则 /projects/{pid}/assets 的 img_by_entity 归不到资产下 → 前端历史版本永远看不到
+    _src_meta = json.loads(src.meta_json or "{}")
+    _ety = _src_meta.get("entity_type") or ("character" if src.character_id else None)
+    _eid = _src_meta.get("entity_id") or src.character_id
     for f in files:
         # 4x 后超限缩回（LANCZOS，画质损失可忽略），防前端/存储问题
         try:
@@ -229,7 +234,8 @@ async def upscale_asset(db, task, params: dict) -> dict:
                          character_id=src.character_id, file_path=str(f),
                          prompt=src.prompt,
                          meta_json=json.dumps({"upscaled_from": src.id,
-                                               "upscale_model": model_name},
+                                               "upscale_model": model_name,
+                                               **({"entity_type": _ety, "entity_id": _eid} if _ety else {})},
                                               ensure_ascii=False))
         db.add(img)
         db.commit()
@@ -258,6 +264,13 @@ async def generate_asset(db, task, params: dict) -> dict:
     prefer_tier?, width?, height?}"""
     reg = registry()
     role = params["role"]                     # portrait / scene / prop
+    # 【守卫】空提示词直接拒绝：拆解自动发现的角色（槽位未补全、base_prompt 空）
+    # 一旦放行，提示词只剩风格填充词 → SDXL 出乱线稿垃圾图，浪费 GPU 且误导用户。
+    if not (params.get("base_prompt") or "").strip():
+        raise RuntimeError(
+            f"资产的主体提示词为空（拆解自动发现的候选，槽位尚未补全）："
+            f"{params.get('entity_type', '')} #{params.get('entity_id', '')}。"
+            f"请先在资产编辑器补全槽位/描述后再渲染")
     if role == "portrait":
         # 【硬性要求 2026-11-21】角色资产必须三视图 sheet 版式：入口统一归一，
         # 单人立绘(single)/角色板(board)通道废弃——任何调用方传什么都以 sheet 出图。
@@ -638,13 +651,18 @@ async def refine_asset(db, task, params: dict) -> dict:
     await comfy.free_memory()
 
     saved = []
+    # 衍生图必须继承源图的实体归属（同 upscale：否则历史版本归不到资产下）
+    _src_meta = json.loads(src.meta_json or "{}")
+    _ety = _src_meta.get("entity_type") or ("character" if src.character_id else None)
+    _eid = _src_meta.get("entity_id") or src.character_id
     for f in files:
         img = AssetImage(project_id=src.project_id, kind=src.kind,
                          character_id=src.character_id, file_path=str(f),
                          prompt=src.prompt,
                          meta_json=json.dumps({"polish_strength": strength,
                                                "refined_from": src.id,
-                                               "model_key": model_key},
+                                               "model_key": model_key,
+                                               **({"entity_type": _ety, "entity_id": _eid} if _ety else {})},
                                               ensure_ascii=False))
         db.add(img)
         db.commit()

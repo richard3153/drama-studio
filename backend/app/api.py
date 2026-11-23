@@ -917,12 +917,14 @@ def project_assets(pid: int):
                             "base_prompt": c.base_prompt,
                             "slots": json.loads(c.prompt_json or "{}"),
                             "portrait_mode": c.portrait_mode,
+                            "has_prompt": bool((c.base_prompt or "").strip()) or bool(json.loads(c.prompt_json or "{}")),
                             "image_ids": [i.id for i in img_by_entity.get(("character", c.id, "base_look"), [])],
                             "render_count": _render_count(img_by_entity.get(("character", c.id, "base_look"), []))}
                            for c in chars],
             "scenes": [{"id": s.id, "name": s.name, "description": s.description,
                         "base_prompt": s.base_prompt,
                         "slots": json.loads(s.prompt_json or "{}"),
+                        "has_prompt": bool((s.base_prompt or "").strip()) or bool(json.loads(s.prompt_json or "{}")),
                         "anchor_path": getattr(s, "anchor_path", "") or "",
                         "anchor_image_id": next((i.id for i in img_by_entity.get(("scene", s.id, "scene"), [])
                                                  if i.file_path == getattr(s, "anchor_path", "")), None),
@@ -932,6 +934,7 @@ def project_assets(pid: int):
             "props": [{"id": p.id, "name": p.name, "description": p.description,
                        "base_prompt": p.base_prompt,
                        "slots": json.loads(p.prompt_json or "{}"),
+                       "has_prompt": bool((p.base_prompt or "").strip()) or bool(json.loads(p.prompt_json or "{}")),
                        "image_ids": [i.id for i in img_by_entity.get(("prop", p.id, "prop"), [])],
                        "render_count": _render_count(img_by_entity.get(("prop", p.id, "prop"), []))}
                       for p in props],

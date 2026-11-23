@@ -1608,12 +1608,12 @@ function AssetsPage({ project, refreshTasks, setStage }) {
       </h3>
       <div className="grid">
         {list.map(a => (
-          <div key={a.id} className={`asset-card ${landscape ? 'landscape' : ''}`} style={{ cursor: 'pointer', position: 'relative' }}
+          <div key={a.id} className={`asset-card ${etype === 'character' ? 'character-sheet' : ''} ${landscape ? 'landscape' : ''}`} style={{ cursor: 'pointer', position: 'relative' }}
             onClick={() => setEditing({ ...a, _etype: etype, project_id: project.id })}>
             <button className="small" title="删除资产（含全部生成图，不可恢复）"
               style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, background: '#c0392b', borderColor: '#c0392b', color: '#fff', opacity: 0.85 }}
               onClick={e => { e.stopPropagation(); deleteAsset(etype, a) }}>删除</button>
-            {a.image_ids.length ? <img src={img(a.image_ids[a.image_ids.length - 1])} /> : <div style={{ aspectRatio: landscape ? '16/10' : '3/4', display: 'grid', placeItems: 'center', color: 'var(--dim)' }}>未生成 · 点击配置</div>}
+            {a.image_ids.length ? <img src={img(a.image_ids[a.image_ids.length - 1])} /> : <div style={{ aspectRatio: etype === 'character' ? '16/9' : landscape ? '16/10' : '3/4', display: 'grid', placeItems: 'center', color: 'var(--dim)' }}>未生成 · 点击配置{etype === 'character' && !a.has_prompt ? '（先补全槽位）' : ''}</div>}
             <div className="info">
               <div className="name">{a.name} {a.render_count > 0 && <span className="badge">渲染 {a.render_count} 次</span>}{a.image_ids.length > 1 && <span className="badge" title="含微调/超分等衍生图">{a.image_ids.length} 图</span>}</div>
               <div className="desc">{a.description}</div>
