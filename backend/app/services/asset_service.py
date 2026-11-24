@@ -303,6 +303,13 @@ async def generate_asset(db, task, params: dict) -> dict:
     if (prefer is None and role in ("scene", "prop")
             and style_family(params.get("style_preset") or "") == "photo"):
         prefer = "mid"
+    # 【#85 定版】3D 风格族（pixar_3d/guofeng_3d/game_cg…）固定走 Qwen-Image：
+    # flux2klein 出 PBR 写实向 3D，与"3D 国风动画"（cel 感/《凡人修仙传》式）不符；
+    # Qwen-Image 对风格锁服从度最高且 13.5GB 靠 offload 在 8G 卡可跑（单张 4-8min，
+    # 调度器串行兜底）。用户显式传 model_key/prefer_tier 时不受影响。
+    if (prefer is None and style_family(params.get("style_preset") or "") == "3d"
+            and not params.get("model_key")):
+        prefer = "high"
 
     model_key, model = await pick_model(role, prefer,
                                         params.get("model_key"),
