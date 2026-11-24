@@ -1915,6 +1915,7 @@ class BatchIn(BaseModel):
     duration: int | None = None
     chain: bool = True              # 批量首帧链式接力（上镜末帧→下镜首帧）
     from_idx: int | None = None     # 向后重链起始镜号
+    model_key: str | None = None    # 视频模型显式指定（如 vid_h3_turbo 提速档；缺省走全局默认）
 
 
 @router.post("/episodes/{eid}/batch-frames")
@@ -1941,7 +1942,8 @@ async def episode_batch_videos(eid: int, body: BatchIn = None):
             raise HTTPException(404, "剧集不存在")
         params = {"episode_id": eid, "project_id": ep.project_id,
                   "ipa_weight": body.ipa_weight if body else None,
-                  "duration": body.duration if body else None}
+                  "duration": body.duration if body else None,
+                  "model_key": body.model_key if body else None}
         t = task_queue.create_task(db, "batch_videos", params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": "batch_videos"}
@@ -1988,6 +1990,7 @@ async def episode_rechain_from(eid: int, body: BatchIn = None):
         params = {"episode_id": eid, "project_id": ep.project_id,
                   "ipa_weight": body.ipa_weight if body else None,
                   "duration": body.duration if body else None,
+                  "model_key": body.model_key if body else None,
                   "from_idx": from_idx}
         t = task_queue.create_task(db, "rechain_from", params)
     task_queue.spawn_bg(_run_bg(t.id))
@@ -2003,7 +2006,8 @@ async def episode_full_pipeline(eid: int, body: BatchIn = None):
             raise HTTPException(404, "剧集不存在")
         params = {"episode_id": eid, "project_id": ep.project_id,
                   "ipa_weight": body.ipa_weight if body else None,
-                  "duration": body.duration if body else None}
+                  "duration": body.duration if body else None,
+                  "model_key": body.model_key if body else None}
         t = task_queue.create_task(db, "full_pipeline", params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": "full_pipeline"}

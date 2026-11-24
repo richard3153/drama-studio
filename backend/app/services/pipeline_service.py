@@ -141,7 +141,8 @@ async def batch_videos(db, t: TaskRecord, params: dict) -> dict:
         err = await _run_step(db, t, f"视频 s{sh.idx}", step, total_steps,
                               shot_service.generate_shot_video(
                                   db, t, {"shot_id": sh.id,
-                                          "duration": params.get("duration")}))
+                                          "duration": params.get("duration"),
+                                          "model_key": params.get("model_key")}))
         step += 1
         if err:
             failed.append({"shot_idx": sh.idx, "error": err})
@@ -239,7 +240,8 @@ async def rechain_from(db, t: TaskRecord, params: dict) -> dict:
         step += 1
         err3 = await _run_step(db, t, f"[重链] 视频 s{sh.idx}", step, total_steps,
                                shot_service.generate_shot_video(
-                                   db, t, {"shot_id": sh.id, "duration": params.get("duration")}))
+                                   db, t, {"shot_id": sh.id, "duration": params.get("duration"),
+                                           "model_key": params.get("model_key")}))
         if err3:
             failed.append({"shot_idx": sh.idx, "stage": "video", "error": err3})
             break
@@ -296,7 +298,8 @@ async def full_pipeline(db, t: TaskRecord, params: dict) -> dict:
         err = await _run_step(db, t, f"[全流程] 视频 s{sh.idx}", step, steps_total,
                               shot_service.generate_shot_video(
                                   db, t, {"shot_id": sh.id,
-                                          "duration": params.get("duration")}))
+                                          "duration": params.get("duration"),
+                                          "model_key": params.get("model_key")}))
         step += 1
         if err:
             summary.setdefault("failed", []).append({"shot_idx": sh.idx, "error": err})

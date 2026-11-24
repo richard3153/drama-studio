@@ -283,6 +283,29 @@ def _video_size(path: Path) -> tuple[int, int]:
         return (1280, 720)
 
 
+def _video_probe(path: Path) -> dict:
+    """探测视频宽高/帧率/编码（拼接前判参：wan 480x832@16fps 旧片 × H3 768x1344@24fps
+    新片混拼时 concat demuxer 必坏，需走 concat filter 统一缩放重编码）。"""
+    r = subprocess.run([str(FFPROBE), "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height,r_frame_rate,codec_name",
+                        "-of", "json", str(path)], capture_output=True, text=True)
+    try:
+        st = json.loads(r.stdout)["streams"][0]
+        num, den = st["r_frame_rate"].split("/")
+        return {"w": int(st["width"]), "h": int(st["height"]),
+                "fps": round(float(num) / float(den), 3), "codec": st.get("codec_name", "")}
+    except Exception:
+        return {"w": 0, "h": 0, "fps": 0.0, "codec": ""}
+
+
+def _segments_uniform(segs: list) -> bool:
+    """全段分辨率/帧率一致 → 可走 -c copy 无损快路。"""
+    probes = [_video_probe(s["video"]) for s in segs]
+    first = probes[0]
+    return all(p["w"] == first["w"] and p["h"] == first["h"]
+               and abs(p["fps"] - first["fps"]) < 0.01 for p in probes[1:])
+
+
 def _subtitle_font_px(w: int, h: int) -> float:
     """字幕字号像素值（横屏贴画高 / 竖屏贴画宽）。"""
     return h * 0.038 if w >= h else w * 0.048
@@ -431,12 +454,35 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
     final = export_dir / f"final_ep{eid}.mp4"
     srt_path = export_dir / f"final_ep{eid}.srt"
 
-    # 1) 拼接（转场段与镜头段编码参数不一致时不能 -c copy，走 NVENC 重编码一次）
-    update_progress(db, t, 0.1, f"拼接 {len(segs)} 段" + ("（含转场段，重编码）" if inserts else "（无损 copy）"))
+    # 1) 拼接：先探测各段参数。wan 旧片(480x832@16fps)与 H3 新片(768x1344@24fps)混拼时
+    #    concat demuxer（copy 或重编码）都会因流参数不一致坏掉——走 concat filter
+    #    统一 scale/pad 到首段分辨率 + fps 归一后 NVENC 重编码一次。
+    #    全段一致才走 -c copy 无损快路。
+    mixed_params = not _segments_uniform(segs)
+    update_progress(db, t, 0.1, f"拼接 {len(segs)} 段" +
+                    ("（混合分辨率/帧率，统一缩放重编码）" if mixed_params
+                     else "（含转场段，重编码）" if inserts else "（无损 copy）"))
     lst = export_dir / "concat_list.txt"
     lst.write_text("".join(f"file '{s['video'].as_posix()}'\n" for s in segs),
                    encoding="utf-8")
-    if inserts:
+    if mixed_params:
+        base_w, base_h = _video_size(segs[0]["video"])
+        base_fps = _video_probe(segs[0]["video"])["fps"] or 24.0
+        chains = []
+        for i, s in enumerate(segs):
+            chains.append(
+                f"[{i}:v]scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
+                f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                f"fps={base_fps},format=yuv420p[v{i}]")
+        fc = ";".join(chains) + ";" + \
+            "".join(f"[v{i}]" for i in range(len(segs))) + \
+            f"concat=n={len(segs)}:v=1:a=0[vout]"
+        _run_ff([str(FFMPEG), "-y"] +
+                [x for s in segs for x in ("-i", str(s["video"]))] +
+                ["-filter_complex", fc, "-map", "[vout]",
+                 "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M",
+                 "-pix_fmt", "yuv420p", "-an", str(novoice)], "拼接（混合参数，concat filter）")
+    elif inserts:
         _run_ff([str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
                  "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M",
                  "-pix_fmt", "yuv420p", "-an", str(novoice)], "拼接（含转场段）")

@@ -704,7 +704,12 @@ async def generate_shot_video(db, task, params: dict) -> dict:
         overrides["WanFirstLastFrameToVideo.width"] = w
         overrides["WanFirstLastFrameToVideo.height"] = h
         wf = comfy.apply_overrides(wf, overrides)
-    update_progress(db, task, 0.3, f"{model_key} 推理中（8G 显存约 2-4 分钟/条）")
+    # 耗时提示按模型档动态：turbo LoRA 4 步实测 2s≈4min（首跑含加载），int8 全量 25 步 ≈30min
+    if is_h3:
+        est = "约 2-4 分钟/条（turbo 4 步）" if "turbo" in model_key else "约 15-30 分钟/条（int8 全量 25 步，建议 turbo 档）"
+    else:
+        est = "约 2-4 分钟/条"
+    update_progress(db, task, 0.3, f"{model_key} 推理中（8G 显存{est}）")
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
     out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_video",
                           save_root=save_root, timeout=2400)
