@@ -39,8 +39,16 @@ models:
   vid_h3_int8:
     role: [video]
     family: minimax_h3
-    weight: "minimax_h3_ref2va_pruned-Q2_K.gguf"
-    vram_gb: 6.8
+    weight: "minimax_h3_fl2va_pruned_int8_convrot.safetensors (diffusion_models) + qwen3vl_32b nvfp4_awq 文本编码器"
+    workflow: video_h3_i2v.json
+    vram_gb: 7.0
+    tier: low
+  vid_h3_turbo:
+    role: [video]
+    family: minimax_h3
+    weight: "同 vid_h3_int8 底模（缓存复用）+ fl2v_turbo_8step_v1.0 LoRA（官方配 4 步）"
+    workflow: video_h3_turbo.json
+    vram_gb: 7.0
     tier: low
   vid_wan21_480p:
     role: [video]

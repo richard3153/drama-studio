@@ -1588,6 +1588,7 @@ class ShotGenBody(BaseModel):
     prefer_tier: str | None = None
     duration: int | None = None
     ipa_weight: float | None = None  # IPAdapter 锁脸强度（0.55/0.70/0.85 三档）
+    model_key: str | None = None     # 显式指定生成模型（如 vid_h3_turbo 提速档）
 
 
 @router.post("/shots/{sid}/frame")
@@ -1618,7 +1619,8 @@ async def gen_shot_video_api(sid: int, body: ShotGenBody | None = None):
             raise HTTPException(404, "镜头不存在")
         t = TaskRecord(type="shot_video", status="pending",
                        params_json=json.dumps({"shot_id": sid, "prefer_tier": b.prefer_tier,
-                                               "duration": b.duration}, ensure_ascii=False))
+                                               "duration": b.duration,
+                                               "model_key": b.model_key}, ensure_ascii=False))
         db.add(t)
         db.commit()
         db.refresh(t)

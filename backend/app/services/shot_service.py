@@ -35,6 +35,7 @@ VIDEO_WF_BY_MODEL = {
     "vid_wan21_480p": "i2v_wan21_480p.json",
     "vid_wan22_flf_q4": "i2v_first_last.json",
     "vid_h3_int8": "video_h3_i2v.json",
+    "vid_h3_turbo": "video_h3_turbo.json",
 }
 VIDEO_WF = "i2v_wan21_480p.json"
 DEFAULT_VIDEO_MODEL = "vid_h3_int8"   # 与 models.yaml defaults.default_models.video 同步
@@ -976,23 +977,21 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
     if not dst.first_frame_path or not Path(dst.first_frame_path).exists():
         raise RuntimeError(f"下镜 #{dst.idx} 缺首帧，先生成它再出转场镜")
 
-    # 转场镜是辅助链路：模板硬绑 wan22 双帧（i2v_first_last.json，双 KSamplerAdvanced），
-    # 不随全局视频底模切换；显式钉死 model_key 保证任务面板显示与实际执行一致。
-    model_key, model = await pick_model("video", None, "vid_wan22_flf_q4")
+    # 转场镜走 H3 turbo 双帧：模板双 LoadImage 默认连接 first/last frame（首=A末帧 尾=B首帧），
+    # turbo LoRA 4 步采样——转场镜是 1-2s 的过渡件，速度优先；底模与主视频同款，缓存可复用。
+    model_key, model = await pick_model("video", None, "vid_h3_turbo")
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
     comfy = ComfyUIAdapter()
-    wf = comfy.load_template("i2v_first_last.json")   # 转场镜必须双帧约束（首=A末帧 尾=B首帧）
+    wf = comfy.load_template(VIDEO_WF_BY_MODEL[model_key])   # video_h3_turbo.json（双帧约束）
 
-    fps = 16
-    duration = max(1, min(2, int(params.get("duration") or 1)))
-    length = max(17, int(round(duration * fps / 4.0)) * 4 + 1)
+    fps = 24
+    duration = clamp_duration(max(1, min(2, int(params.get("duration") or 1))), family)
+    length = _h3_length(duration)
     mech = _TRANSITION_MECHANISM.get(
         (params.get("mechanism") or "").strip().lower(),
         _TRANSITION_MECHANISM["generic"])
-    preset = (project.style_preset if project else "") or "anime_2d"
-    genre = (getattr(project, "genre", "") if project else "") or ""
     prompt = wrap_video_prompt(
         f"{mech}, smooth cinematic transition between scenes, "
         f"consistent lighting and character appearance", family, duration, has_end_frame=True)
@@ -1001,18 +1000,16 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
     start_name = await comfy.upload_image(src_frame)
     end_name = await comfy.upload_image(dst.first_frame_path)
     seed = random.randint(0, 2 ** 31 - 1)
-    w, h = _res(project)
+    w, h = _h3_dims(project)
     overrides = {
-        "positive_text": prompt,
-        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
         "LoadImage@0.image": start_name,
         "LoadImage@1.image": end_name,
-        "WanFirstLastFrameToVideo.length": length,
-        "WanFirstLastFrameToVideo.width": w,
-        "WanFirstLastFrameToVideo.height": h,
+        "MiniMaxH3ImageToVideo.prompt": prompt,
+        "MiniMaxH3ImageToVideo.width": w,
+        "MiniMaxH3ImageToVideo.height": h,
+        "MiniMaxH3ImageToVideo.length": length,
+        "RandomNoise.noise_seed": seed,
         "CreateVideo.fps": fps,
-        "KSamplerAdvanced@0.noise_seed": seed,
-        "KSamplerAdvanced@1.noise_seed": seed,
     }
     wf = comfy.apply_overrides(wf, overrides)
     out = await comfy.run(wf, timeout=2400, save_root=save_root,
