@@ -51,6 +51,13 @@ async def pick_model(role: str, prefer_tier: str | None = None,
             raise RuntimeError(f"模型 {model_key} 不支持 role={role}")
         return model_key, candidates[model_key]
 
+    # 全局底模（defaults.default_models，2026-11-24 拍板：图片=Qwen-Image / 视频=MiniMax H3）：
+    # 未显式指定 model_key 且未指定 prefer_tier 时直取。辅助链路（首帧 IPA/宫格/微调）
+    # 显式传 prefer_tier="low" 走 SDXL，不受此表影响；显式 prefer_tier 视为用户点名档位。
+    default_key = (reg.get("defaults", {}).get("default_models") or {}).get(role)
+    if not prefer_tier and default_key and default_key in candidates:
+        return default_key, candidates[default_key]
+
     if allowed_families:
         supported = {k: v for k, v in candidates.items()
                      if v.get("family") in allowed_families}

@@ -30,11 +30,14 @@ ASSETS_ROOT = BASE_DIR / "data" / "projects"
 FRAME_WF = "scene_sdxl.json"     # 单图文生图（构图由提示词承载，SDXL 最省显存）
 # 视频模板：低显存档默认 Wan2.1 480P fp8 + 4 步蒸馏（单模型，8G 实测 480x832x33 ≈108s）；
 # Wan2.2 Q4 GGUF 双模型画质更好但 GGUF 权重在显存不足时要 CPU 反量化，实测 18 分钟/33 帧，只作高质离线档。
+# 2026-11-24 全局拍板：视频一律 MiniMax H3（本地 Q2_K gguf，ImageToVideo 节点，24fps 音视频 latent）
 VIDEO_WF_BY_MODEL = {
     "vid_wan21_480p": "i2v_wan21_480p.json",
     "vid_wan22_flf_q4": "i2v_first_last.json",
+    "vid_h3_int8": "video_h3_i2v.json",
 }
 VIDEO_WF = "i2v_wan21_480p.json"
+DEFAULT_VIDEO_MODEL = "vid_h3_int8"   # 与 models.yaml defaults.default_models.video 同步
 GRID_WF = "grid_storyboard.json"
 IPA_WF = "scene_ipadapter.json"      # SDXL IPAdapter 锁脸（easy ipadapterApply，PLUS 预设）
 IPA_WF_DUAL = "scene_ipadapter_dual.json"  # 双人镜链式双 IPA（两张单人参考串接）
@@ -50,6 +53,20 @@ def _res(project: Project | None) -> tuple[int, int]:
     from ..aspect import shot_dims
     aspect = getattr(project, "aspect_ratio", None) if project else None
     return shot_dims(aspect)
+
+
+def _h3_length(duration: int) -> int:
+    """MiniMax H3 帧数网格 17k+5（24fps，124≈5s，训练范围约 124-362 帧 ≈ 5-15s）。"""
+    n = max(5, int(round(duration * 24)))
+    return min(362, n + (5 - n % 17) % 17)
+
+
+def _h3_dims(project: Project | None) -> tuple[int, int]:
+    """H3 画幅：训练分辨率约 1MP（1344x768）——按项目画幅把长边放大到 1344，双向对齐 32。
+    H3ImageToVideo 的首帧会被拉伸到画布尺寸，画幅比例与首帧保持一致（32 步进内误差可忽略）。"""
+    w, h = _res(project)
+    scale = max(1344.0 / max(w, h), 1.0)
+    return (max(320, round(w * scale / 32) * 32), max(320, round(h * scale / 32) * 32))
 
 
 def _is_single_portrait(path: str, meta: dict | None = None) -> bool:
@@ -585,24 +602,32 @@ async def generate_shot_video(db, task, params: dict) -> dict:
 
     project = db.get(Project, shot.project_id)
     model_key, model = await pick_model("video", params.get("prefer_tier"),
-                                        params.get("model_key") or "vid_wan21_480p")
+                                        params.get("model_key") or DEFAULT_VIDEO_MODEL)
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
     wf_name = VIDEO_WF_BY_MODEL.get(model_key, VIDEO_WF)
+    is_h3 = family == "minimax_h3"
     # 两套模板的采样键名不同：Wan2.2 双模型用两个 KSamplerAdvanced，Wan2.1 单段用 KSampler
     samp_prefix = "KSamplerAdvanced" if wf_name == "i2v_first_last.json" else "KSampler"
 
-    fps = 16
+    fps = 24 if is_h3 else 16
     raw_duration = int(params.get("duration") or shot.duration or 5)
     duration = clamp_duration(raw_duration, family)      # 模型方言层收住时长上限
-    length = max(17, min(121, int(round(duration * fps / 4.0)) * 4 + 1))
-    # 单帧 i2v（无尾帧约束）超过约 3s 后 4 步蒸馏模型容易漂移、末帧跑飞（实测 65 帧末帧塌进货架），
-    # 所以单帧模式封顶 49 帧；需要更长就走首尾帧双约束。
-    has_end = bool(shot.needs_end_frame and shot.end_frame_path
-                   and Path(shot.end_frame_path).exists())
-    if not has_end:
-        length = min(length, 49)
+    if is_h3:
+        # H3：帧数网格 17k+5 @24fps，成片带原生音频；1MP 训练分辨率画幅
+        length = _h3_length(duration)
+        w, h = _h3_dims(project)
+        has_end = bool(shot.needs_end_frame and shot.end_frame_path
+                       and Path(shot.end_frame_path).exists())
+    else:
+        length = max(17, min(121, int(round(duration * fps / 4.0)) * 4 + 1))
+        # 单帧 i2v（无尾帧约束）超过约 3s 后 4 步蒸馏模型容易漂移、末帧跑飞（实测 65 帧末帧塌进货架），
+        # 所以单帧模式封顶 49 帧；需要更长就走首尾帧双约束。
+        has_end = bool(shot.needs_end_frame and shot.end_frame_path
+                       and Path(shot.end_frame_path).exists())
+        if not has_end:
+            length = min(length, 49)
     prompt = wrap_video_prompt(shot.video_prompt, family, duration,
                                has_end_frame=bool(shot.needs_end_frame))
     # 运行时兜底：motion_json 动作控制 + 稳定性约束（编辑即时生效，旧提示词也补）
@@ -629,34 +654,55 @@ async def generate_shot_video(db, task, params: dict) -> dict:
     start_name = await comfy.upload_image(shot.first_frame_path)
 
     seed = random.randint(0, 2**31 - 1)
-    neg = dialect_negative(family, _shot_neg("shot_video", preset, genre=genre))
-    aneg = _action_tokens(shot, "negative")
-    if aneg:
-        neg += f", {aneg}"
-    overrides = {
-        "positive_text": prompt,
-        "negative_text": neg,
-        "LoadImage@0.image": start_name,
-        f"{samp_prefix}.seed": seed,
-        "WanFirstLastFrameToVideo.length": length,
-        "CreateVideo.fps": fps,
-    }
-    if samp_prefix == "KSamplerAdvanced":
-        overrides.pop("KSamplerAdvanced.seed", None)
-        overrides["KSamplerAdvanced@0.noise_seed"] = seed
-        overrides["KSamplerAdvanced@1.noise_seed"] = seed
-    end_name = None
-    if shot.needs_end_frame and shot.end_frame_path and Path(shot.end_frame_path).exists():
-        end_name = await comfy.upload_image(shot.end_frame_path)
-        overrides["LoadImage@1.image"] = end_name
+    if is_h3:
+        # H3 走 BasicGuider（cfg=1 无负面输入）；提示词直接进 ImageToVideo 节点。
+        # 尾帧可选：无尾帧时断开 last_frame（退化单帧 i2v），
+        # LoadImage@1 仍会执行，指向首帧防空跑报错。
+        overrides = {
+            "LoadImage@0.image": start_name,
+            "MiniMaxH3ImageToVideo.prompt": prompt,
+            "MiniMaxH3ImageToVideo.width": w,
+            "MiniMaxH3ImageToVideo.height": h,
+            "MiniMaxH3ImageToVideo.length": length,
+            "RandomNoise.noise_seed": seed,
+            "CreateVideo.fps": fps,
+        }
+        end_name = None
+        if shot.needs_end_frame and shot.end_frame_path and Path(shot.end_frame_path).exists():
+            end_name = await comfy.upload_image(shot.end_frame_path)
+            overrides["LoadImage@1.image"] = end_name
+        else:
+            overrides["MiniMaxH3ImageToVideo.last_frame"] = None
+            overrides["LoadImage@1.image"] = start_name
+        wf = comfy.apply_overrides(wf, overrides)
     else:
-        overrides["WanFirstLastFrameToVideo.end_image"] = None   # None = 摘掉该输入，退化为单帧 i2v
+        neg = dialect_negative(family, _shot_neg("shot_video", preset, genre=genre))
+        aneg = _action_tokens(shot, "negative")
+        if aneg:
+            neg += f", {aneg}"
+        overrides = {
+            "positive_text": prompt,
+            "negative_text": neg,
+            "LoadImage@0.image": start_name,
+            f"{samp_prefix}.seed": seed,
+            "WanFirstLastFrameToVideo.length": length,
+            "CreateVideo.fps": fps,
+        }
+        if samp_prefix == "KSamplerAdvanced":
+            overrides.pop("KSamplerAdvanced.seed", None)
+            overrides["KSamplerAdvanced@0.noise_seed"] = seed
+            overrides["KSamplerAdvanced@1.noise_seed"] = seed
+        end_name = None
+        if shot.needs_end_frame and shot.end_frame_path and Path(shot.end_frame_path).exists():
+            end_name = await comfy.upload_image(shot.end_frame_path)
+            overrides["LoadImage@1.image"] = end_name
+        else:
+            overrides["WanFirstLastFrameToVideo.end_image"] = None   # None = 摘掉该输入，退化为单帧 i2v
 
-    w, h = _res(project)
-    overrides["WanFirstLastFrameToVideo.width"] = w
-    overrides["WanFirstLastFrameToVideo.height"] = h
-
-    wf = comfy.apply_overrides(wf, overrides)
+        w, h = _res(project)
+        overrides["WanFirstLastFrameToVideo.width"] = w
+        overrides["WanFirstLastFrameToVideo.height"] = h
+        wf = comfy.apply_overrides(wf, overrides)
     update_progress(db, task, 0.3, f"{model_key} 推理中（8G 显存约 2-4 分钟/条）")
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
     out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_video",
@@ -930,8 +976,9 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
     if not dst.first_frame_path or not Path(dst.first_frame_path).exists():
         raise RuntimeError(f"下镜 #{dst.idx} 缺首帧，先生成它再出转场镜")
 
-    model_key, model = await pick_model("video", params.get("prefer_tier"),
-                                        params.get("model_key") or "vid_wan21_480p")
+    # 转场镜是辅助链路：模板硬绑 wan22 双帧（i2v_first_last.json，双 KSamplerAdvanced），
+    # 不随全局视频底模切换；显式钉死 model_key 保证任务面板显示与实际执行一致。
+    model_key, model = await pick_model("video", None, "vid_wan22_flf_q4")
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
@@ -1001,17 +1048,22 @@ async def extend_shot_video(db, task, params: dict) -> dict:
 
     project = db.get(Project, shot.project_id)
     model_key, model = await pick_model("video", params.get("prefer_tier"),
-                                        params.get("model_key") or "vid_wan21_480p")
+                                        params.get("model_key") or DEFAULT_VIDEO_MODEL)
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
     wf_name = VIDEO_WF_BY_MODEL.get(model_key, VIDEO_WF)
+    is_h3 = family == "minimax_h3"
     samp_prefix = "KSamplerAdvanced" if wf_name == "i2v_first_last.json" else "KSampler"
 
-    fps = 16
+    fps = 24 if is_h3 else 16
     duration = clamp_duration(int(params.get("seconds") or 3), family)
-    length = max(17, min(81, int(round(duration * fps / 4.0)) * 4 + 1))
-    w, h = _res(project)
+    if is_h3:
+        length = _h3_length(duration)
+        w, h = _h3_dims(project)
+    else:
+        length = max(17, min(81, int(round(duration * fps / 4.0)) * 4 + 1))
+        w, h = _res(project)
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
 
     update_progress(db, task, 0.15, "提取视频末帧")
@@ -1032,21 +1084,35 @@ async def extend_shot_video(db, task, params: dict) -> dict:
     if vtok and vtok.split(",")[0].strip().lower() not in prompt.lower():
         prompt = f"{prompt}, {vtok}"
     seed = random.randint(0, 2**31 - 1)
-    overrides = {
-        "positive_text": prompt,
-        "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
-        "LoadImage@0.image": start_name,
-        f"{samp_prefix}.seed": seed,
-        "WanFirstLastFrameToVideo.length": length,
-        "WanFirstLastFrameToVideo.width": w,
-        "WanFirstLastFrameToVideo.height": h,
-        "CreateVideo.fps": fps,
-    }
-    if samp_prefix == "KSamplerAdvanced":
-        overrides.pop(f"{samp_prefix}.seed", None)
-        overrides["KSamplerAdvanced@0.noise_seed"] = seed
-        overrides["KSamplerAdvanced@1.noise_seed"] = seed
-    overrides["WanFirstLastFrameToVideo.end_image"] = None   # 单帧续写
+    if is_h3:
+        # H3 续写：末帧作首帧，单帧 i2v（断开 last_frame，LoadImage@1 指向末帧防空跑）
+        overrides = {
+            "LoadImage@0.image": start_name,
+            "MiniMaxH3ImageToVideo.prompt": prompt,
+            "MiniMaxH3ImageToVideo.width": w,
+            "MiniMaxH3ImageToVideo.height": h,
+            "MiniMaxH3ImageToVideo.length": length,
+            "RandomNoise.noise_seed": seed,
+            "CreateVideo.fps": fps,
+            "MiniMaxH3ImageToVideo.last_frame": None,
+            "LoadImage@1.image": start_name,
+        }
+    else:
+        overrides = {
+            "positive_text": prompt,
+            "negative_text": dialect_negative(family, _shot_neg("shot_video", preset, genre=genre)),
+            "LoadImage@0.image": start_name,
+            f"{samp_prefix}.seed": seed,
+            "WanFirstLastFrameToVideo.length": length,
+            "WanFirstLastFrameToVideo.width": w,
+            "WanFirstLastFrameToVideo.height": h,
+            "CreateVideo.fps": fps,
+        }
+        if samp_prefix == "KSamplerAdvanced":
+            overrides.pop(f"{samp_prefix}.seed", None)
+            overrides["KSamplerAdvanced@0.noise_seed"] = seed
+            overrides["KSamplerAdvanced@1.noise_seed"] = seed
+        overrides["WanFirstLastFrameToVideo.end_image"] = None   # 单帧续写
     wf = comfy.apply_overrides(wf, overrides)
     update_progress(db, task, 0.4, f"{model_key} 续写推理（+{duration}s / {length} 帧）")
     out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_ext",

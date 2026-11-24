@@ -36,7 +36,7 @@ models:
     styles: [photo, 3d]
 
   # —— 视频（双链路）——
-  vid_h3_q2k:
+  vid_h3_int8:
     role: [video]
     family: minimax_h3
     weight: "minimax_h3_ref2va_pruned-Q2_K.gguf"

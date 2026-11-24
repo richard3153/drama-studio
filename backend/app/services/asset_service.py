@@ -295,21 +295,10 @@ async def generate_asset(db, task, params: dict) -> dict:
         project = db.get(Project, params.get("project_id"))
         w, h = asset_dims(project.aspect_ratio if project else None)
 
-    # 实测坑：SDXL（RealVisXL）对日常实物构图服从度差——"泛黄纸条"出成纸纹理墙、
-    # 勺子出金属罐；Flux2-Klein-4B（多模态训练）对实物/文字理解显著更强，实测纸条
-    # 一次成立。道具/场景 photo 族自动档默认走 flux2（角色/分镜不动：IPA 锁脸链路
-    # 依赖 SDXL）。耗时代价：SDXL ~30s → flux2 ~3-4min，道具数量少可接受。
+    # 自动选档已由 models.yaml defaults.default_models 承担（2026-11-24 全局拍板：
+    # 图片=Qwen-Image）。此前的 photo→flux2 / 3d→qwen 自动规则删除——用户显式传
+    # model_key/prefer_tier 时仍走各自通道（如首帧 IPA 锁 SDXL、微调锁 low）。
     prefer = params.get("prefer_tier")
-    if (prefer is None and role in ("scene", "prop")
-            and style_family(params.get("style_preset") or "") == "photo"):
-        prefer = "mid"
-    # 【#85 定版】3D 风格族（pixar_3d/guofeng_3d/game_cg…）固定走 Qwen-Image：
-    # flux2klein 出 PBR 写实向 3D，与"3D 国风动画"（cel 感/《凡人修仙传》式）不符；
-    # Qwen-Image 对风格锁服从度最高且 13.5GB 靠 offload 在 8G 卡可跑（单张 4-8min，
-    # 调度器串行兜底）。用户显式传 model_key/prefer_tier 时不受影响。
-    if (prefer is None and style_family(params.get("style_preset") or "") == "3d"
-            and not params.get("model_key")):
-        prefer = "high"
 
     model_key, model = await pick_model(role, prefer,
                                         params.get("model_key"),
