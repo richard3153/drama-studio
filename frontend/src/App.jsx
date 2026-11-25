@@ -11,6 +11,13 @@ const STAGES = [
 ]
 const ROLE_BY_ENTITY = { character: 'portrait', scene: 'scene', prop: 'prop' }
 const ENTITY_LABEL = { character: '角色', scene: '场景', prop: '道具' }
+// 资产槽位中文释义（表单左侧灰字 → 右侧字段名，避免满屏英文键名）
+const SLOT_ZH = {
+  identity: '身份', ethnicity: '国籍/人种', build: '体型', appearance: '外貌气质',
+  face: '面部特征', hair: '发型', clothing: '服装', accessories: '配饰',
+  expression: '表情', pose: '姿态', palette: '配色', material: '材质',
+  shape: '形状结构', text: '文字/标识', lighting: '光线氛围', layout: '空间布局',
+}
 
 async function api(path, opts) {
   const r = await fetch(API + path, opts)
@@ -26,16 +33,21 @@ const del = (path) => api(path, { method: 'DELETE' })
 const patch = (path, body) => api(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 const get = (path) => api(path)
 
-function StageNav({ stage, setStage }) {
+function StageNav({ stage, setStage, hasProject = false }) {
   return (
     <div className="stage-nav">
-      {STAGES.map(s => (
+      {STAGES.map(s => {
+        // 未选项目时除「项目」外的页面都不可进入，点进去只会看到空提示
+        const locked = !s.enabled || (!hasProject && s.key !== 'projects')
+        return (
         <div key={s.key}
-          className={`stage-item ${stage === s.key ? 'active' : ''} ${s.enabled ? '' : 'disabled'}`}
-          onClick={() => s.enabled && setStage(s.key)}>
+          className={`stage-item ${stage === s.key ? 'active' : ''} ${locked ? 'disabled' : ''}`}
+          title={locked && s.key !== 'projects' ? '请先在「项目」页选择或新建项目' : ''}
+          onClick={() => !locked && setStage(s.key)}>
           <span className="ico">{s.ico}</span><span className="lbl">{s.lbl}</span>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -49,7 +61,9 @@ function WizardBar({ stage, setStage, nextLabel }) {
   return (
     <div className="wizard-bar">
       <button className="ghost" disabled={!prev} onClick={() => prev && setStage(prev.key)}>← 上一步</button>
-      <button disabled={!next} onClick={() => next && setStage(next.key)}>{nextLabel || (next ? `下一步：${next.lbl} →` : '')}</button>
+      {next
+        ? <button onClick={() => setStage(next.key)}>{nextLabel || `下一步：${next.lbl} →`}</button>
+        : <span className="wizard-end">✓ 流程已完成</span>}
     </div>
   )
 }
@@ -83,18 +97,21 @@ function ProjectsPage({ projects, reload, selectProject }) {
           <button disabled={!name.trim()} onClick={async () => { await post('/projects', { name, description: desc }); setName(''); setDesc(''); reload() }}>创建</button>
         </div>
       </div>
-      <div className="grid">
+      <div className="grid project-grid">
         {projects.map(p => (
-          <div key={p.id} className="asset-card" style={{ cursor: 'pointer' }} onClick={() => selectProject(p.id)}>
-            <div className="info">
-              <div className="name">{p.name}</div>
-              <div className="desc">{p.description || '—'}</div>
-              <div className="desc">创建于 {p.created_at.slice(0, 10)}</div>
-              <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-                <button className="small ghost" onClick={e => { e.stopPropagation(); selectProject(p.id) }}>进入工作台 →</button>
-                <button className="small ghost" title="删除项目及其全部数据"
-                  onClick={e => { e.stopPropagation(); setDelMsg(''); setConfirmDel({ id: p.id, name: p.name }) }}>删除</button>
+          <div key={p.id} className="asset-card project-card" onClick={() => selectProject(p.id)}>
+            <div className="project-top">
+              <div className="project-badge">{p.name.slice(0, 1)}</div>
+              <div style={{ minWidth: 0 }}>
+                <div className="name">{p.name}</div>
+                <div className="project-meta">创建于 {p.created_at.slice(0, 10)}</div>
               </div>
+            </div>
+            <div className="desc project-desc">{p.description || '—'}</div>
+            <div className="project-actions">
+              <button className="small ghost" onClick={e => { e.stopPropagation(); selectProject(p.id) }}>进入工作台 →</button>
+              <button className="small ghost danger" title="删除项目及其全部数据"
+                onClick={e => { e.stopPropagation(); setDelMsg(''); setConfirmDel({ id: p.id, name: p.name }) }}>删除</button>
             </div>
           </div>
         ))}
@@ -146,19 +163,21 @@ function BatchBar({ episodeId, onDone }) {
     } catch (e) { setBusy(''); setMsg(`${label} 提交失败：` + e.message) }
   }
   return (
-    <div style={{ margin: '8px 0', padding: '8px 10px', border: '1px solid #3a4a5a', borderRadius: 8 }}>
-      <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-        <button disabled={!!busy} onClick={() => go('batch-frames', '批量首帧')}>🖼 批量生成缺的首帧</button>
-        <button disabled={!!busy} onClick={() => go('batch-videos', '批量视频')}>🎥 批量生成缺的视频</button>
-        <button disabled={!!busy} title="场景切换边界：上镜末帧+下镜首帧双帧 i2v 生成 1-2s 过渡镜（需两侧产物齐全，成片拼接时自动插入）"
-          onClick={() => go('batch-transitions', '转场镜')}>🪄 生成转场镜</button>
-        <button disabled={!!busy} style={{ borderColor: '#d0a030' }} onClick={() => go('full-pipeline', '一键全流程')}>⚡ 一键全流程（帧→视频→配音→成片）</button>
-        <button disabled={!!busy} style={{ borderColor: '#d0a030' }} title="从第 1 镜开始逐镜用上镜视频末帧重绘下镜首帧再出视频，全链衔接+人物外观继承（覆盖所有镜的现有首帧和视频）"
+    <div className="batch-bar">
+      <div className="batch-row">
+        <span className="batch-label">批量补缺</span>
+        <button className="small ghost" disabled={!!busy} title="为所有缺首帧的镜头批量生成首帧" onClick={() => go('batch-frames', '批量首帧')}>🖼 补首帧</button>
+        <button className="small ghost" disabled={!!busy} title="为所有已出首帧、缺视频的镜头批量生成视频" onClick={() => go('batch-videos', '批量视频')}>🎥 补视频</button>
+        <button className="small ghost" disabled={!!busy} title="场景切换边界：上镜末帧+下镜首帧双帧 i2v 生成 1-2s 过渡镜（需两侧产物齐全，成片拼接时自动插入）"
+          onClick={() => go('batch-transitions', '转场镜')}>🪄 转场镜</button>
+        <span className="batch-div" />
+        <span className="batch-label">全链路</span>
+        <button className="small accent" disabled={!!busy} onClick={() => go('full-pipeline', '一键全流程')}>⚡ 一键全流程</button>
+        <button className="small ghost danger" disabled={!!busy} title="从第 1 镜开始逐镜用上镜视频末帧重绘下镜首帧再出视频，全链衔接+人物外观继承（覆盖所有镜的现有首帧和视频）"
           onClick={() => { if (confirm('⛓ 全链重刷：从第 1 镜起向后连锁重生成所有镜头（末帧接力），现有首帧和视频全部被覆盖，约 40-60 分钟。确定？')) go('rechain-from', '全链重刷', { from_idx: 1 }) }}>⛓ 全链重刷</button>
-        <span className="page-sub" style={{ margin: 0 }}>已有产物的镜头自动跳过，可中断后重跑；重链类任务断链即停，修复后可从断点镜「向后重链」续跑</span>
       </div>
-      {msg && <div className="page-sub" style={{ marginTop: 6 }}>{msg}</div>}
-    </div>
+      <div className="batch-hint">已有产物的镜头自动跳过，可中断后重跑；重链类任务断链即停，修复后可从断点镜「向后重链」续跑</div>
+      {msg && <div className="batch-hint" style={{ color: '#8fb8ff' }}>{msg}</div>}</div>
   )
 }
 
@@ -318,10 +337,36 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
   const withVideo = shots.filter(s => s.video_path)
   const totalDur = shots.reduce((a, s) => a + (Number(s.duration) || 5), 0)
   const statusColor = s => s.video_path ? '#3a9d5c' : (s.first_frame_path ? '#d0a030' : '#a04040')
+  const isVoice = wizardStage === 'voice'
+  const voicePanel = (
+    <div className="voice-panel">
+      <div className="section-head" style={{ margin: '0 0 6px' }}>
+        <h3>音色分配</h3>
+        <span className="section-hint">试听 → 选择 → 自动保存锁定给该角色（未全部锁定前不能生成配音）</span>
+      </div>
+      <div className="voice-row">
+        <span className="voice-name">旁白 / 无前缀台词</span>
+        <VoiceSelect value={narrator} onChange={e => saveNarrator(e.target.value)} />
+        <button className="small ghost" onClick={() => preview(narrator, 'narrator')}>{previewing === 'narrator' ? '…' : '🔊 试听'}</button>
+      </div>
+      {characters.map(c =>
+        <div key={c.id} className="voice-row">
+          <span className={`voice-name ${c.voice ? '' : 'unlock'}`}>{c.name}{!c.voice && <em>未锁定</em>}</span>
+          <VoiceSelect value={c.voice} genderHint={guessGender(c)} onChange={e => saveVoice(c.id, e.target.value)} />
+          <button className="small ghost" onClick={() => preview(c.voice, c.id)}>{previewing === c.id ? '…' : '🔊 试听'}</button>
+        </div>)}
+    </div>
+  )
+  const voiceGaps = [
+    missingVoices.length ? `${missingVoices.length} 个角色未锁定音色` : '',
+    narrator ? '' : '旁白未锁定音色',
+  ].filter(Boolean).join('、')
   return (
     <div>
-      <div className="page-title">成片 · {project.name}</div>
-      <div className="page-sub">逐镜视频无损拼接 → 台词配音混入（edge-tts 在线，零显存）→ SRT 字幕生成并烧录（NVENC 硬编）</div>
+      <div className="page-title">{isVoice ? '配音' : '成片'} · {project.name}</div>
+      <div className="page-sub">{isVoice
+        ? '按角色锁定音色 → 台词逐句配音（edge-tts 在线，零显存）；锁定完整后可到「成片」页合成'
+        : '逐镜视频无损拼接 → 台词配音混入 → SRT 字幕生成并烧录（NVENC 硬编）'}</div>
       {!!episodes.length &&
         <div className="row" style={{ alignItems: 'center' }}>
           <label style={{ margin: 0 }}>剧集</label>
@@ -331,50 +376,53 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
         </div>}
       {!episodes.length && <div className="page-sub">本项目还没有剧集。</div>}
 
+      {selId && !!shots.length && (
+        <div className="section-head" style={{ marginTop: 16 }}>
+          <h3>时间线粗剪<em>（共 {totalDur}s）</em></h3>
+          <span className="section-hint">绿=有视频 · 黄=仅首帧 · 红=未制作，宽度≈时长</span>
+        </div>)}
       {selId && !!shots.length &&
-        <div style={{ margin: '12px 0' }}>
-          <div className="page-sub">时间线粗剪（绿=有视频，黄=仅首帧，红=未制作；宽度≈时长，共 {totalDur}s）：</div>
-          <div style={{ display: 'flex', height: 34, borderRadius: 6, overflow: 'hidden', gap: 1 }}>
-            {shots.map(s =>
-              <div key={s.id} title={`第 ${s.idx} 镜 · ${Number(s.duration) || 5}s · ${s.dialogue || '（无台词）'}`}
-                   style={{ flexGrow: Number(s.duration) || 5, background: statusColor(s), opacity: .85,
-                            color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {s.idx}
-              </div>)}
-          </div>
+        <div className="shot-timeline">
+          {shots.map(s =>
+            <div key={s.id} title={`第 ${s.idx} 镜 · ${Number(s.duration) || 5}s · ${s.dialogue || '（无台词）'}`}
+                 className={`shot-seg ${s.video_path ? 'done' : s.first_frame_path ? 'half' : 'bare'}`}
+                 style={{ flexGrow: Number(s.duration) || 5 }}>
+              {s.idx}
+            </div>)}
         </div>}
 
-      <div style={{ margin: '10px 0' }}>
-        <div className="page-sub">音色分配：试听 → 选择 → 自动保存锁死给该角色（未全部锁定前不能生成配音）：</div>
-        <div className="row" style={{ alignItems: 'center', marginBottom: 4 }}>
-          <label style={{ margin: 0, minWidth: 90 }}>旁白 / 无前缀台词</label>
-          <VoiceSelect value={narrator} onChange={e => saveNarrator(e.target.value)} />
-          <button className="ghost" style={{ marginLeft: 6 }} onClick={() => preview(narrator, 'narrator')}>{previewing === 'narrator' ? '…' : '🔊 试听'}</button>
-        </div>
-        {characters.map(c =>
-          <div key={c.id} className="row" style={{ alignItems: 'center', marginBottom: 4 }}>
-            <label style={{ margin: 0, minWidth: 90, color: c.voice ? '' : '#e0a030' }}>{c.name}{!c.voice && '（未锁定）'}</label>
-            <VoiceSelect value={c.voice} genderHint={guessGender(c)} onChange={e => saveVoice(c.id, e.target.value)} />
-            <button className="ghost" style={{ marginLeft: 6 }} onClick={() => preview(c.voice, c.id)}>{previewing === c.id ? '…' : '🔊 试听'}</button>
-          </div>)}
-      </div>
+      {isVoice ? voicePanel : (
+        <details className="voice-fold">
+          <summary>音色分配{voicesReady
+            ? <span className="fold-ok">已全部锁定</span>
+            : <span className="fold-warn">{voiceGaps}</span>}</summary>
+          {voicePanel}
+        </details>)}
 
       {selId &&
-        <div className="page-sub">
-          本集镜头 {shots.length} 个，其中已出视频 {withVideo.length} 个、有台词 {shots.filter(s => s.dialogue).length} 个
-          {shots.length > withVideo.length && <span style={{ color: '#e0a030' }}>　（{shots.length - withVideo.length} 个镜头未出视频，将跳过）</span>}
+        <div className="export-card">
+          <div className="export-stats">
+            本集镜头 <b>{shots.length}</b> 个 · 已出视频 <b>{withVideo.length}</b> 个 · 有台词 <b>{shots.filter(s => s.dialogue).length}</b> 个
+            {shots.length > withVideo.length && <span style={{ color: '#e9b949' }}>　（{shots.length - withVideo.length} 个镜头未出视频，将跳过）</span>}
+          </div>
+          <div className="ops-row">
+            {isVoice
+              ? <button className="small accent" disabled={!selId || busy || !shots.some(s => s.dialogue) || !voicesReady}
+                  title={voicesReady ? '' : '先把每个角色和旁白的音色试听并锁定'}
+                  onClick={doTts}>{busy === 'tts' ? '配音中…' : '🎙 生成台词配音'}</button>
+              : <button className="small accent" disabled={!selId || busy || !withVideo.length} onClick={doExport}>{busy === 'export' ? '合成中…' : '🎬 合成成片'}</button>}
+            {isVoice
+              ? <button className="small ghost" disabled={!selId || busy || !withVideo.length} onClick={doExport}>{busy === 'export' ? '合成中…' : '🎬 去合成成片'}</button>
+              : <button className="small ghost" disabled={!selId || busy || !shots.some(s => s.dialogue) || !voicesReady}
+                  title={voicesReady ? '' : '先把每个角色和旁白的音色试听并锁定'}
+                  onClick={doTts}>{busy === 'tts' ? '配音中…' : '🎙 重新配音'}</button>}
+            <span className="ops-div" />
+            <button className="small ghost" disabled={!selId || !!busy || !withVideo.length} onClick={() => doExportDraft('export-jianying', '剪映草稿')}>✂ 剪映草稿</button>
+            <button className="small ghost" disabled={!selId || !!busy || !withVideo.length} onClick={() => doExportDraft('export-fcpxml', 'FCPXML')}>🎞 FCPXML</button>
+          </div>
+          {!voicesReady && <div className="batch-hint" style={{ color: '#e9b949' }}>{voiceGaps}</div>}
+          {msg && <div className="batch-hint" style={{ color: '#9dc0ff' }}>{msg}</div>}
         </div>}
-      <div className="row" style={{ margin: '10px 0', flexWrap: 'wrap', gap: 6 }}>
-        <button disabled={!selId || busy || !shots.some(s => s.dialogue) || !voicesReady}
-                title={voicesReady ? '' : '先把每个角色和旁白的音色试听并锁定'}
-                onClick={doTts}>{busy === 'tts' ? '配音中…' : '🎙 生成台词配音'}</button>
-        {!voicesReady && <span style={{ color: '#e0a030', fontSize: 12, alignSelf: 'center' }}>
-          还有 {missingVoices.length} 个角色{!narrator && '、旁白'}未锁定音色</span>}
-        <button disabled={!selId || busy || !withVideo.length} onClick={doExport}>{busy === 'export' ? '合成中…' : '🎬 合成成片'}</button>
-        <button className="ghost" disabled={!selId || !!busy || !withVideo.length} onClick={() => doExportDraft('export-jianying', '剪映草稿')}>✂ 导出剪映草稿</button>
-        <button className="ghost" disabled={!selId || !!busy || !withVideo.length} onClick={() => doExportDraft('export-fcpxml', 'FCPXML')}>🎞 导出 FCPXML</button>
-      </div>
-      {msg && <div className="page-sub">{msg}</div>}
 
       {(status?.jianying || status?.fcpxml) &&
         <div className="row" style={{ gap: 14, margin: '6px 0' }}>
@@ -383,12 +431,12 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
         </div>}
 
       {status?.final_ready &&
-        <div style={{ margin: '16px 0' }}>
-          <div className="page-sub">成片预览：</div>
-          <video controls src={status.final_file} style={{ maxWidth: 720, width: '100%' }} />
-          <div className="row" style={{ marginTop: 6 }}>
-            {status.srt_ready && <a href={status.srt_file} download="subtitle.srt">⬇ 下载 SRT 字幕</a>}
-          </div>
+        <div className="preview-card">
+          <div className="section-head" style={{ margin: '0 0 8px' }}><h3>成片预览</h3></div>
+          <video controls src={status.final_file} className="preview-video" />
+          {status.srt_ready && <div style={{ marginTop: 8 }}>
+            <a href={status.srt_file} download="subtitle.srt">⬇ 下载 SRT 字幕</a>
+          </div>}
         </div>}
       <WizardBar stage={wizardStage} setStage={setStage} nextLabel="" />
     </div>
@@ -473,7 +521,7 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
   }
   const refImg = (p, size, style) => p
     ? <img src={`/api/asset-file-by-path?path=${encodeURIComponent(p)}`} style={{ width: size, height: size * 1.25, objectFit: 'cover', borderRadius: 4, ...(style || {}) }} />
-    : <div style={{ width: size, height: size * 1.25, border: '1px dashed #556', borderRadius: 4, fontSize: 10, color: 'var(--dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>无</div>
+    : <div style={{ width: size, height: size * 1.25, border: '1px dashed var(--border-strong)', borderRadius: 4, fontSize: 10, color: 'var(--dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>无</div>
 
   const load = async () => {
     if (!episodeId) return
@@ -503,103 +551,102 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
   const statusBg = s => s.video_path ? '#2e7d4f' : (s.first_frame_path ? '#b8860b' : '#8a3a3a')
   const jumpTo = idx => document.getElementById(`shot-card-${idx}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   return (
-    <div className="cand-section">
-      <h3>镜头时间轴（{shots.length} 镜 · 需出尾帧 {endCount} 镜）
-        <button className="small ghost" style={{ marginLeft: 8 }}
-          onClick={async () => { await post(`/episodes/${episodeId}/rebuild-prompts`, {}); load() }}>
-          重组装全部提示词（不重跑 LLM）
-        </button>
-        <button className="small ghost" style={{ marginLeft: 6 }} onClick={load}>刷新</button>
-      </h3>
-      <div className="page-sub" style={{ fontSize: 12 }}>
-        按时间轴顺序逐镜制作：每镜独立成卡——参考图（首帧/尾帧/场景锚点）、视频、生成操作都在本卡内，哪镜有问题单独重跑哪镜。
+    <div className="shots-wrap">
+    <div className="section-head" style={{ marginTop: 8 }}>
+      <h3>镜头时间轴<em>（{shots.length} 镜 · 需出尾帧 {endCount} 镜）</em></h3>
+      <span className="section-hint">逐镜制作：参考图、视频、操作都在本卡内，哪镜有问题单独重跑哪镜</span>
+      <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        <button className="small ghost"
+          onClick={async () => { await post(`/episodes/${episodeId}/rebuild-prompts`, {}); load() }}>重组装提示词</button>
+        <button className="small ghost" onClick={load}>刷新</button>
       </div>
+    </div>
 
-      {/* mini 时间轴：点击色块跳转到对应镜头卡 */}
-      <div style={{ display: 'flex', height: 26, borderRadius: 6, overflow: 'hidden', gap: 1, margin: '8px 0 14px' }}>
-        {shots.map(s =>
-          <div key={s.id} title={`第 ${s.idx} 镜 · ${Number(s.duration) || 5}s · ${s.dialogue || '（无台词）'}`}
-            onClick={() => jumpTo(s.idx)}
-            style={{ flexGrow: Number(s.duration) || 5, background: statusBg(s), opacity: .85, cursor: 'pointer',
-                     color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {s.idx}
-          </div>)}
-      </div>
+    {/* mini 时间轴：点击色块跳转到对应镜头卡 */}
+    <div className="shot-timeline">
+      {shots.map(s =>
+        <div key={s.id} title={`第 ${s.idx} 镜 · ${Number(s.duration) || 5}s · ${s.dialogue || '（无台词）'}`}
+          onClick={() => jumpTo(s.idx)}
+          className={`shot-seg ${s.video_path ? 'done' : s.first_frame_path ? 'half' : 'none'}`}
+          style={{ flexGrow: Number(s.duration) || 5 }}>
+          {s.idx}
+        </div>)}
+    </div>
 
-      {shots.map(s => (
-        <div key={s.id} id={`shot-card-${s.idx}`}
-          style={{ border: '1px solid #3a4a5a', borderRadius: 10, padding: '10px 12px', marginBottom: 14, background: 'rgba(255,255,255,0.02)' }}>
+      {shots.map(s => { const st = s.video_path ? 'done' : s.first_frame_path ? 'half' : 'none'; return (
+        <div key={s.id} id={`shot-card-${s.idx}`} className="shot-card">
           {/* 卡片头 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <span style={{ background: statusBg(s), color: '#fff', borderRadius: 6, padding: '2px 8px', fontSize: 13, fontWeight: 700 }}>#{s.idx}</span>
-            <span style={{ fontSize: 12, color: 'var(--dim)' }}>{Number(s.duration) || 5}s · {s.shot_size}
+          <div className="shot-head">
+            <span className={`shot-idx ${st}`}>#{s.idx}</span>
+            <span className="shot-spec">{Number(s.duration) || 5}s · {s.shot_size}
               {s.framing_end && s.framing_end !== s.shot_size ? ` → ${s.framing_end}` : ''} · {s.camera_move || '固定'}/{s.camera_speed || 'normal'}</span>
-            <span style={{ fontSize: 12 }}>{s.scene_name}</span>
-            <span style={{ fontSize: 11, color: 'var(--dim)' }}>
-              {(s.characters || []).length ? `角色：${(s.characters || []).join('、')}` : '空镜'}{(s.props || []).length ? ` · 道具：${(s.props || []).join('、')}` : ''}
+            <span className="shot-scene">{s.scene_name}</span>
+            <div className="name-row">
+              {(s.characters || []).length
+                ? (s.characters || []).map(c => <span key={c} className="tag chip-role">{c}</span>)
+                : <span className="tag">空镜</span>}
+              {(s.props || []).map(p => <span key={p} className="tag chip-prop">{p}</span>)}
+            </div>
+            <span className={`badge ${st === 'done' ? 'done' : st === 'half' ? 'paused' : 'pending'}`} style={{ marginLeft: 'auto' }}
+              title={`内部状态 ${s.status || 'planned'}`}>
+              {st === 'done' ? '已出片' : st === 'half' ? '仅首帧' : '待生成'}
             </span>
-            <span style={{ fontSize: 11, color: 'var(--dim)', marginLeft: 'auto' }}>状态 {s.status || 'planned'}</span>
           </div>
-          {s.dialogue ? <div style={{ fontSize: 12, margin: '4px 0 0', color: 'var(--dim)' }}>台词：{s.dialogue}{s.sfx ? `　音效：${s.sfx}` : ''}</div> : null}
+          {s.dialogue ? <div className="shot-dialogue">台词：{s.dialogue}{s.sfx ? <span style={{ color: '#8e97a6' }}>　音效：{s.sfx}</span> : ''}</div> : null}
 
           {/* 主体：参考图清单 | 视频 | 操作 */}
-          <div style={{ display: 'flex', gap: 12, marginTop: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', gap: 8 }}>
+          <div className="shot-body">
+            <div className="shot-media">
               {/* 有视频时不再单独显示首帧缩略图：视频第一帧即首帧，避免重复占位 */}
               {!s.video_path &&
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--dim)' }}>首帧{s.first_frame_path ? '' : '（未生成）'}</div>
+                <div className="shot-thumb-wrap">
+                  <div>首帧{s.first_frame_path ? '' : '（未生成）'}</div>
                   {s.first_frame_path
-                    ? <img src={`/api/shots/${s.id}/frame-file?which=first&t=${Date.now()}`}
-                        style={{ width: 128, borderRadius: 6, border: '1px solid #556', cursor: 'pointer' }}
+                    ? <img src={`/api/shots/${s.id}/frame-file?which=first&t=${Date.now()}`} className="shot-thumb"
                         onClick={() => window.open(`/api/shots/${s.id}/frame-file?which=first`)} />
-                    : <div style={{ width: 128, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)' }}>待生成</div>}
+                    : <div className="shot-empty" style={{ width: 128, height: 72 }}>待生成</div>}
                 </div>}
-              <div>
-                <div style={{ fontSize: 11, color: 'var(--dim)' }}>
-                  尾帧{s.end_frame_path ? '' : (s.needs_end_frame ? '（未生成）' : '（固定镜·无需）')}
-                </div>
+              <div className="shot-thumb-wrap">
+                <div>尾帧{s.end_frame_path ? '' : (s.needs_end_frame ? '（未生成）' : '（固定镜·无需）')}</div>
                 {s.end_frame_path
-                  ? <img src={`/api/shots/${s.id}/frame-file?which=end&t=${Date.now()}`}
-                      style={{ width: 128, borderRadius: 6, border: '1px solid #556', cursor: 'pointer' }}
+                  ? <img src={`/api/shots/${s.id}/frame-file?which=end&t=${Date.now()}`} className="shot-thumb"
                       onClick={() => window.open(`/api/shots/${s.id}/frame-file?which=end`)} />
-                  : <div style={{ width: 128, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)', textAlign: 'center', lineHeight: 1.4 }}>
+                  : <div className="shot-empty" style={{ width: 128, height: 72 }}>
                       {s.needs_end_frame ? '待生成' : <><span>固定镜无需尾帧</span><span style={{ fontSize: 10 }}>接力自动抽视频末帧</span></>}
                     </div>}
               </div>
               {s.scene_anchor_path &&
-                <div>
-                  <div style={{ fontSize: 11, color: '#d0a030' }}>场景锚⚓</div>
+                <div className="shot-thumb-wrap">
+                  <div style={{ color: '#e0b34a' }}>场景锚 ⚓</div>
                   <img src={`/api/asset-file-by-path?path=${encodeURIComponent(s.scene_anchor_path)}`}
-                    style={{ width: 84, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid #d0a030', cursor: 'pointer' }}
+                    className="shot-thumb" style={{ width: 86, height: 72, objectFit: 'cover', borderColor: 'rgba(224,179,74,.45)' }}
                     onClick={() => window.open(`/api/asset-file-by-path?path=${encodeURIComponent(s.scene_anchor_path)}`)} />
                 </div>}
               {grids[s.id] ? (
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--dim)' }}>宫格候选</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 38px)', gap: 2 }}>
+                <div className="shot-thumb-wrap">
+                  <div>宫格候选</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 36px)', gap: 3 }}>
                     {grids[s.id].map((c, i) => (
                       <img key={i} src={`/api/shots/${s.id}/cell-file?i=${i}`}
                         onClick={() => pickCell(s.id, c)} title="设为首帧"
-                        style={{ width: 38, display: 'block', borderRadius: 3, border: '1px solid #556', cursor: 'pointer' }} />
+                        style={{ width: 36, display: 'block', borderRadius: 4, border: '1px solid var(--border)', cursor: 'pointer' }} />
                     ))}
                   </div>
                 </div>) : null}
             </div>
 
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--dim)' }}>视频{s.video_path ? '' : '（未生成）'}</div>
+            <div className="shot-thumb-wrap">
+              <div>视频{s.video_path ? '' : '（未生成）'}</div>
               {s.video_path
-                ? <video controls src={`/api/shots/${s.id}/video-file`} title="视频第一帧即本镜首帧"
-                    style={{ width: 200, borderRadius: 6, border: '1px solid #556' }} />
-                : <div style={{ width: 200, height: 72, borderRadius: 6, border: '1px dashed #556', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--dim)' }}>
+                ? <video controls src={`/api/shots/${s.id}/video-file`} title="视频第一帧即本镜首帧" className="shot-video" />
+                : <div className="shot-empty" style={{ width: 208, height: 74 }}>
                     {s.first_frame_path ? '有首帧，可生成视频' : '需先生成首帧'}</div>}
             </div>
 
-            <div style={{ flex: 1, minWidth: 260 }}>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ fontSize: 11, color: 'var(--dim)' }} title="IPAdapter 锁脸强度">锁脸
-                  <select value={ipaW} onChange={e => setIpaW(Number(e.target.value))} style={{ marginLeft: 3, fontSize: 11, padding: '1px 3px' }}>
+            <div className="shot-ops">
+              <div className="ops-row">
+                <span className="ops-label" title="IPAdapter 锁脸强度">锁脸
+                  <select value={ipaW} onChange={e => setIpaW(Number(e.target.value))} style={{ marginLeft: 4, width: 'auto', fontSize: 11, padding: '2px 16px 2px 4px', backgroundPosition: 'right 2px center' }}>
                     <option value={0.55}>0.55</option><option value={0.70}>0.70</option><option value={0.85}>0.85</option>
                   </select>
                 </span>
@@ -607,10 +654,6 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                   onClick={() => gen(s.id, 'frame', { frame_type: 'first' })}>
                   {busy[s.id] === 'frame' ? '提交中…' : '🖼 首帧'}
                 </button>
-                <button className="small ghost" onClick={() => openRefs(s.id)}
-                  title="查看本镜生成实际引用的角色/场景资产图，可手动指定换用">🔍 参考{(s.ref_overrides && Object.keys(s.ref_overrides).length) ? ' ✓' : ''}</button>
-                <button className="small ghost" onClick={() => openMotion(s)}
-                  title="运动动作控制：身体姿态/手部动作/表情状态/视线/动作幅度/次级联动——把“做什么”钉到“怎么做”，压随机性">🎬 动作{Object.keys(s.motion || {}).length ? ' ✓' : ''}</button>
                 {s.needs_end_frame &&
                   <button className="small ghost" disabled={!!busy[s.id]}
                     onClick={() => gen(s.id, 'frame', { frame_type: 'end' })}>尾帧</button>}
@@ -619,6 +662,18 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                   onClick={() => gen(s.id, 'video', { duration: s.duration })}>
                   {busy[s.id] === 'video' ? '提交中…' : '🎥 视频'}
                 </button>
+                <button className="small ghost" disabled={!!busy[s.id] || !s.first_frame_path || !(s.dialogue || '').trim()}
+                  title={!(s.dialogue || '').trim() ? '需先在参数区填台词（角色名（语气）：台词）' : '台词配音驱动口型：重新生成本镜视频，口型/表情跟音频走'}
+                  onClick={() => genTalk(s.id, s.idx)}>🗣 说话镜</button>
+                {isAnime && <button className="small ghost" disabled={!!busy[s.id]}
+                  onClick={() => genGrid(s.id)}>九宫格</button>}
+              </div>
+              <div className="ops-row ops-sub">
+                <button className="small ghost" onClick={() => openRefs(s.id)}
+                  title="查看本镜生成实际引用的角色/场景资产图，可手动指定换用">🔍 参考{(s.ref_overrides && Object.keys(s.ref_overrides).length) ? ' ✓' : ''}</button>
+                <button className="small ghost" onClick={() => openMotion(s)}
+                  title="运动动作控制：身体姿态/手部动作/表情状态/视线/动作幅度/次级联动——把“做什么”钉到“怎么做”，压随机性">🎬 动作{Object.keys(s.motion || {}).length ? ' ✓' : ''}</button>
+                <span className="ops-div" />
                 <button className="small ghost" disabled={!s.needs_end_frame && !s.video_path}
                   title="用本镜末帧重绘下一镜首帧，构图光影连贯"
                   onClick={() => chainNext(s.id)}>⏭ 接力</button>
@@ -628,11 +683,6 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                 <button className="small ghost" disabled={!s.video_path}
                   title="视频不够长：提末帧续写 3s 再拼接"
                   onClick={() => extendVideo(s.id)}>⏩ 续写</button>
-                <button className="small ghost" disabled={!!busy[s.id] || !s.first_frame_path || !(s.dialogue || '').trim()}
-                  title={!(s.dialogue || '').trim() ? '需先在参数区填台词（角色名（语气）：台词）' : '台词配音驱动口型：重新生成本镜视频，口型/表情跟音频走'}
-                  onClick={() => genTalk(s.id, s.idx)}>🗣 说话镜</button>
-                {isAnime && <button className="small ghost" disabled={!!busy[s.id]}
-                  onClick={() => genGrid(s.id)}>九宫格</button>}
               </div>
               <details style={{ marginTop: 8, fontSize: 12 }}>
                 <summary style={{ cursor: 'pointer', color: 'var(--dim)' }}>参数与提示词（运镜/轨迹/3 条提示词）</summary>
@@ -670,16 +720,13 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
             </div>
           </div>
         </div>
-      ))}
+      )})}
       {genMsg ? <div className="page-sub">{genMsg}</div> : null}
       {/* 参考溯源窗口：本镜生成用了哪些资产图 + 手动换 */}
       {refsFor && refsData && (
-        <div onClick={() => { setRefsFor(null); load() }}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000,
-            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: '#1c2836', border: '1px solid #3a4a5a', borderRadius: 10,
-              padding: '14px 16px', maxWidth: 760, maxHeight: '82vh', overflowY: 'auto', width: '92%' }}>
+        <div className="modal-mask" onClick={() => { setRefsFor(null); load() }}>
+          <div className="modal" onClick={e => e.stopPropagation()}
+            style={{ width: 'min(780px, 92vw)', maxHeight: '82vh' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <b>第 {refsData.idx} 镜 · 参考溯源</b>
               <span style={{ fontSize: 11, color: 'var(--dim)' }}>首帧生成时实际引用（点候选图即可换用，换后需重新生成首帧生效）</span>
@@ -717,7 +764,7 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                   {c.candidates.filter(x => x.path !== c.used_path).map((x, i) => (
                     <div key={i} title={`点击换用（${x.kind}）`} style={{ cursor: 'pointer' }}
                       onClick={() => setRef(refsFor, c.name, x.path)}>
-                      {refImg(x.path, 56, { border: '1px solid #556' })}
+                      {refImg(x.path, 56, { border: '1px solid var(--border-strong)' })}
                       <div style={{ fontSize: 10, color: 'var(--dim)', textAlign: 'center' }}>{x.kind}</div>
                     </div>))}
                   {!c.candidates.length ? <span style={{ fontSize: 11, color: 'var(--dim)' }}>（角色资产库暂无单人参考图）</span> : null}
@@ -743,7 +790,7 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                 {refsData.scene.candidates.filter(x => x.path !== refsData.scene.used_path).slice(0, 8).map((x, i) => (
                   <div key={i} title="点击换用为场景锚" style={{ cursor: 'pointer' }}
                     onClick={() => setRef(refsFor, '__scene__', x.path)}>
-                    {refImg(x.path, 56, { border: '1px solid #556' })}
+                    {refImg(x.path, 56, { border: '1px solid var(--border-strong)' })}
                   </div>))}
               </div>
             </div>
@@ -757,12 +804,9 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
           </div>
         </div>)}
       {motionFor != null && (
-        <div onClick={() => setMotionFor(null)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000,
-            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: '#1c2836', border: '1px solid #3a4a5a', borderRadius: 10,
-              padding: '14px 16px', maxWidth: 560, width: '92%', fontSize: 12 }}>
+        <div className="modal-mask" onClick={() => setMotionFor(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}
+            style={{ width: 'min(580px, 92vw)', fontSize: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <b>🎬 运动动作控制</b>
               <span style={{ color: 'var(--dim)', fontSize: 11 }}>英文填写（CLIP/Wan 只认英文）；保存后自动重组装提示词</span>
@@ -1325,14 +1369,14 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
         </div>
       )}
 
-      <div className="row" style={{ alignItems: 'flex-start' }}>
-        <div style={{ width: 320, flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
+        <div className="ep-pane">
+          <div className="ep-pane-head">
             <label style={{ marginBottom: 0 }}>② 分集列表</label>
             {!!episodes.length && (
-              <button className="ghost" style={{ padding: '2px 10px', fontSize: 12 }} disabled={busy}
+              <button className="small ghost" disabled={busy}
                 onClick={continueOutline} title={`保留现有 ${episodes.length} 集，从第 ${episodes.length + 1} 集继续生成 10 集（含逐集 AI 剧本）`}>
-                续写后 10 集 ›
+                续写 +10 集
               </button>
             )}
           </div>
@@ -1364,10 +1408,10 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
           {sel && <>
             <label>③ 本集剧本（可手写、AI 写、改完保存）</label>
             <textarea className="script-editor" value={script} onChange={e => setScript(e.target.value)} placeholder="剧本正文…" />
-            <div className="row" style={{ marginTop: 8 }}>
-              <button className="ghost" onClick={writeScript} disabled={busy}>AI 写本集剧本</button>
-              <button onClick={saveScript} disabled={busy}>保存剧本</button>
-              <button onClick={doBreakdown} disabled={busy || !script.trim()} style={{ background: 'var(--accent2)', color: '#fff' }}>④ 结构化拆解 →</button>
+            <div className="row" style={{ marginTop: 10, gap: 7 }}>
+              <button className="small ghost" onClick={writeScript} disabled={busy}>AI 写本集剧本</button>
+              <button className="small ghost" onClick={saveScript} disabled={busy}>保存剧本</button>
+              <button className="small accent" onClick={doBreakdown} disabled={busy || !script.trim()}>④ 结构化拆解 →</button>
             </div>
           </>}
         </div>
@@ -1514,10 +1558,13 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
 
   return (
     <div className="modal-mask" onClick={() => onClose(false)}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="page-title">{ENTITY_LABEL[asset._etype]}资产调整 · {asset.name}</div>
-        <div className="row" style={{ alignItems: 'flex-start' }}>
-          <div style={{ width: 300 }}>
+      <div className="modal modal-wide" onClick={e => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="page-title">{ENTITY_LABEL[asset._etype]}资产调整 · {asset.name}</div>
+          <button className="modal-x" title="关闭" onClick={() => onClose(false)}>✕</button>
+        </div>
+        <div className="asset-editor">
+          <div className="asset-history">
             <label>历史版本（点击放大；✕ 删除；{isScene && '⚓ 设为场景锚点（环境一致性）'}）</label>
             <div className="row">
               {versions.map(id => (
@@ -1541,7 +1588,7 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
               <div style={{ color: '#d0a030', fontSize: 12, marginTop: 4 }}>⚓ 锚点已锁定：该场景镜头首帧自动注入此图（金框标记）</div>}
             {delMsg && <div style={{ color: 'var(--dim)', fontSize: 12, marginTop: 4 }}>{delMsg}</div>}
           </div>
-          <div style={{ flex: 1 }}>
+          <div className="asset-form">
             <label>名称</label>
             <input value={name} onChange={e => setName(e.target.value)} />
             {Object.keys(slots).length ? (
@@ -1569,19 +1616,21 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                     </div>
                   </>
                 )}
-                {Object.entries(slots).map(([k, v]) => (
-                  <div className="row" key={k} style={{ marginBottom: 4 }}>
-                    <span style={{ width: 90, color: 'var(--dim)', fontSize: 12, flexShrink: 0 }}>{k}</span>
-                    {k === 'ethnicity' ? (
-                      <select value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))} style={{ flex: 1 }}>
-                        <option value="">（未指定）</option>
-                        {ETHNICITIES.map(([ev, el]) => <option key={ev} value={ev}>{el}</option>)}
-                      </select>
-                    ) : (
-                      <input value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))} style={{ flex: 1 }} />
-                    )}
-                  </div>
-                ))}
+                <div className="slot-grid">
+                  {Object.entries(slots).map(([k, v]) => (
+                    <div className="slot-cell" key={k}>
+                      <span className="slot-label">{SLOT_ZH[k] || k}<em>{k}</em></span>
+                      {k === 'ethnicity' ? (
+                        <select value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))}>
+                          <option value="">（未指定）</option>
+                          {ETHNICITIES.map(([ev, el]) => <option key={ev} value={ev}>{el}</option>)}
+                        </select>
+                      ) : (
+                        <input value={v || ''} onChange={e => setSlots(s => ({ ...s, [k]: e.target.value }))} />
+                      )}
+                    </div>
+                  ))}
+                </div>
                 <label style={{ marginTop: 8 }}>最终提示词（自动组装，可直接查看）</label>
                 <textarea value={prompt} readOnly style={{ minHeight: 70, color: 'var(--dim)' }} />
               </>
@@ -1607,15 +1656,15 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
               <span>×</span>
               <input type="number" value={h} onChange={e => setH(e.target.value)} style={{ width: 80 }} title="高" />
             </div>
-            <div className="row" style={{ marginTop: 14 }}>
-              <button className="ghost" onClick={save} disabled={busy}>保存修改</button>
-              <button onClick={rerender} disabled={busy || (!prompt.trim() && !Object.keys(slots).length)} title={!prompt.trim() && !Object.keys(slots).length ? '提示词为空：先「从描述重铸槽位」或手动填写提示词' : ''}>🔁 重新渲染</button>
-              <button className="ghost" onClick={polish} disabled={busy || !versions.length} title="img2img denoise 0.12，构图与身份不变，仅补自然质感">✨ 微调10%</button>
-              {asset._etype !== 'character' && <button className="ghost" onClick={redrawFromRef} disabled={busy} title="粘贴网上找的真实物品/场景照片，img2img 重绘：结构、比例、屏幕与键帽文字保真，只换画风">📷 参考图重绘</button>}
-              {isScene && <button className="ghost" onClick={genIso} disabled={busy} title="生成 45° 等距空间布局全景图：俯瞰整个场景的结构与陈设排布，作为场景缩略图与锚点候选（镜头首帧 img2img 以此锁环境）">📐 布局图</button>}
-              <button className="ghost" onClick={upscale} disabled={busy || !versions.length} title="像素级超分放大（写实 4xNomos / 动漫 4x-ESRGAN / 通用 RealESRGAN），构图身份不变，追加高清版本">🔍 超分放大</button>
-              {!Object.keys(slots).length && <button className="ghost" onClick={rebuild} disabled={busy} style={!prompt.trim() ? { background: 'var(--accent2)', color: '#fff' } : undefined} title="本地 LLM 按方法论模板从描述反推结构化槽位；描述为占位文案时自动从剧本正文抽取该实体出场片段补上下文">🪄 从描述重铸槽位</button>}
-              <button className="ghost" onClick={() => onClose(false)}>关闭</button>
+            <div className="ops-row" style={{ marginTop: 16 }}>
+              <button className="small accent" onClick={rerender} disabled={busy || (!prompt.trim() && !Object.keys(slots).length)} title={!prompt.trim() && !Object.keys(slots).length ? '提示词为空：先「从描述重铸槽位」或手动填写提示词' : ''}>🔁 重新渲染</button>
+              <button className="small ghost" onClick={save} disabled={busy}>保存修改</button>
+              <span className="ops-div" />
+              <button className="small ghost" onClick={polish} disabled={busy || !versions.length} title="img2img denoise 0.12，构图与身份不变，仅补自然质感">✨ 微调 10%</button>
+              <button className="small ghost" onClick={upscale} disabled={busy || !versions.length} title="像素级超分放大（写实 4xNomos / 动漫 4x-ESRGAN / 通用 RealESRGAN），构图身份不变，追加高清版本">🔍 超分放大</button>
+              {asset._etype !== 'character' && <button className="small ghost" onClick={redrawFromRef} disabled={busy} title="粘贴网上找的真实物品/场景照片，img2img 重绘：结构、比例、屏幕与键帽文字保真，只换画风">📷 参考图重绘</button>}
+              {isScene && <button className="small ghost" onClick={genIso} disabled={busy} title="生成 45° 等距空间布局全景图：俯瞰整个场景的结构与陈设排布，作为场景缩略图与锚点候选（镜头首帧 img2img 以此锁环境）">📐 布局图</button>}
+              {!Object.keys(slots).length && <button className="small ghost" onClick={rebuild} disabled={busy} style={!prompt.trim() ? { background: 'var(--accent2)', color: '#fff', borderColor: 'var(--accent2)' } : undefined} title="本地 LLM 按方法论模板从描述反推结构化槽位；描述为占位文案时自动从剧本正文抽取该实体出场片段补上下文">🪄 从描述重铸槽位</button>}
             </div>
             {!prompt.trim() && !Object.keys(slots).length && (
               <div style={{ marginTop: 10, padding: '8px 10px', border: '1px solid var(--accent2)', borderRadius: 8, fontSize: 12, color: 'var(--text)' }}>
@@ -1709,22 +1758,30 @@ function AssetsPage({ project, refreshTasks, setStage }) {
 
   const wall = (list, etype, landscape) => (
     <>
-      <h3 style={{ margin: '20px 0 10px', color: 'var(--accent)' }}>{ENTITY_LABEL[etype]}（{list.length}）
-        <span className="page-sub" style={{ fontSize: 12 }}>点击卡片可编辑提示词 / 换模型 / 重新渲染</span>
+      <div className="section-head">
+        <h3>{ENTITY_LABEL[etype]}<em>（{list.length}）</em></h3>
+        <span className="section-hint">点击卡片可编辑提示词 / 换模型 / 重新渲染</span>
         {etype === 'scene' &&
-          <button className="small ghost" style={{ marginLeft: 12 }} title="无锚场景自动生成 45° iso 等距剖面布局全景图并设为锚点（缩略图法）：分镜首帧注入此图锁定环境布局一致性；已有锚图的场景跳过"
+          <button className="small ghost" style={{ marginLeft: 'auto' }} title="无锚场景自动生成 45° iso 等距剖面布局全景图并设为锚点（缩略图法）：分镜首帧注入此图锁定环境布局一致性；已有锚图的场景跳过"
             onClick={autoAnchors}>⚓ 补齐场景锚图</button>}
-      </h3>
+      </div>
       <div className="grid">
         {list.map(a => (
-          <div key={a.id} className={`asset-card ${etype === 'character' ? 'character-sheet' : ''} ${landscape ? 'landscape' : ''}`} style={{ cursor: 'pointer', position: 'relative' }}
+          <div key={a.id} className={`asset-card ${etype === 'character' ? 'character-sheet' : ''} ${landscape ? 'landscape' : ''}`} style={{ cursor: 'pointer' }}
             onClick={() => setEditing({ ...a, _etype: etype, project_id: project.id })}>
-            <button className="small" title="删除资产（含全部生成图，不可恢复）"
-              style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, background: '#c0392b', borderColor: '#c0392b', color: '#fff', opacity: 0.85 }}
-              onClick={e => { e.stopPropagation(); deleteAsset(etype, a) }}>删除</button>
-            {a.image_ids.length ? <img src={img(a.image_ids[a.image_ids.length - 1])} /> : <div style={{ aspectRatio: etype === 'character' ? '16/9' : landscape ? '16/10' : '3/4', display: 'grid', placeItems: 'center', color: 'var(--dim)' }}>未生成 · 点击配置{etype === 'character' && !a.has_prompt ? '（先补全槽位）' : ''}</div>}
+            <div className="card-media">
+              {a.image_ids.length
+                ? <img src={img(a.image_ids[a.image_ids.length - 1])} />
+                : <div className="media-empty">未生成 · 点击配置{etype === 'character' && !a.has_prompt ? '（先补全槽位）' : ''}</div>}
+              <button className="asset-del" title="删除资产（含全部生成图，不可恢复）"
+                onClick={e => { e.stopPropagation(); deleteAsset(etype, a) }}>删除</button>
+            </div>
             <div className="info">
-              <div className="name">{a.name} {a.render_count > 0 && <span className="badge">渲染 {a.render_count} 次</span>}{a.image_ids.length > 1 && <span className="badge" title="含微调/超分等衍生图">{a.image_ids.length} 图</span>}</div>
+              <div className="name-row">
+                <span className="name">{a.name}</span>
+                {a.render_count > 0 && <span className="tag">渲染 {a.render_count} 次</span>}
+                {a.image_ids.length > 1 && <span className="tag" title="含微调/超分等衍生图">{a.image_ids.length} 图</span>}
+              </div>
               <div className="desc">{a.description}</div>
             </div>
           </div>
@@ -1891,9 +1948,13 @@ export default function App() {
   return (
     <>
       <div className="layout">
-        <StageNav stage={stage} setStage={setStage} />
+        <StageNav stage={stage} setStage={setStage} hasProject={!!project} />
         <div className="main">
-          {needProject && <div className="page-sub">请先在"项目"页选择或创建项目。</div>}
+          {needProject && <div className="empty-hint">
+            <div className="page-title" style={{ fontSize: 17, marginBottom: 10 }}>还没有选中的项目</div>
+            <div className="empty-hint-s">先在「项目」页选择已有作品，或新建一个项目再进入剧本 / 资产 / 分镜流程。</div>
+            <button className="small accent" onClick={() => setStage('projects')}>← 回项目中心</button>
+          </div>}
           {stage === 'projects' && <ProjectsPage projects={projects} reload={reloadProjects} selectProject={id => { setProjectId(id); setStage('script') }} />}
           {stage === 'script' && project && <ScriptPage project={project} refreshTasks={refreshTasks} setStage={setStage} setAssetsVersion={setAssetsVersion} key={project.id} />}
           {stage === 'assets' && project && <AssetsPage project={{ ...project, _assetsVersion: assetsVersion }} refreshTasks={refreshTasks} setStage={setStage} />}
