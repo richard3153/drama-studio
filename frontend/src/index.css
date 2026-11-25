@@ -197,7 +197,7 @@ button:focus-visible, .stage-item:focus-visible { outline: none; box-shadow: var
 }
 
 /* ---------------- 资产卡片 ---------------- */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 16px; }
 .grid:empty::after { content: '还没有内容'; color: var(--dim); font-size: 13px; }
 .asset-card {
   background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius);
