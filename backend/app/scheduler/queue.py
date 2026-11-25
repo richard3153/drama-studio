@@ -1,8 +1,11 @@
 """串行任务队列 + SSE 事件总线（低显存调度约束 1/2/6）。"""
 import asyncio
 import json
+import time
 import traceback
 from typing import Awaitable, Callable
+
+from sqlalchemy import select
 
 from ..db import SessionLocal, TaskRecord, task_to_dict, now
 
@@ -18,6 +21,17 @@ _bg_tasks: set[asyncio.Task] = set()
 _run_map: dict[int, asyncio.Task] = {}
 # 主事件循环（启动时登记）：工作线程的进度更新经它投递回 SSE
 _main_loop: asyncio.AbstractEventLoop | None = None
+# 任务 id → 最后一次落库刷新时间（monotonic）：watchdog 判"假运行"用
+_ticks: dict[int, float] = {}
+
+# 环境类错误：ComfyUI 失联/超时/断连，重跑一次通常就好，不该在队列里留红色失败。
+# 这类标 interrupted（灰「已中断」+ 继续按钮）；提示词/参数/代码类真错仍走 failed。
+_ENV_ERR_HINTS = (
+    "执行超时", "轮询连续失败", "ComfyUI 无响应",
+    "All connection attempts failed", "ConnectError", "ConnectTimeout",
+    "ReadTimeout", "ServerDisconnected", "Connection reset", "WinError 10054",
+    "离线",
+)
 
 
 def spawn_bg(coro) -> asyncio.Task:
@@ -76,6 +90,7 @@ def _set(db, t: TaskRecord, **fields):
         setattr(t, k, v)
     db.commit()
     db.refresh(t)
+    _ticks[t.id] = time.monotonic()
 
 
 async def run_task(db, t: TaskRecord, fn: Callable[[], Awaitable[dict]],
@@ -115,8 +130,17 @@ async def run_task(db, t: TaskRecord, fn: Callable[[], Awaitable[dict]],
         raise
     except Exception as e:
         db.rollback()  # 闭环保护：任务失败必须回滚半截事务，否则异常前的删除会被下面 commit 提交掉
-        _set(db, t, status="failed", error=f"{e}\n{traceback.format_exc()[-1500:]}",
-             finished_at=now())
+        msg = str(e)
+        # 环境类（ComfyUI 超时/失联/断连）标 interrupted：可「继续」按原参数重跑，
+        # 不在队列里留一堆红色失败；真错（提示词/参数/代码）仍标 failed。
+        env_like = any(h in msg for h in _ENV_ERR_HINTS)
+        if env_like:
+            _set(db, t, status="interrupted",
+                 error=f"环境中断：{msg}（点「继续」按原参数重跑）",
+                 finished_at=now())
+        else:
+            _set(db, t, status="failed", error=f"{msg}\n{traceback.format_exc()[-1500:]}",
+                 finished_at=now())
         await publish("task_update", {"task": task_to_dict(t)})
 
 
@@ -139,3 +163,35 @@ def set_main_loop(loop: asyncio.AbstractEventLoop):
     """启动时登记主事件循环（供工作线程里的进度更新投递 SSE）。"""
     global _main_loop
     _main_loop = loop
+
+
+async def watchdog(interval: float = 60.0, idle_limit: float = 5400.0):
+    """长任务兜底：状态还挂在 running、但长时间没有任何进度刷新的任务 → interrupted。
+
+    8G 上 H3 单条视频 15-30 分钟、一集重链一两个小时，所以阈值给 90 分钟。
+    真正要收的是"假运行"：adapter 已经超时放弃、DB 状态却还是 running，占着
+    _heavy_lock 让后面所有任务排队等锁 —— 前端看到的就是进度一动不动、一直"推理中"。
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            with SessionLocal() as db:
+                rows = db.scalars(
+                    select(TaskRecord).where(TaskRecord.status == "running")).all()
+                for t in rows:
+                    last = _ticks.get(t.id)
+                    if last is None:          # 刚启动/刚派发，先记一笔不误杀
+                        _ticks[t.id] = time.monotonic()
+                        continue
+                    if time.monotonic() - last <= idle_limit:
+                        continue
+                    t.status = "interrupted"
+                    t.error = (f"超过 {int(idle_limit // 60)} 分钟没有任何进度"
+                               f"（最后的阶段：{t.stage or '无'}），点「继续」按原参数重跑")
+                    t.finished_at = now()
+                    db.commit()
+                    _ticks.pop(t.id, None)
+                    await publish("task_update", {"task": task_to_dict(t)})
+                    cancel_running(t.id)
+        except Exception:
+            pass

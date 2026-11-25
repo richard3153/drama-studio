@@ -181,6 +181,46 @@ class ComfyUIAdapter:
 
     # ---------- 执行 ----------
 
+    async def _abort_prompt(self, prompt_id: str):
+        """放弃等待时把 ComfyUI 侧一起收尾：pending 删掉，正在跑就中断。
+
+        没有这步就是本轮"任务停住"的根因：adapter 超时/失联抛错后，ComfyUI 仍在
+        算那个没人等的 prompt（8G 上一条 H3 视频 15-30 分钟），后端又提交下一个
+        → 队列越堆越深、GPU 一直 100%、每个请求都把排队时间算进自己的超时预算，
+        于是首帧 900s 永远不够，永远超时、永远不落终态。
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                await c.post(f"{self.base}/queue", json={"delete": [prompt_id]})
+                q = (await c.get(f"{self.base}/queue")).json()
+                running = [it[1] for it in q.get("queue_running", [])]
+                if prompt_id in running:
+                    await c.post(f"{self.base}/interrupt")
+        except Exception:
+            pass
+
+    async def purge_queue(self) -> int:
+        """清空 ComfyUI 队列（中断当前执行 + 删所有 pending），返回清掉的条数。
+
+        只在"后端没有任何正在跑的任务"时调用（进程刚重启、DB 已全部收尸为
+        interrupted），此时队列里的 prompt 一定没人认领。
+        """
+        cleared = 0
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                q = (await c.get(f"{self.base}/queue")).json()
+                pend = [it[1] for it in q.get("queue_pending", [])]
+                run = [it[1] for it in q.get("queue_running", [])]
+                if run:
+                    await c.post(f"{self.base}/interrupt")
+                    cleared += len(run)
+                if pend:
+                    await c.post(f"{self.base}/queue", json={"delete": pend})
+                    cleared += len(pend)
+        except Exception:
+            pass
+        return cleared
+
     async def run(self, wf: dict, *, filename_prefix: str = "drama_studio/out",
                   save_root: str | Path = "data/downloads",
                   timeout: float = 900.0, poll_interval: float = 1.0,
@@ -220,6 +260,7 @@ class ComfyUIAdapter:
                     # ComfyUI 重推理时偶发慢响应/瞬断，跳过本次轮询
                     poll_fail += 1
                     if poll_fail >= 60:
+                        await self._abort_prompt(prompt_id)
                         raise ComfyUIError("轮询连续失败（约 60 次），疑似 ComfyUI 无响应")
                     continue
                 data = r.json()
@@ -231,8 +272,10 @@ class ComfyUIAdapter:
                         break
                     if status.get("status_str") == "error":
                         msgs = json.dumps(status.get("messages", []), ensure_ascii=False)
+                        await self._abort_prompt(prompt_id)
                         raise ComfyUIError(f"ComfyUI 执行出错: {msgs[:800]}")
             if history is None:
+                await self._abort_prompt(prompt_id)
                 raise ComfyUIError(f"执行超时（{timeout}s）")
 
             return await self._download_outputs(c, history)

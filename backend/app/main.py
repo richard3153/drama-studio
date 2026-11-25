@@ -38,6 +38,9 @@ with SessionLocal() as _s:
         _t.status = "interrupted"
         _t.error = "服务重启导致中断，点「继续」按原参数重跑"
     _s.commit()
+# 上次进程有没有留下 running：有则 ComfyUI 队列里那些 prompt 一定没人认领，
+# 启动后清一次（否则它们继续占 GPU，重启后的新任务排队等到超时）。
+_had_stale = bool(_stale)
 
 app = FastAPI(title="Drama Studio", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -45,11 +48,23 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
 app.include_router(router)
 
 
+async def _purge_comfy_orphans():
+    """清掉上次进程留在 ComfyUI 队列里的孤儿 prompt（中断当前 + 删 pending）。"""
+    from .adapters.comfyui_adapter import ComfyUIAdapter
+    n = await ComfyUIAdapter().purge_queue()
+    if n:
+        print(f"[startup] 已清理 ComfyUI 孤儿 prompt {n} 条（上次进程崩溃/重启残留）")
+
+
 @app.on_event("startup")
 async def _capture_main_loop():
     # 登记主事件循环：export/stitch 等工作线程里的进度更新要经它投递 SSE
     from .scheduler import queue as _q
     _q.set_main_loop(asyncio.get_running_loop())
+    # 长任务兜底：running 但长时间无进度 → interrupted（防"假运行"堵住 GPU 锁）
+    _q.spawn_bg(_q.watchdog())
+    if _had_stale:
+        _q.spawn_bg(_purge_comfy_orphans())
 
 
 @app.get("/api/health")

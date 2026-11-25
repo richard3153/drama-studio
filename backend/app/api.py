@@ -418,7 +418,9 @@ async def retry_task(tid: int):
             raise HTTPException(400, f"任务状态 {t.status} 不可重试")
         t.status = "pending"
         t.error = ""
+        t.stage = ""
         t.progress = 0.0
+        t.finished_at = None
         db.commit()
     at = task_queue.spawn_bg(_run_bg(tid))
     task_queue.register_runner(tid, at)
