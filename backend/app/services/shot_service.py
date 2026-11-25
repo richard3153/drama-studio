@@ -711,8 +711,21 @@ async def generate_shot_video(db, task, params: dict) -> dict:
         est = "约 2-4 分钟/条"
     update_progress(db, task, 0.3, f"{model_key} 推理中（8G 显存{est}）")
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
-    out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_video",
-                          save_root=save_root, timeout=2400)
+    try:
+        out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_video",
+                              save_root=save_root, timeout=2400)
+    except Exception as e:
+        try:
+            from .prompt_bank import reinforce_on_error
+            reinforce_on_error(family, prompt, e)   # 自强化：失败弱化命中词块（基础设施故障不计）
+        except Exception:
+            pass
+        raise
+    try:
+        from .prompt_bank import reinforce_from_prompt
+        reinforce_from_prompt(family, prompt, ok=True)        # 自强化：成功强化命中词块
+    except Exception:
+        pass
     await comfy.free_memory()
     if not out:
         raise ComfyUIError("视频生成没有返回文件，检查 SaveVideo 节点")
@@ -1117,8 +1130,21 @@ async def extend_shot_video(db, task, params: dict) -> dict:
         overrides["WanFirstLastFrameToVideo.end_image"] = None   # 单帧续写
     wf = comfy.apply_overrides(wf, overrides)
     update_progress(db, task, 0.4, f"{model_key} 续写推理（+{duration}s / {length} 帧）")
-    out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_ext",
-                          save_root=save_root, timeout=2400)
+    try:
+        out = await comfy.run(wf, filename_prefix=f"drama_studio/p{shot.project_id}_s{shot.idx}_ext",
+                              save_root=save_root, timeout=2400)
+    except Exception as e:
+        try:
+            from .prompt_bank import reinforce_on_error
+            reinforce_on_error(family, prompt, e)   # 自强化：失败弱化命中词块（基础设施故障不计）
+        except Exception:
+            pass
+        raise
+    try:
+        from .prompt_bank import reinforce_from_prompt
+        reinforce_from_prompt(family, prompt, ok=True)
+    except Exception:
+        pass
     await comfy.free_memory()
     if not out:
         raise ComfyUIError("续写段没有返回文件，检查 SaveVideo 节点")

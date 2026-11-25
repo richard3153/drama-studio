@@ -137,8 +137,9 @@ def apply_continuity(shots: list[dict]) -> None:
                               "lighting and character appearance")
             pd, cd = prev.get("screen_direction", ""), sh.get("screen_direction", "")
             if pd and cd and pd != cd:
+                # 正向表述（H3 cfg=1 无负面通道，"do not cross" 这类否定句不生效）
                 guidance = ("axis warning: keep each subject on its own side of the frame, "
-                            f"do not cross the 180-degree line; subject {DIR_EN.get(cd, '')}")
+                            f"hold the 180-degree line; subject {DIR_EN.get(cd, '')}")
             elif cd:
                 guidance = (f"same staging and lighting as previous shot; "
                             f"subject {DIR_EN.get(cd, '')}")

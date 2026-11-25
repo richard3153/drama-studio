@@ -325,7 +325,7 @@ async def generate_asset(db, task, params: dict) -> dict:
         negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
     from .model_vocab import image_dialect   # 模型方言词库（family 已知 → 直接取该族母语词）
     prompt = ", ".join(x for x in (params['base_prompt'], suffix, quality,
-                                   image_dialect(family)) if x)
+                                   image_dialect(family, role)) if x)
     overrides = {
         "positive_text": prompt,
         "negative_text": negative,
@@ -347,8 +347,23 @@ async def generate_asset(db, task, params: dict) -> dict:
     from ..scheduler.queue import update_progress
     update_progress(db, task, 0.05, f"选档 {model_key}（{model['vram_gb']}GB）")
     save_root = ASSETS_ROOT / str(params["project_id"]) / "assets"
-    files = await comfy.run(wf, filename_prefix=f"drama_studio/p{params['project_id']}_{role}{params.get('entity_id','')}",
-                            save_root=save_root, timeout=600, on_stage=on_stage)
+    try:
+        files = await comfy.run(wf, filename_prefix=f"drama_studio/p{params['project_id']}_{role}{params.get('entity_id','')}",
+                                save_root=save_root, timeout=600, on_stage=on_stage)
+    except Exception as e:
+        # 自强化：失败产物反向弱化本次命中的词块（基础设施故障不计入，见 prompt_bank）
+        try:
+            from .prompt_bank import reinforce_on_error
+            reinforce_on_error(family, prompt, e)
+        except Exception:
+            pass
+        raise
+    # 自强化：成功产物强化本次命中的词块（kept+1，权重提升/转正）
+    try:
+        from .prompt_bank import reinforce_from_prompt
+        reinforce_from_prompt(family, prompt, ok=True)
+    except Exception:
+        pass
     update_progress(db, task, 0.9, "生成完成，写入资产库")
     await comfy.free_memory()
 

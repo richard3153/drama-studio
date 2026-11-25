@@ -2217,6 +2217,72 @@ def delete_prompt_template(tid: int):
         return {"ok": True}
 
 
+# ---------- 自强化提示词库（#90：Qwen-Image / MiniMax H3 实战词块统计） ----------
+
+@router.get("/prompt-bank")
+def prompt_bank_view():
+    """词库全量视图：按 family 分组，weight=kept-1.5*failed 降序，含拉黑标记。"""
+    from .services.prompt_bank import snapshot
+    return snapshot()
+
+
+class BankChunkIn(BaseModel):
+    family: str                     # qwen_image | minimax_h3 | sdxl | flux2_klein
+    kind: str = "image"             # image | video
+    action: str = "add"             # add | remove
+    text: str = ""
+    key: str = ""                   # remove 时的词块 key
+
+
+@router.post("/prompt-bank/chunk")
+def prompt_bank_chunk(body: BankChunkIn):
+    """手动增删词块（add 默认 kept=1 视为人工已验证；remove 按 key 删除）。"""
+    from .services.prompt_bank import add_chunk, remove_chunk
+    if body.action == "remove":
+        ok = remove_chunk(body.family, body.key)
+    else:
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(400, "text 不能为空")
+        ok = add_chunk(body.family, text, body.kind)
+    if not ok:
+        raise HTTPException(400, "操作失败（重复词块 / 池已满 / key 不存在）")
+    return {"ok": True}
+
+
+@router.post("/prompt-bank/harvest")
+def prompt_bank_harvest():
+    """提炼入库：扫描现存成功产物提示词（资产图/镜头视频），高频短语自动进词库。
+    图片源 → qwen_image（场景/道具/角色图提示词）；视频源 → minimax_h3（镜头 video_prompt）。"""
+    from .services.prompt_bank import harvest
+    from .services.model_vocab import MODEL_PROMPT_VOCAB
+    docs_img, docs_vid = [], []
+    with SessionLocal() as db:
+        for a in db.scalars(select(AssetImage).where(AssetImage.kind.in_(
+                ("scene", "prop", "portrait", "character")))).all():
+            if a.prompt and a.file_path and Path(a.file_path).exists():
+                docs_img.append(a.prompt)
+        for s in db.scalars(select(Shot).where(Shot.video_path != "")).all():
+            if s.video_prompt and s.video_path and Path(s.video_path).exists():
+                docs_vid.append(s.video_prompt)
+
+    def _phrases(fams):
+        out = set()
+        for f in fams:
+            for v in MODEL_PROMPT_VOCAB.get(f, {}).values():
+                out.update(p.strip().lower() for p in str(v).split(",") if p.strip())
+        return out
+
+    # 跨族禁用：视频族方言词不进 Qwen 图片库；图像族 + wan 系方言词不进 H3 视频库
+    img_fams = ("sdxl", "flux2_klein", "qwen_image")
+    vid_fams = ("minimax_h3", "wan", "infinitalk")
+    added_img = harvest(docs_img, "qwen_image", "image", forbid_extra=_phrases(vid_fams))
+    added_vid = harvest(docs_vid, "minimax_h3", "video",
+                        forbid_extra=_phrases(img_fams + ("wan", "infinitalk")))
+    return {"sources": {"image": len(docs_img), "video": len(docs_vid)},
+            "added": {"qwen_image": added_img, "minimax_h3": added_vid}}
+
+
 # 允许 uvicorn 启动时建表
 init_db()
 

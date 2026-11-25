@@ -19,7 +19,7 @@ from ..style_presets import (_clean, QUALITY_SUFFIX, QUALITY_SUFFIX_ENV,
                              assemble_end_frame_prompt, assemble_prop_prompt,
                              assemble_scene_prompt, assemble_shot_prompt, get_style,
                              style_lock_for, lifelike_tokens)
-from .model_vocab import model_tokens   # 模型提示词库（组装期按预判的下游模型组词）
+from .model_vocab import model_tokens, predict_video_family   # 模型提示词库（组装期按预判的下游模型组词）
 from .action_vocab import detect_action, action_tokens   # 打斗词库（动作镜自动识别+编排词）
 from .vfx_vocab import detect_vfx, vfx_tokens   # 特效词库（特效镜自动识别+编排词）
 
@@ -844,8 +844,15 @@ def _prop_tokens_for(prop_names: list[str] | None, props_rows: dict) -> str:
 
 
 def _slots_concept(slots: dict) -> str:
-    return ", ".join(v for k in ("space", "era", "elements", "light", "mood")
-                     if (v := _clean(slots.get(k))))
+    parts = []
+    for k in ("space", "era", "elements", "light", "mood"):
+        v = slots.get(k)
+        if isinstance(v, (list, tuple)):   # elements 等槽位可能是数组（防 str(list) 泄漏进提示词）
+            v = ", ".join(str(x).strip() for x in v if str(x).strip())
+        v = _clean(v)
+        if v:
+            parts.append(v)
+    return ", ".join(parts)
 
 
 def _entity_concept(entity_row, fallback_name: str) -> str:
@@ -1299,15 +1306,25 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                                      shot.get("camera_speed", ""), shot.get("framing_start", ""),
                                      shot.get("framing_end", ""))
         vars_vd = dict(common)
+        vfamily = predict_video_family()
         vars_vd.update({
-            "quality": QUALITY_SUFFIX,   # 视频提示词收回纯内容层：SDXL 图像方言不进视频模型
+            # 视频不喂图像画质尾词：H3/wan 都是 I2V，画质由首帧定；尾巴里的
+            # "visible pores and flyaway hairs" 是贴图诱导词、"no plastic gloss" 是否定句
+            # （H3 cfg=1 无负面通道，否定句无效反而占预算）
+            "quality": "",
+            # 图像"活人感/抗过曝"锁也不进视频层（同属图像质感锁，且含多条否定句）
+            "lifelike": "",
             "beats": beats_text(beats, shot.get("duration", 4)),
             "motion_cues": motion_vid,
             "camera": cam_seg,
-            # 视频默认 vid_wan21_480p（wan 系方言：动作分解/连续运镜），说话镜生成期再叠 infinitalk 词；
+            # 视频默认走 MiniMax H3（#87）：组装期就喂 H3 方言（运镜短语/动作分解/氛围音），
+            # cfg=1 无负面通道；说话镜生成期再叠 infinitalk 词；
             # 动作镜追加打斗编排词（重量感三要素：发力→命中→受击）
+            # H3 不吃 MOTION_STABILITY：那串含 no jitter/no morphing 否定句（cfg=1 无效），
+            # 且其稳定性短语 H3 方言与词库已覆盖，重复注入只会挤占预算
             "motion_constraints": ", ".join(x for x in (
-                MOTION_STABILITY, model_tokens("wan", "video"),
+                (MOTION_STABILITY if vfamily != "minimax_h3" else ""),
+                model_tokens(vfamily, "video"),
                 action_tokens(_act_level(shot), "video"),
                 _vfx_tokens(shot, "video")) if x),
             "blocking": _clean(shot.get("blocking", "")),
@@ -1520,13 +1537,16 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
                                      r.camera_speed or "", r.framing_start or "",
                                      r.framing_end or "")
         v4 = dict(common)
+        vfamily = predict_video_family()
         v4.update({
-            "quality": QUALITY_SUFFIX,   # 同上：视频不喂图像方言
+            "quality": "",   # 同上：视频不喂图像画质尾词（贴图诱导词 + 否定句，H3 cfg=1 无效）
+            "lifelike": "",  # 同上：图像质感锁（含否定句）不进 I2V 视频提示词
             "beats": beats_text(d["action_beats"], r.duration),
             "motion_cues": _motion_video_tokens(d.get("motion") or {}),
             "camera": cam_seg,
             "motion_constraints": ", ".join(x for x in (
-                MOTION_STABILITY, model_tokens("wan", "video"),
+                (MOTION_STABILITY if vfamily != "minimax_h3" else ""),
+                model_tokens(vfamily, "video"),
                 action_tokens(_act_level(d), "video"),
                 _vfx_tokens(d, "video")) if x),
             "blocking": _clean(r.blocking),
