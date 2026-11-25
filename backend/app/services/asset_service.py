@@ -391,7 +391,10 @@ async def generate_asset(db, task, params: dict) -> dict:
             eid = params.get("entity_id")
             with Image.open(files[0]) as im:
                 iw, ih = im.size
-                face = im.convert("RGB").crop((0, 0, int(iw * 0.5), int(ih * 0.85)))
+                # 只取版式左半的「头肩特写」区域：此前裁到 0.5w/0.85h 会把右侧全身像
+                # 一起裁进参考图，IPAdapter 把「特写+全身」学成混合身份/版式 →
+                # 锁脸信号稀、脸型漂移（#91 治理）。0.36w/0.72h 落在单人头肩内。
+                face = im.convert("RGB").crop((0, 0, int(iw * 0.36), int(ih * 0.72)))
             face_path = Path(files[0]).with_name(
                 f"p{params['project_id']}_portrait{eid}_sheetface_{files[0].stem.rsplit('_', 1)[-1]}.png")
             face_path.parent.mkdir(parents=True, exist_ok=True)
@@ -399,6 +402,7 @@ async def generate_asset(db, task, params: dict) -> dict:
             fimg = AssetImage(project_id=params["project_id"], kind="face_ref",
                               character_id=eid, file_path=str(face_path), prompt=prompt,
                               meta_json=json.dumps({"source": "sheet_crop", "sheet": str(files[0]),
+                                                    "face_only": True,
                                                     "entity_type": "character", "entity_id": eid},
                                                    ensure_ascii=False))
             db.add(fimg)

@@ -441,7 +441,15 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     preset = (project.style_preset if project else "") or "anime_2d"
     genre = (getattr(project, "genre", "") if project else "") or ""
     fam = style_family(preset)
-    model_key, model = await pick_model("scene", "low", style_family=fam,
+    # 首帧必须走 SDXL IPAdapter 通道（锁脸），但底模要与风格族对齐：
+    # 3d/photo → RealVisXL（写实渲染，贴合 Qwen-Image 资产的角色板质感）；
+    # anime/paint → AnythingXL（动漫/绘柄）。
+    # 此前只传 style_family 不点名底模：3d 在 SDXL 池内没有任何模型 styles 命中，
+    # 按 tier 平局落到字典首个 = AnythingXL 动漫底模 → 3D 国风项目首帧出成 2D 动漫，
+    # 视频 I2V 继承首帧 → 视频角色与角色板「换人换画风」（#91 治理）。
+    frame_key = "img_realvisxl" if fam in ("3d", "photo") else "img_anythingxl"
+    model_key, model = await pick_model("scene", "low", model_key=frame_key,
+                                        style_family=fam,
                                         allowed_families=frozenset(("sdxl",)))
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
@@ -503,7 +511,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     ipa_weight = float(params.get("ipa_weight") or IPA_WEIGHT)
     scene_ref = None if params.get("use_scene_ref") is False else _scene_anchor(db, shot)
     scene_ipa_w = float(params.get("scene_ipa_weight") or 0.4)
-    real = fam == "photo"   # 写实底模需要额外锁脸负面（脸型变异治理）
+    real = fam in ("photo", "3d")   # 写实/3D 渲染底模需要额外锁脸负面（脸型变异治理）
     # 场景锁定（方案五）只作用于【无角色入镜】的镜头：锚图是无人场景图，
     # 对有人镜做锚图 img2img 等于从提示词凭空重画人物，IPA 锁脸被完全跳过
     # → 后期分镜人物变形/换人（#74 修复：有人镜一律先走 IPA 锁脸通道，
@@ -773,7 +781,10 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
     if not shot.image_prompt:
         raise RuntimeError("镜头首帧提示词为空，先点「重组装提示词」")
 
-    model_key, model = await pick_model("grid9", "low", style_family=style_family(preset),
+    model_key, model = await pick_model("grid9", "low",
+                                        model_key=("img_realvisxl" if style_family(preset) in ("3d", "photo")
+                                                   else "img_anythingxl"),
+                                        style_family=style_family(preset),
                                         allowed_families=frozenset(("sdxl",)))
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
