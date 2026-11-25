@@ -58,6 +58,28 @@ body {
 .switch-row.on { border-color: rgba(245, 166, 35, .55); background: rgba(245, 166, 35, .07); }
 .switch-row input { margin: 0; accent-color: var(--accent); width: auto; }
 .switch-row span { color: var(--text); font-size: 13px; }
+
+/* 大纲输入：多行可拉伸 textarea + 全窗口弹层 + 上传文档按钮 */
+.idea-bar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.idea-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;
+  padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel2); color: var(--text); font-size: 12px; white-space: nowrap;
+}
+.chip:hover { border-color: var(--accent); }
+.idea-box { min-height: 132px; max-height: 300px; line-height: 1.7; }
+.idea-box-full { flex: 1; min-height: 0; resize: none; font-size: 14px; line-height: 1.75; }
+.modal-mask {
+  position: fixed; inset: 0; z-index: 220; display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 8, 12, .66); backdrop-filter: blur(3px); padding: 24px;
+}
+.modal-box {
+  width: min(1180px, 94vw); height: min(88vh, 900px);
+  display: flex; flex-direction: column; gap: 10px; padding: 16px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .55);
+}
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
 .asset-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .asset-card img { width: 100%; aspect-ratio: 3/4; object-fit: cover; display: block; background: #000; }

@@ -875,6 +875,9 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   // 项目一句话描述自动带入大纲输入框（创建项目时填的 description）
   const [idea, setIdea] = useState(project.description || '')
   const [nEp, setNEp] = useState(3)
+  // 大纲输入：多行 textarea + 全窗口弹层 + 上传 txt 全文，均不设字数上限
+  const [ideaFull, setIdeaFull] = useState(false)
+  const [txtMsg, setTxtMsg] = useState('')
   // 分集列表分页：每页 5 集
   const [epPage, setEpPage] = useState(0)
   const [script, setScript] = useState('')
@@ -942,6 +945,33 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
     }
     after && after()
   }
+
+  // 上传本地 txt/md 读全文填入：优先 UTF-8，替换符过多则按 GB18030 重解（国内 txt 多为 GBK）
+  const loadIdeaTxt = async (e) => {
+    const f = e.target.files && e.target.files[0]
+    e.target.value = ''                       // 清空 value，允许重复选同一个文件
+    if (!f) return
+    try {
+      const buf = await f.arrayBuffer()
+      let text = new TextDecoder('utf-8').decode(buf)
+      if ((text.match(/\uFFFD/g) || []).length > 20) {
+        try { text = new TextDecoder('gb18030').decode(buf) } catch { /* 浏览器不支持该编码则保持 UTF-8 结果 */ }
+      }
+      text = text.replace(/\r\n?/g, '\n').trim()
+      if (!text) { setTxtMsg(`「${f.name}」里没有读到文本`); return }
+      setIdea(text)                           // 直接替换为文档全文，后续可继续编辑
+      setTxtMsg(`已读取「${f.name}」：${text.length.toLocaleString()} 字（覆盖原内容，可编辑后再生成）`)
+    } catch (err) {
+      setTxtMsg('读取失败：' + err.message)
+    }
+  }
+
+  useEffect(() => {
+    if (!ideaFull) return
+    const h = (e) => { if (e.key === 'Escape') setIdeaFull(false) }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [ideaFull])
 
   const genOutline = async () => {
     setBusy(true)
@@ -1239,13 +1269,61 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
       </div>
 
       <div className="card">
-        <label>① 一句话创意 / 大纲 → 生成分集</label>
-        <div className="row">
-          <input placeholder="例如：深夜便利店店员发现凌晨三点的神秘顾客…" value={idea} onChange={e => setIdea(e.target.value)} style={{ flex: 1 }} />
-          <input type="number" min="1" max="60" value={nEp} onChange={e => setNEp(e.target.value)} style={{ width: 70 }} />
-          <button disabled={busy || !idea.trim()} onClick={genOutline}>生成分集大纲</button>
+        <div className="idea-bar">
+          <div style={{ minWidth: 0 }}>
+            <div className="field-label" style={{ fontSize: 13 }}>① 创意 / 大纲 → 生成分集</div>
+            <div className="field-hint">一行一条也行，整段贴也行，字数不限；可上传 txt / md 全文直接填入。</div>
+          </div>
+          <div className="idea-tools">
+            <label className="chip" title="读取本地 txt / md / log 全文填入输入框（自动识别 UTF-8 与 GBK）">
+              📄 上传文档
+              <input type="file" accept=".txt,.md,.markdown,.log,text/plain" style={{ display: 'none' }} onChange={loadIdeaTxt} />
+            </label>
+            <button className="ghost" style={{ padding: '5px 12px', fontSize: 12 }} onClick={() => setIdeaFull(true)}
+              title="全窗口编辑：适合贴整本设定或几十集大纲">
+              ⤢ 全窗口
+            </button>
+          </div>
         </div>
+        <textarea className="idea-box" value={idea} onChange={e => setIdea(e.target.value)}
+          placeholder={"例：\n1) 题材定位：男频穿越修仙 + AI外挂 + 都市智斗逆袭\n2) 核心卖点：绝症少年带毒舌AI用算力玩梗逆袭\n3) 世界观：灵气可数据化，推演要扣生机值"} />
+        <div className="row" style={{ marginTop: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--dim)' }}>分集数量</span>
+          <input type="number" min="1" max="60" value={nEp} onChange={e => setNEp(e.target.value)} style={{ width: 78 }} />
+          <span style={{ fontSize: 12, color: 'var(--dim)' }}>{idea.trim() ? `${idea.length.toLocaleString()} 字` : '未填写'}</span>
+          <button style={{ marginLeft: 'auto' }} disabled={busy || !idea.trim()} onClick={genOutline}>生成分集大纲</button>
+        </div>
+        {txtMsg && <div className="field-hint" style={{ marginTop: 8 }}>{txtMsg}</div>}
+        {idea.length > 4000 && (
+          <div className="field-hint" style={{ marginTop: 4 }}>提示：文本较长，本地模型上下文有限，超长部分可能被截断，建议 3000–4000 字内。</div>
+        )}
       </div>
+
+      {ideaFull && (
+        <div className="modal-mask" onClick={e => { if (e.target === e.currentTarget) setIdeaFull(false) }}>
+          <div className="modal-box">
+            <div className="idea-bar">
+              <div style={{ minWidth: 0 }}>
+                <div className="field-label" style={{ fontSize: 16 }}>创意 / 大纲 · 全窗口编辑</div>
+                <div className="field-hint">字数不限，可直接粘贴整篇设定；Esc 或点空白处关闭，内容实时同步到对话框。</div>
+              </div>
+              <div className="idea-tools">
+                <label className="chip" title="读取本地 txt / md 全文填入（自动识别 UTF-8 与 GBK）">
+                  📄 上传文档
+                  <input type="file" accept=".txt,.md,.markdown,.log,text/plain" style={{ display: 'none' }} onChange={loadIdeaTxt} />
+                </label>
+                <button className="ghost" style={{ padding: '5px 12px', fontSize: 12 }} onClick={() => setIdeaFull(false)}>关闭 ✕</button>
+              </div>
+            </div>
+            <textarea autoFocus className="idea-box-full" value={idea} onChange={e => setIdea(e.target.value)}
+              placeholder="把整篇设定、人物小传、分集大纲直接贴进来…" />
+            <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
+              <span className="field-hint" style={{ margin: 0 }}>{idea.length.toLocaleString()} 字</span>
+              <button style={{ marginLeft: 'auto' }} disabled={busy || !idea.trim()} onClick={() => { setIdeaFull(false); genOutline() }}>生成分集大纲</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div style={{ width: 320, flexShrink: 0 }}>
