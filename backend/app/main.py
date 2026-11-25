@@ -24,7 +24,10 @@ with SessionLocal() as _s:
         seed_templates(_s, project_id=_p.id)
 
 # 僵尸任务收尸：进程重启后遗留的 running/pending 任务不可能再被执行（asyncio 任务
-# 随旧进程消失），启动时统一标 failed，避免接口永远等一个卡死的任务。
+# 随旧进程消失）。这里不再一刀切标 failed——长任务（H3 单条 15-30 分钟）每次重启都
+# 变成一条红色失败记录，队列里"失败进程一直出现"，但其中大部分只是被重启打断、
+# 重跑一次就好的任务。改标 interrupted（前端灰色「已中断」+ 继续按钮），
+# 用「继续」按原 params 重新派发；真正执行报错的任务仍走 failed。
 from sqlalchemy import select as _select  # noqa: E402
 from .db import TaskRecord  # noqa: E402
 
@@ -32,8 +35,8 @@ with SessionLocal() as _s:
     _stale = _s.scalars(_select(TaskRecord).where(
         TaskRecord.status.in_(["running", "pending"]))).all()
     for _t in _stale:
-        _t.status = "failed"
-        _t.error = "进程重启中断（启动收尸）"
+        _t.status = "interrupted"
+        _t.error = "服务重启导致中断，点「继续」按原参数重跑"
     _s.commit()
 
 app = FastAPI(title="Drama Studio", version="0.2.0")

@@ -104,6 +104,7 @@ button.small { padding: 5px 10px; font-size: 12px; }
 .badge.running { background: #2a3b55; color: var(--accent2); }
 .badge.done { background: #1e3a2f; color: var(--ok); }
 .badge.failed { background: #3a2222; color: var(--err); }
+.badge.interrupted { background: #38321e; color: #d8a94a; }
 .badge.pending { background: #2a2d33; color: var(--dim); }
 .progress-track { width: 90px; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
 .progress-fill { height: 100%; background: var(--accent2); transition: width .4s; }

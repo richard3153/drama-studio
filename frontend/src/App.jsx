@@ -1647,6 +1647,7 @@ function AssetsPage({ project, refreshTasks, setStage }) {
 }
 
 /* ---------- 底部任务栏 ---------- */
+const STATUS_LABEL = { running: '推理中', pending: '排队中', paused: '已暂停', done: '完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 function TaskBar({ tasks, vram, refreshTasks }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(null)
@@ -1664,9 +1665,16 @@ function TaskBar({ tasks, vram, refreshTasks }) {
     if (t.status === 'running') return [['取消', 'cancel']]
     if (t.status === 'pending') return [['暂停', 'pause'], ['取消', 'cancel']]
     if (t.status === 'paused') return [['继续', 'resume'], ['取消', 'cancel']]
+    if (t.status === 'interrupted') return [['继续', 'retry']]
     if (t.status === 'failed') return [['重试', 'retry']]
     return []
   }
+  // 详情面板只留「进行中的」+ 最近 5 条终态：此前塞最近 15 条，
+  // 服务重启/服务中断留下的失败行会一直堆在列表里看不到当前进度。
+  const detail = [
+    ...tasks.filter(t => ['running', 'pending', 'paused'].includes(t.status)),
+    ...tasks.filter(t => !['running', 'pending', 'paused'].includes(t.status)).slice(0, 5),
+  ]
   return (
     <div className="taskbar">
       <span className="vram">GPU 空闲 {vram?.vram_free_gb ?? '—'} / {vram?.vram_total_gb ?? '—'} GB</span>
@@ -1684,11 +1692,11 @@ function TaskBar({ tasks, vram, refreshTasks }) {
       </button>
       {open && (
         <div className="task-detail-panel">
-          <div className="task-detail-head">任务详情（最近 {Math.min(tasks.length, 15)} 条 · 排队中可暂停，推理中只能取消）</div>
-          {tasks.slice(0, 15).map(t => (
+          <div className="task-detail-head">任务详情（进行中 {active.length} 条 + 最近 5 条终态 · 排队中可暂停，推理中只能取消）</div>
+          {detail.map(t => (
             <div key={t.id} className="task-detail-row">
               <span className="task-id">#{t.id}</span>
-              <span className={`badge ${t.status}`}>{t.status}</span>
+              <span className={`badge ${t.status}`}>{STATUS_LABEL[t.status] || t.status}</span>
               <span className="task-desc" title={t.error || ''}>{t.desc || t.type}</span>
               <div className="progress-track" style={{ flex: 1, minWidth: 80 }}>
                 <div className="progress-fill" style={{ width: `${Math.round((t.progress || 0) * 100)}%` }} />
@@ -1726,6 +1734,9 @@ export default function App() {
 
   useEffect(() => {
     const es = new EventSource(`${API}/tasks/stream`)
+    // SSE 断线重连（后端重启/机器休眠）后不会回放历史事件，页面会停在断线前的旧快照
+    // （典型症状：任务库里已 done，任务栏还挂着 "running 100%"）。重连成功即全量拉一次。
+    es.onopen = () => api('/tasks?limit=12').then(setTasks).catch(() => {})
     es.onmessage = ev => {
       const { event, task } = JSON.parse(ev.data)
       if (event === 'task_update') {
@@ -1738,6 +1749,12 @@ export default function App() {
       }
     }
     return () => es.close()
+  }, [])
+  // 兜底对账：SSE 断线期间（EventSource 静默重连、后端卡死等）每 15 秒拉一次任务列表，
+  // 保证任务栏状态与库内一致，不再出现"已完成的任务一直显示正在跑"。
+  useEffect(() => {
+    const h = setInterval(() => { api('/tasks?limit=12').then(setTasks).catch(() => {}) }, 15000)
+    return () => clearInterval(h)
   }, [])
   useEffect(() => {
     const tick = () => api('/system').then(s => setVram(s.comfyui)).catch(() => {})

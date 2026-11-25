@@ -409,7 +409,7 @@ def list_tasks(limit: int = 50):
 
 @router.post("/tasks/{tid}/retry")
 async def retry_task(tid: int):
-    """重试失败任务（显存/服务中断等可恢复失败）。"""
+    """重试失败/中断任务（服务重启 interrupted、显存/服务中断 failed 等都按原参数重跑）。"""
     with SessionLocal() as db:
         t = db.get(TaskRecord, tid)
         if not t:
@@ -471,7 +471,7 @@ def cancel_task(tid: int):
         t = db.get(TaskRecord, tid)
         if not t:
             raise HTTPException(404, "任务不存在")
-        if t.status in ("done", "failed", "cancelled"):
+        if t.status in ("done", "failed", "cancelled", "interrupted"):
             raise HTTPException(400, f"任务已结束（{t.status}），无需取消")
         if t.status in ("pending", "paused"):
             t.status = "cancelled"
