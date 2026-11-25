@@ -1159,56 +1159,82 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
           <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{presets[currentPreset]?.style_lock}</span>
         </div>
         <div className="page-sub" style={{ fontSize: 12, marginTop: 4 }}>视频动态策略：{presets[currentPreset]?.motion_hint}</div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <label style={{ fontSize: 13 }}>题材词库（红果爆款反向解析，注入镜头 mood+名场面钩子）</label>
-          <select value={currentGenre} onChange={e => saveGenre(e.target.value)} style={{ flex: 1 }}>
-            <option value="">不挂题材词库（纯风格）</option>
-            {Object.entries(genres).map(([k, v]) => (
-              <option key={k} value={k}>{v.label}</option>
-            ))}
-          </select>
-          <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{genres[currentGenre]?.sample_setting || ''}</span>
-        </div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}
-            title="开启后：批量视频/一键全流程会在场景切换边界自动生成双帧过渡镜（上镜末帧→下镜首帧 i2v，1-2s），成片拼接时自动插入">
-            <input type="checkbox" checked={bridge} onChange={e => toggleBridge(e.target.checked)} />
-            转场镜（场景切换生成过渡镜，每边界约 2 分钟）
-          </label>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginLeft: 18 }}>
-            成片兜底转场（无转场镜的场景切换边界）：
+        {/* 生成设置：两列网格，每项「标题 → 控件 → 说明」，不再把 7 个开关挤成一行 */}
+        <div className="settings-grid">
+          <div className="field full">
+            <div className="field-label">题材词库</div>
+            <select value={currentGenre} onChange={e => saveGenre(e.target.value)}>
+              <option value="">不挂题材词库（纯风格）</option>
+              {Object.entries(genres).map(([k, v]) => (
+                <option key={k} value={k}>{v.label}</option>
+              ))}
+            </select>
+            <div className="field-hint">
+              红果爆款反向解析，注入镜头 mood + 名场面钩子
+              {genres[currentGenre]?.sample_setting ? ` · ${genres[currentGenre].sample_setting}` : ''}
+            </div>
+          </div>
+
+          <div className="field">
+            <div className="field-label">全局画幅</div>
+            <select value={aspect} onChange={e => setAspectRatio(e.target.value)}>
+              {ASPECTS.map(a => <option key={a.v} value={a.v}>{a.label}</option>)}
+            </select>
+            <div className="field-hint">场景 / 道具 / 分镜首尾帧 / 宫格统一跟随；角色定妆照固定竖版。只对之后的新生成生效。</div>
+          </div>
+
+          <div className="field">
+            <div className="field-label">成片兜底转场</div>
             <select value={fx} onChange={e => saveFx(e.target.value)}>
               <option value="">不加（硬切）</option>
               <option value="fadeblack">黑场过渡</option>
               <option value="fadewhite">白闪过渡</option>
             </select>
-          </label>
-        </div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
-            <input type="checkbox" checked={lifelike} onChange={e => toggleLifelike(e.target.checked)} />
-            活人感机制（生活化瑕疵 + 真实光影 + 非模板姿态 + 规避过度渲染）
-          </label>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginLeft: 18 }}>
-            <input type="checkbox" checked={lifelikeFull} onChange={e => toggleLifelikeFull(e.target.checked)} />
-            全量瑕疵（连三视图/角色板也加五官不完美；只建议分镜用，会牺牲跨集一致性）
-          </label>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginLeft: 18 }}>
-            <input type="checkbox" checked={autoPolish} onChange={e => toggleAutoPolish(e.target.checked)} />
-            初图 10% 微调（分级：场景/道具/单人立绘 ON；三视图/角色板 OFF，可手动单张微调）
-          </label>
-          {(presets[currentPreset]?.category || '').includes('动漫') && (
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginLeft: 18 }} title="九宫格候选构图→裁单格作首帧；写实风格易糊，建议关闭">
-              <input type="checkbox" checked={gridBoard} onChange={e => toggleGrid(e.target.checked)} />
-              宫格故事板（仅动漫风格建议开）
+            <div className="field-hint">只用于没有转场镜的场景切换边界。</div>
+          </div>
+
+          <div className="field">
+            <label className={`switch-row ${bridge ? 'on' : 'off'}`}
+              title="开启后：批量视频/一键全流程会在场景切换边界自动生成双帧过渡镜（上镜末帧→下镜首帧 i2v，1-2s），成片拼接时自动插入">
+              <input type="checkbox" checked={bridge} onChange={e => toggleBridge(e.target.checked)} />
+              <span>生成转场镜</span>
             </label>
+            <div className="field-hint">场景切换处自动出 1–2s 双帧过渡镜（上镜末帧 → 下镜首帧），每条约 2 分钟，拼接时自动插入。</div>
+          </div>
+
+          <div className="field">
+            <label className="switch-row" title="生活化瑕疵 + 真实光影 + 非模板姿态 + 规避过度渲染">
+              <input type="checkbox" checked={lifelike} onChange={e => toggleLifelike(e.target.checked)} />
+              <span>活人感机制</span>
+            </label>
+            <div className="field-hint">生活化瑕疵 + 真实光影 + 非模板姿态 + 规避过度渲染。</div>
+          </div>
+
+          <div className="field">
+            <label className="switch-row" title="连三视图/角色板也加五官不完美；只建议分镜用，会牺牲跨集一致性">
+              <input type="checkbox" checked={lifelikeFull} onChange={e => toggleLifelikeFull(e.target.checked)} />
+              <span>全量瑕疵</span>
+            </label>
+            <div className="field-hint">连三视图 / 角色板也加五官不完美。只建议分镜用，会牺牲跨集一致性。</div>
+          </div>
+
+          <div className="field">
+            <label className="switch-row" title="分级：场景/道具/单人立绘 ON；三视图/角色板 OFF，可手动单张微调">
+              <input type="checkbox" checked={autoPolish} onChange={e => toggleAutoPolish(e.target.checked)} />
+              <span>初图 10% 微调</span>
+            </label>
+            <div className="field-hint">分级执行：场景 / 道具 / 单人立绘 ON，三视图 / 角色板 OFF；可手动单张微调。</div>
+          </div>
+
+          {(presets[currentPreset]?.category || '').includes('动漫') && (
+            <div className="field">
+              <label className="switch-row" title="九宫格候选构图→裁单格作首帧；写实风格易糊，建议关闭">
+                <input type="checkbox" checked={gridBoard} onChange={e => toggleGrid(e.target.checked)} />
+                <span>宫格故事板</span>
+              </label>
+              <div className="field-hint">九宫格候选构图 → 裁单格作首帧。仅动漫风格建议开，写实易糊。</div>
+            </div>
           )}
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginLeft: 18 }} title="全局画幅：场景/道具/分镜首尾帧/宫格统一跟随；角色定妆照固定竖版不受影响。改动只对之后的新生成生效">
-            全局画幅
-            <select value={aspect} onChange={e => setAspectRatio(e.target.checked ? aspect : e.target.value)} style={{ fontSize: 13 }}>
-              {ASPECTS.map(a => <option key={a.v} value={a.v}>{a.label}</option>)}
-            </select>
-          </label>
         </div>
       </div>
 
