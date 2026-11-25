@@ -1648,6 +1648,20 @@ function AssetsPage({ project, refreshTasks, setStage }) {
 
 /* ---------- 底部任务栏 ---------- */
 const STATUS_LABEL = { running: '推理中', pending: '排队中', paused: '已暂停', done: '完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
+// 技术异常 → 一句人话：面板上的 ✗ 行不再甩 httpx traceback 首行
+const ERR_HINTS = [
+  ['All connection attempts failed', 'ComfyUI 不可达（127.0.0.1:8188 无响应）'],
+  ['轮询偶发挂起', 'ComfyUI 轮询挂起（服务端已算完）'],
+  ['进程重启中断', '服务重启打断'],
+  ['机器离线', '机器离线打断'],
+  ['环境离线', '环境离线打断'],
+]
+function errLine(t) {
+  if (t.status === 'interrupted') return '已中断，点「继续」按原参数重跑'
+  const all = t.error || ''
+  const hit = ERR_HINTS.find(([k]) => all.includes(k))
+  return hit ? hit[1] : all.split('\n')[0]
+}
 function TaskBar({ tasks, vram, refreshTasks }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(null)
@@ -1703,7 +1717,7 @@ function TaskBar({ tasks, vram, refreshTasks }) {
               </div>
               <span className="task-pct">{Math.round((t.progress || 0) * 100)}%</span>
               <span className="task-stage" title={t.error || t.stage}>
-                {t.error ? '✗ ' + t.error.split('\n')[0] : (t.stage || '')}
+                {t.error ? '✗ ' + errLine(t) : (t.stage || '')}
               </span>
               {ctl(t).map(([label, action]) => (
                 <button key={action} className="ghost" style={{ fontSize: 12, padding: '2px 10px', borderRadius: 8, cursor: 'pointer' }}
