@@ -10,7 +10,7 @@ from ..db import AssetImage, Project
 from ..scheduler.vram import pick_model, registry
 from ..style_presets import (ANTI_OVER_RENDER_NEG, CHAR_SHEET_NEG, CHAR_VIEW_NEG,
                              QUALITY_SUFFIX, QUALITY_SUFFIX_ENV, character_view_prompt,
-                             style_family)
+                             anti_over_render_neg, quality_suffix, style_family)
 
 # 角色/场景/道具的“中性”正向尾巴（不再堆砌 masterpiece/8k，规避过度渲染）
 POSITIVE_SUFFIX = {
@@ -24,14 +24,25 @@ NEGATIVE = (
     "signature, jpeg artifacts, worst quality, blurry, deformed, " + ANTI_OVER_RENDER_NEG
 )
 
+
+def _negative_for(role: str, preset_key: str) -> str:
+    """按风格族取负向：3D/动漫族不能带 "cgi plastic look / 3d render look"（会把 3D 拽成写实）。"""
+    base = ("nsfw, lowres, bad anatomy, bad hands, text, watermark, "
+            "signature, jpeg artifacts, worst quality, blurry, deformed, "
+            + anti_over_render_neg(preset_key))
+    if role in ("scene", "prop"):
+        base += NEGATIVE_ENV_SUFFIX
+    return base
+
 # 场景/道具专用负向：人形排除必须走负向（SDXL 对正向 "no people" 几乎无响应，
 # 反而会因 people 这个词把人拽进画面）。这一层是 #84「废弃矿洞出少女」的根治手段。
-NEGATIVE_ENV = NEGATIVE + (
+NEGATIVE_ENV_SUFFIX = (
     ", people, person, persons, human, human figure, man, woman, child, girl, boy, "
     "crowd, group of people, character, characters, anime girl, anime boy, "
     "face, facial closeup, portrait, headshot, silhouette, back view, "
     "hands, arms, legs, body, standing figure, sitting figure, cosplay"
 )
+NEGATIVE_ENV = NEGATIVE + NEGATIVE_ENV_SUFFIX
 
 KIND_BY_ROLE = {"portrait": "base_look", "scene": "scene", "prop": "prop"}
 
@@ -316,12 +327,13 @@ async def generate_asset(db, task, params: dict) -> dict:
     wf = comfy.load_template(template_name)
     suffix = POSITIVE_SUFFIX[role]
     # 场景/道具：负向提示换 NEGATIVE_ENV（人形硬排除），画质尾词换无皮肤/发丝版
-    negative = NEGATIVE_ENV if role in ("scene", "prop") else NEGATIVE
-    quality = QUALITY_SUFFIX_ENV if role in ("scene", "prop") else QUALITY_SUFFIX
+    negative = _negative_for(role, params.get("style_preset") or "")
+    quality = quality_suffix(params.get("style_preset") or "",
+                             human=(role not in ("scene", "prop")))
     if role == "portrait":
         # 【硬性要求】sheet 三视图专属词块：信息栏需画姓名/身高小字，全局 NEG 的裸
         # "text" 会压制它 → 剔除裸 text（watermark/乱码拦截仍在 NEG 与 CHAR_SHEET_NEG 里）。
-        neg_parts = [p.strip() for p in NEGATIVE.split(",") if p.strip() and p.strip() != "text"]
+        neg_parts = [p.strip() for p in negative.split(",") if p.strip() and p.strip() != "text"]
         negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
     from .model_vocab import image_dialect   # 模型方言词库（family 已知 → 直接取该族母语词）
     prompt = ", ".join(x for x in (params['base_prompt'], suffix, quality,

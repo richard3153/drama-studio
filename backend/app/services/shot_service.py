@@ -21,7 +21,7 @@ from ..config import BASE_DIR
 from ..db import AssetImage, Project, SessionLocal, Shot, TaskRecord
 from ..scheduler.queue import update_progress
 from ..scheduler.vram import pick_model, registry
-from ..style_presets import ANTI_OVER_RENDER_NEG, style_family
+from ..style_presets import ANTI_OVER_RENDER_NEG, anti_over_render_neg, style_family
 from .dialects import clamp_duration, negative_for as dialect_negative, wrap_video_prompt
 from .prompt_templates import neg_for
 
@@ -53,6 +53,14 @@ IPA_WEIGHT = 0.75                    # 2026-11-22 调优：0.7 身份偏弱（�
 NEGATIVE = ("nsfw, lowres, bad anatomy, bad hands, text, watermark, "
             "signature, jpeg artifacts, worst quality, blurry, deformed, "
             + ANTI_OVER_RENDER_NEG)
+
+
+def negative_for(preset_key: str, genre: str = "") -> str:
+    """按风格族取负向（2026-11-26）：3D/动漫族不能带 "cgi plastic look / 3d render look"，
+    否则 3D 国风被硬拽成写实电影风。"""
+    return ("nsfw, lowres, bad anatomy, bad hands, text, watermark, "
+            "signature, jpeg artifacts, worst quality, blurry, deformed, "
+            + anti_over_render_neg(preset_key))
 
 # 基础设施类错误（ComfyUI 进程不在 / 正在重启）：回落文生图同样是向同一个 8188 提交，
 # 必然再失败一次、白等一轮 timeout，所以这类错误直接上抛让任务落 interrupted。
@@ -246,7 +254,7 @@ async def _ipa_gen(comfy, model, prompt: str, negative: str, ref_path: str,
                    w: int, h: int, seed: int, steps: int, cfg: float,
                    weight: float, save_root: Path, prefix: str, timeout: float = 900,
                    multi: bool = False, real: bool = False, ref_path2: str | None = None,
-                   weight2: float | None = None):
+                   weight2: float | None = None, people: bool = False):
     """SDXL IPAdapter 文生图：参考图只锁身份（脸/发型/服装基调），构图由提示词决定。
 
     实测坑（都踩过）：
@@ -259,6 +267,10 @@ async def _ipa_gen(comfy, model, prompt: str, negative: str, ref_path: str,
         wf = comfy.load_template(IPA_WF_DUAL)
         ref_name = await comfy.upload_image(ref_path)
         ref2_name = await comfy.upload_image(ref_path2)
+        # 2026-11-26 现场：角色 + 场景锚 的双通道（people=False）会让双通道都把"人"学进来，
+        # 竖版 480x832 上直接复制成两张脸（s1 头顶多一个同样的头）。双人镜（people=True）才允许两张脸。
+        if not people:
+            negative = (negative or "") + ", multiple people, duplicate character, cloned face, twin"
         overrides = {
             "positive_text": prompt,
             "negative_text": negative,
@@ -285,11 +297,17 @@ async def _ipa_gen(comfy, model, prompt: str, negative: str, ref_path: str,
         negative = (negative or "") + ", multiple people, duplicate character, cloned face, twin"
     negative = (negative or "") + ", character sheet, multiple views, sketch, rough lines"
     # 写实底模脸型变异治理（用户实测：RealVisXL 上脸型漂移）：负面里锁脸型一致性
+    # 2026-11-26 修复：3D 国风族不能吃 "plastic skin / waxy skin / over-smoothed skin" 这套写实负面
+    # —— 3D 渲染要的就是光滑渲染皮肤，压它等于把角色板风格打回写实（首镜出"中年学者"的原因之一）。
     if model.get("family") == "sdxl" and real:
-        negative += (", different face, inconsistent face, changing facial features, "
-                     "distorted face, asymmetrical face, cross-eyed, doll face, "
-                     "plastic skin, airbrushed skin, over-smoothed skin, beauty filter, "
-                     "uncanny valley, waxy skin")
+        face_neg = (", different face, inconsistent face, changing facial features, "
+                    "distorted face, asymmetrical face, cross-eyed")
+        if real == "photo":
+            face_neg += (", doll face, plastic skin, airbrushed skin, over-smoothed skin, "
+                         "beauty filter, uncanny valley, waxy skin")
+        else:  # "3d"：只锁脸型一致 + 反向压写实，不压光滑质感
+            face_neg += ", flat 2D shading, photographic realism, live-action photo"
+        negative += face_neg
     overrides = {
         "positive_text": prompt,
         "negative_text": negative,
@@ -464,7 +482,14 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     # 此前只传 style_family 不点名底模：3d 在 SDXL 池内没有任何模型 styles 命中，
     # 按 tier 平局落到字典首个 = AnythingXL 动漫底模 → 3D 国风项目首帧出成 2D 动漫，
     # 视频 I2V 继承首帧 → 视频角色与角色板「换人换画风」（#91 治理）。
-    frame_key = "img_realvisxl" if fam in ("3d", "photo") else "img_anythingxl"
+    # 2026-11-26 修复（角色不一致的真凶）：分族固定底模，一集之内不再换画风。
+    #   photo / 3d → RealVisXL（真 SDXL 写实向）：实测 s5 用 "3D chinese animation style"
+    #    提示词 + RealVisXL + IPA 出的就是 3D 国风渲染脸，与角色板一致（s5 是正样本）。
+    #    s1 之前出"写实中年学者"不是底模错，而是 prompt 里混进了写实摄影词（film grain /
+    #    visible pores / unretouched）+ 没锁住脸 → 已在 style_presets 按族分支 + shot_service 修掉。
+    #   anime / paint → Animagine XL 3.1（真 SDXL 动漫底模，2026-11-26 由 hf-mirror 接入；
+    #    AnythingXL_v50 实测只有 1.99GB / 单 SD1.5 CLIP，实为 SD1.5，不再当 SDXL 用）。
+    frame_key = "img_animaginexl" if fam in ("anime", "paint") else "img_realvisxl"
     model_key, model = await pick_model("scene", "low", model_key=frame_key,
                                         style_family=fam,
                                         allowed_families=frozenset(("sdxl",)))
@@ -505,7 +530,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     comfy = ComfyUIAdapter()
     w, h = _res(project)
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
-    neg = _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre)
+    neg = _shot_neg("shot_first_frame", preset, negative_for(preset), genre=genre)
     aneg = _action_tokens(shot, "negative")
     if aneg:
         neg += f", {aneg}"
@@ -528,7 +553,10 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     ipa_weight = float(params.get("ipa_weight") or IPA_WEIGHT)
     scene_ref = None if params.get("use_scene_ref") is False else _scene_anchor(db, shot)
     scene_ipa_w = float(params.get("scene_ipa_weight") or 0.4)
-    real = fam in ("photo", "3d")   # 写实/3D 渲染底模需要额外锁脸负面（脸型变异治理）
+    # 2026-11-26 实测：3D 族把脸权重抬到 0.85 后，IPA 直接连参考图的纯白底都抄了回来
+    # （角色资产是白底定妆照）→ 画面背景全白、构图崩。锁脸强度保持 0.75/0.4 不变。
+    # real：photo 走全量写实锁脸负面；3d 走"只锁脸型 + 反写实"版（见 _ipa_gen）
+    real = "photo" if fam == "photo" else ("3d" if fam == "3d" else "")
     # 场景锁定（方案五）只作用于【无角色入镜】的镜头：锚图是无人场景图，
     # 对有人镜做锚图 img2img 等于从提示词凭空重画人物，IPA 锁脸被完全跳过
     # → 后期分镜人物变形/换人（#74 修复：有人镜一律先走 IPA 锁脸通道，
@@ -550,7 +578,8 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
             out = await _ipa_gen(comfy, model, prompt, neg, ref, w, h, seed, 26, 6.0,
                                  ipa_weight, save_root, prefix, multi=use_dual, real=real,
                                  ref_path2=(refs[1] if multi else scene_ref),
-                                 weight2=(ipa_weight if multi else scene_ipa_w))
+                                 weight2=(ipa_weight if multi else scene_ipa_w),
+                                 people=multi)
             if out:
                 return out[0]
         except Exception as e:  # 锁脸失败不阻断出图，回落文生图
@@ -829,7 +858,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
             # 宫格也用 IPAdapter 锁脸：9 格构图不同、但必须是同一张脸
             try:
                 out = await _ipa_gen(comfy, model, prompt_i,
-                                     _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre), ref, w, h,
+                                    _shot_neg("shot_first_frame", preset, negative_for(preset), genre=genre), ref, w, h,
                                      base_seed + i, 22, 6.0,
                                      float(params.get("ipa_weight", 0.65)), save_root,
                                      prefix, timeout=600)
@@ -840,7 +869,7 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
             continue
         overrides = {
             "positive_text": prompt_i,
-            "negative_text": _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre),
+            "negative_text": _shot_neg("shot_first_frame", preset, negative_for(preset), genre=genre),
             "EmptyLatentImage.width": w,
             "EmptyLatentImage.height": h,
             "KSampler.seed": base_seed + i,
@@ -966,7 +995,7 @@ async def chain_shot_frame(db, task, params: dict) -> dict:
     # img2img 本身锁住构图/光影/人物位置，提示词只引导本镜的动作与景别变化
     prompt = (f"{dst.image_prompt}, continuous scene from previous shot, "
               f"seamless match cut, consistent lighting, location and character appearance")
-    neg = _shot_neg("shot_first_frame", preset, NEGATIVE, genre=genre)
+    neg = _shot_neg("shot_first_frame", preset, negative_for(preset), genre=genre)
     update_progress(db, task, 0.4, f"末帧接力重绘（denoise {denoise}，承接 #{src.idx} → #{dst.idx}）")
     out = await _img2img(comfy, model, prompt, neg, src_frame, w, h, denoise,
                          26, 5.0, seed, save_root,

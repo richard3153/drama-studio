@@ -387,6 +387,14 @@ button.small.accent {
   padding-right: 8px; margin-right: 1px; border-right: 1px solid var(--border);
 }
 .batch-div { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+/* 视频档下拉（分镜页批量条）：与 ghost 小按钮同高，暗色专业工具风 */
+.batch-select {
+  background: var(--panel, #14161a); color: var(--text, #e6e8ee);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px; font-size: 11.5px; max-width: 300px; cursor: pointer;
+  outline: none; transition: border-color .15s;
+}
+.batch-select:hover, .batch-select:focus { border-color: var(--accent, #e0a53a); }
 .batch-hint { color: var(--dim); font-size: 11px; margin-top: 8px; line-height: 1.5; }
 
 .shot-timeline {

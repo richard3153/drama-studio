@@ -30,6 +30,24 @@ router = APIRouter(prefix="/api")
 
 # ---------- 系统状态 ----------
 
+@router.get("/models")
+async def models_list():
+    """轻量模型档列表（分镜页「视频档」下拉用）：只返回 role 含 video 的档，排除口型专用档。"""
+    reg = registry()
+    ms = reg.get("models", {})
+    default_video = ((reg.get("defaults", {}) or {}).get("default_models", {}) or {}).get("video")
+    out = []
+    for key, m in ms.items():
+        roles = m.get("role") or []
+        if isinstance(roles, str):
+            roles = [roles]
+        if "video" not in roles or "talk" in key:
+            continue
+        out.append({"key": key, "label": m.get("label") or key,
+                    "family": m.get("family"), "vram_gb": m.get("vram_gb"),
+                    "tier": m.get("tier"), "default": key == default_video})
+    return {"models": out, "default": default_video}
+
 @router.get("/system")
 async def system():
     reg = registry()

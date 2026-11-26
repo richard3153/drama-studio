@@ -61,8 +61,11 @@ STYLE_PRESETS = {
     },
     "guofeng_3d": {
         "category": "动漫卡通", "label": "3D国风动画",
-        "style_lock": ("3D chinese animation style, oriental stylized characters, smooth glossy skin, "
-                       "flowing ornate hanfu cloth simulation, glowing vfx, cinematic bloom"),
+        # 2026-11-26 修复：原写死 "flowing ornate hanfu" 会顶掉角色卡里的服装槽位
+        # （林越设定是"破旧短上衣+松裤+草鞋"的落魄修士，出图却成白衣仙侠），
+        # 服装交给角色槽位决定，风格锁只保留"有布料物理"这一层。
+        "style_lock": ("3D chinese animation style, oriental stylized characters, smooth stylized skin, "
+                       "flowing cloth simulation, glowing vfx, cinematic bloom"),
         "motion_hint": "衣袂飘飞、法术光效、发丝物理飘动",
     },
     # ---------- 国风 / 东方 ----------
@@ -383,6 +386,81 @@ def style_family(preset_key: str) -> str:
     return STYLE_FAMILY.get(preset_key, "anime")
 
 
+# ---------- 质感尾巴 / 去过度渲染词按族分支（2026-11-26 修复角色不一致） ----------
+# 现场事故：项目风格锁是 guofeng_3d（3D 国风），但拼出的 prompt 同时含
+#   ① 正向无条件注入的 "subtle film grain / realistic fabric weight / visible pores /
+#      unretouched photography feel"（写实摄影词）
+#   ② 负向无条件注入的 "cgi plastic look / 3d render look / plastic skin / waxy skin"
+#   → 两套词把 3D 国风硬拽成写实电影风，s1 出"写实中年学者"、s2 出"不属于角色板的仙侠脸"。
+# 修法：三条尾巴全部按风格族取值，3D/动漫/绘画族禁入写实摄影词，负向也禁"反 CGI"词，
+# 反而把 "photographic realism / live-action photo" 加进它们的负向。
+_QUALITY_BY_FAM = {
+    "photo": QUALITY_SUFFIX,
+    "3d": ("clean CG surface with subtle micro-imperfections, physically based shading, "
+           "subsurface scattering on skin, soft global illumination, "
+           "accurate material response, crisp silhouette, high detail"),
+    "anime": ("clean line art, cel shading with soft gradation, consistent flat colors, "
+              "crisp silhouette, high detail"),
+    "paint": ("layered brushwork, pigment variation, canvas texture, painterly detail"),
+}
+
+# 无人画面版（场景/道具/空镜）：去掉一切"这里有人"的皮肤/发丝诱导词
+_QUALITY_ENV_BY_FAM = {
+    "photo": QUALITY_SUFFIX_ENV,
+    "3d": ("clean CG surface, physically based shading, soft global illumination, "
+           "accurate material response, crisp detail"),
+    "anime": "clean line art, consistent flat colors, crisp detail",
+    "paint": "layered brushwork, canvas texture, painterly detail",
+}
+
+_ANTI_POS_BY_FAM = {
+    "photo": ANTI_OVER_RENDER_POS,
+    "3d": ("consistent global illumination, believable specular response, "
+           "restrained highlights, matte-to-glossy material contrast"),
+    "anime": "consistent shading direction, restrained highlights, clean color separation",
+    "paint": "consistent light direction, restrained highlights, painterly value structure",
+}
+
+_ANTI_NEG_BY_FAM = {
+    "photo": ANTI_OVER_RENDER_NEG,
+    "3d": ("over-sharpened, hdr halo, oversaturated, airbrushed, beauty filter, "
+           "instagram filter, photographic realism, live-action photo, film grain noise, "
+           "deformed face, asymmetric eyes, extra limbs, bad hands, blurry, low detail"),
+    "anime": ("photographic realism, live-action photo, film grain noise, muddy colors, "
+              "sketchy messy lines, deformed face, extra limbs, bad hands, blurry, low detail"),
+    "paint": ("photographic realism, live-action photo, muddy colors, deformed face, "
+              "extra limbs, bad hands, blurry, low detail"),
+}
+
+
+def quality_suffix(preset_key: str, human: bool = True) -> str:
+    """按风格族取质感尾巴。human=False 用无人版（场景/道具/空镜）。"""
+    fam = style_family(preset_key)
+    return (_QUALITY_BY_FAM if human else _QUALITY_ENV_BY_FAM)[fam]
+
+
+def anti_over_render_neg(preset_key: str) -> str:
+    """按风格族取"去过度渲染"负向词。3D/动漫族不得含 cgi/3d render 类词。"""
+    return _ANTI_NEG_BY_FAM[style_family(preset_key)]
+
+
+# ---------- 单时刻化（2026-11-26 修复首帧上下分格/双人复制） ----------
+# 现场：s1 的 subject_action 是 "clutches it tightly to his chest before dropping it
+# when he falls"——一句话里塞了"抓在胸口"和"跌倒掉落"两个时刻，SDXL 直接把画面画成
+# 上下两格（两组同样的脸）。首帧只能是一个瞬间，动作演变交给 video_prompt。
+_DUAL_MOMENT_RE = re.compile(
+    r"\s*(?:,\s*)?(?:before|after|then|and then|until|later|afterwards)\s+", re.I)
+
+
+def single_moment(text: str) -> str:
+    """把"前一刻…然后…"的双动作描述截成单一瞬间（取第一段）。"""
+    t = _clean(text or "")
+    if not t:
+        return t
+    head = _DUAL_MOMENT_RE.split(t, maxsplit=1)[0].strip(" ,")
+    return head or t
+
+
 # ---------- 风格锁按资产类型适配 ----------
 # 实测坑：photoreal 的 style_lock 是人像摄影模板（85mm 人像、皮肤毛孔、发丝、
 # 柔光箱打脸光），直接套在道具上时"勺子"这种弱主体词被人像词堆淹没，
@@ -492,7 +570,7 @@ def lifelike_tokens(preset_key: str, *, human: bool = True, pose: bool = False,
     parts.append(PHYSICAL_LIGHT[fam])
     if human and pose and not consistent:
         parts.append(NATURAL_POSE)
-    parts.append(ANTI_OVER_RENDER_POS)
+    parts.append(_ANTI_POS_BY_FAM[fam])
     return ", ".join(parts)
 
 
@@ -515,7 +593,7 @@ def character_view_prompt(slots: dict, preset_key: str, view: str,
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=True, pose=False,
                                      consistent=not full_identity))
-    parts.append(QUALITY_SUFFIX)
+    parts.append(quality_suffix(preset_key, human=True))
     return ", ".join(p for p in parts if p)
 
 
@@ -544,7 +622,7 @@ def assemble_end_frame_prompt(shot_slots: dict, preset_key: str, scene_concept: 
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=bool(char_looks),
                                      consistent=not full_identity))
-    parts.append(QUALITY_SUFFIX if char_looks else QUALITY_SUFFIX_ENV)
+    parts.append(quality_suffix(preset_key, human=bool(char_looks)))
     return ", ".join(p for p in parts if p)
 
 # 道具三分类（第二章：核心叙事/角色连接/环境氛围）
@@ -613,7 +691,7 @@ def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
     from .style_vocab import style_vocab_positive
     # 风格词库（只取 style 锚词）：特效/氛围词留给镜头，设定图保持干净版式
     parts.append(style_vocab_positive(preset_key, kinds=("style",)))
-    parts.append(QUALITY_SUFFIX)
+    parts.append(quality_suffix(preset_key, human=True))
     return ", ".join(p for p in parts if p)
 
 
@@ -646,7 +724,7 @@ def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
         parts.append(lifelike_tokens(preset_key, human=False))
     from .style_vocab import style_vocab_positive
     parts.append(style_vocab_positive(preset_key))   # 场景吃全量词库（含特效/氛围）
-    parts.append(QUALITY_SUFFIX_ENV)
+    parts.append(quality_suffix(preset_key, human=False))
     return ", ".join(p for p in parts if p)
 
 
@@ -686,7 +764,7 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
         parts.append(lifelike_tokens(preset_key, human=False))
     from .style_vocab import style_vocab_positive
     parts.append(style_vocab_positive(preset_key, kinds=("style",)))
-    parts.append(QUALITY_SUFFIX_ENV)
+    parts.append(quality_suffix(preset_key, human=False))
     return ", ".join(p for p in parts if p)
 
 
@@ -704,7 +782,8 @@ def assemble_shot_prompt(shot_slots: dict, preset_key: str,
     for key in ("subject_action", "light"):
         v = _take(shot_slots, key)
         if v:
-            parts.append(v)
+            # 首帧只画一个瞬间："A before B" 会被画成上下两格同样的脸（2026-11-26 s1 现场）
+            parts.append(single_moment(v) if key == "subject_action" else v)
     size = _take(shot_slots, "shot_size")
     if size:
         parts.append(f"{size} shot")
@@ -717,5 +796,5 @@ def assemble_shot_prompt(shot_slots: dict, preset_key: str,
     if lifelike:
         # 分镜永远用全量瑕疵（这是"活人感"主战场）；full_identity 只影响角色定妆资产
         parts.append(lifelike_tokens(preset_key, human=bool(char_looks), pose=bool(char_looks)))
-    parts.append(QUALITY_SUFFIX if char_looks else QUALITY_SUFFIX_ENV)
+    parts.append(quality_suffix(preset_key, human=bool(char_looks)))
     return ", ".join(p for p in parts if p)

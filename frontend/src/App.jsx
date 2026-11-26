@@ -33,6 +33,13 @@ const del = (path) => api(path, { method: 'DELETE' })
 const patch = (path, body) => api(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 const get = (path) => api(path)
 
+/* 视频档（用户自选）：分镜页下拉选择，单镜/批量/重链全部按此档出视频。
+   存 localStorage，选中后跨页保持；'' = 用后端默认档（models.yaml defaults）。 */
+const VIDEO_KEY_LS = 'ds_video_model'
+const getVideoKey = () => { try { return localStorage.getItem(VIDEO_KEY_LS) || '' } catch { return '' } }
+const setVideoKey = (k) => { try { k ? localStorage.setItem(VIDEO_KEY_LS, k) : localStorage.removeItem(VIDEO_KEY_LS) } catch { /* 忽略 */ } }
+const getVideoLabel = () => { try { return localStorage.getItem(VIDEO_KEY_LS + '_label') || '' } catch { return '' } }
+
 function StageNav({ stage, setStage, hasProject = false }) {
   return (
     <div className="stage-nav">
@@ -146,10 +153,22 @@ const CAMERA_SPEEDS = [['slow', '慢'], ['normal', '正常'], ['fast', '快'], [
 function BatchBar({ episodeId, onDone }) {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
+  const [vmodels, setVmodels] = useState([])
+  const [vkey, setVkey] = useState(getVideoKey())
+  useEffect(() => {
+    (async () => {
+      try { const d = await get('/models'); setVmodels(d.models || []) } catch { /* 老后端无此端点时保持空 */ }
+    })()
+  }, [])
+  const pickVideo = (k) => {
+    setVkey(k); setVideoKey(k)
+    const m = vmodels.find(x => x.key === k)
+    try { localStorage.setItem(VIDEO_KEY_LS + '_label', m ? m.label : '') } catch { /* 忽略 */ }
+  }
   const go = async (kind, label, body = {}) => {
     setBusy(kind); setMsg(`${label}：任务已排队（GPU 串行执行，进度见底部任务栏）…`)
     try {
-      const r = await post(`/episodes/${episodeId}/${kind}`, body)
+      const r = await post(`/episodes/${episodeId}/${kind}`, vkey ? { ...body, model_key: vkey } : body)
       // 后台轮询：完成后刷新镜头状态
       const timer = setInterval(async () => {
         try {
@@ -165,6 +184,15 @@ function BatchBar({ episodeId, onDone }) {
   return (
     <div className="batch-bar">
       <div className="batch-row">
+        <span className="batch-label">视频档</span>
+        <select className="batch-select" value={vkey} onChange={e => pickVideo(e.target.value)}
+          title="单镜「生成视频」/ 批量视频 / 向后重链 / 一键全流程 统一按此档出视频；默认档在 models.yaml defaults 里改">
+          <option value="">默认档（后端配置）</option>
+          {vmodels.map(m => (
+            <option key={m.key} value={m.key}>{m.label}{m.default ? ' · 默认' : ''}</option>
+          ))}
+        </select>
+        <span className="batch-div" />
         <span className="batch-label">批量补缺</span>
         <button className="small ghost" disabled={!!busy} title="为所有缺首帧的镜头批量生成首帧" onClick={() => go('batch-frames', '批量首帧')}>🖼 补首帧</button>
         <button className="small ghost" disabled={!!busy} title="为所有已出首帧、缺视频的镜头批量生成视频" onClick={() => go('batch-videos', '批量视频')}>🎥 补视频</button>
@@ -460,6 +488,7 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
     try {
       const payload = { ...(body || {}) }
       if (kind === 'frame' || kind === 'grid') payload.ipa_weight = ipaW
+      if (kind === 'video' && getVideoKey()) payload.model_key = getVideoKey()
       const r = await post(`/shots/${id}/${kind}`, payload)
       return r
     } catch (e) { setGenMsg('提交失败：' + e.message) }
@@ -484,7 +513,8 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
   }
   const rechain = async (fromIdx) => {
     try {
-      const r = await post(`/episodes/${episodeId}/rechain-from`, { from_idx: fromIdx })
+      const r = await post(`/episodes/${episodeId}/rechain-from`,
+        getVideoKey() ? { from_idx: fromIdx, model_key: getVideoKey() } : { from_idx: fromIdx })
       setGenMsg(`向后重链任务 #${r.task_id} 已入队（以第 ${fromIdx - 1} 镜为锚点，从第 ${fromIdx} 镜起：末帧→接力首帧→视频 连锁，断链即停），进度见底部任务栏`)
     } catch (e) { setGenMsg('重链失败：' + e.message) }
   }

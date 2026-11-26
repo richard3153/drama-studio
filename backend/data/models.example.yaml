@@ -4,13 +4,20 @@
 
 models:
   # —— 图像（定妆照/场景/道具）——
-  img_anythingxl:
+  img_animaginexl:
     role: [portrait, scene, prop, grid9]
     family: sdxl
+    weight: "animagine-xl-3.1.safetensors"
+    vram_gb: 6.5        # 实测 6.46GB fp16 / 真 SDXL（双 TE），8G 卡靠 comfy_aimdo 分页
+    tier: low
+    styles: [anime, paint, 3d]      # 动漫族/3D 族统一走真 SDXL 底模
+  img_anythingxl:
+    role: [portrait, scene, prop, grid9]
+    family: sdxl        # 注意：名为 XL，实测只有 1.99GB / 1133 keys / 单 SD1.5 CLIP，实为 SD1.5 底模
     weight: "AnythingXL_v50.safetensors"
     vram_gb: 4.0
     tier: low
-    styles: [anime, paint]          # 风格族适配（风格锁据此选底模）
+    styles: []          # 已退出自动选档（被 img_animaginexl 取代），保留文件作显存兜底
   img_realvisxl:
     role: [portrait, scene, prop]
     family: sdxl
@@ -38,6 +45,7 @@ models:
   # —— 视频（双链路）——
   vid_h3_int8:
     role: [video]
+    label: "MiniMax H3 INT8（20G 底模·最慢·长采样易崩）"
     family: minimax_h3
     weight: "minimax_h3_fl2va_pruned_int8_convrot.safetensors (diffusion_models) + qwen3vl_32b nvfp4_awq 文本编码器"
     workflow: video_h3_i2v.json
@@ -45,6 +53,7 @@ models:
     tier: high
   vid_h3_turbo:
     role: [video]
+    label: "MiniMax H3 Turbo（20G·热态 2-4 分钟/条）"
     family: minimax_h3
     weight: "同 vid_h3_int8 底模（缓存复用）+ fl2v_turbo_8step_v1.0 LoRA（官方配 4 步）"
     workflow: video_h3_turbo.json
@@ -52,6 +61,7 @@ models:
     tier: high
   vid_wan21_480p:
     role: [video]
+    label: "WAN2.1 480P（默认·实测 108s/条）"
     family: wan22
     weight: "Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors + lightx2v 4step LoRA"
     workflow: i2v_wan21_480p.json
@@ -60,6 +70,7 @@ models:
     offload: blockswap     # fp8 原生加速，8G 实测 480x832x33帧≈108s（默认档）
   vid_wan_i2v_aio:
     role: [video]
+    label: "WAN2.2 Rapid AIO（7.2G·快速一体包）"
     family: wan22
     weight: "wan2.2-i2v-rapid-aio-nsfw-v9.2.safetensors"
     vram_gb: 7.2
@@ -75,6 +86,7 @@ models:
     offload: blockswap     # 8G 依赖 WanVideoBlockSwap 30 块 + 强制卸载，速度最慢质量最高
   vid_wan22_flf_q4:
     role: [video]
+    label: "WAN2.2 首尾帧 Q4（9G·双帧/转场专用）"
     family: wan22
     weight: "Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf + LowNoise-Q4_K_S.gguf + 4step LoRA"
     workflow: i2v_first_last.json
