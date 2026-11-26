@@ -15,6 +15,18 @@ DB_PATH = DATA_DIR / "drama_studio.sqlite3"
 MODELS_YAML = DATA_DIR / "models.yaml"
 
 COMFYUI_URL = os.environ.get("DRAMA_COMFYUI_URL", "http://127.0.0.1:8188")
+# ComfyUI 本体路径：后端守护进程崩溃后要能自己把它拉起来（见 adapters/comfy_supervisor.py）
+COMFYUI_DIR = Path(os.environ.get(
+    "DRAMA_COMFYUI_DIR", r"D:\Comfy-Desktop\ComfyUI-Installs\ComfyUI"))
+COMFYUI_PYTHON = Path(os.environ.get(
+    "DRAMA_COMFYUI_PYTHON",
+    str(COMFYUI_DIR / "ComfyUI" / ".venv" / "Scripts" / "python.exe")))
+COMFYUI_LAUNCH_ARGS = [
+    "-u", "-s", r"ComfyUI\main.py", "--enable-manager",
+    "--extra-model-paths-config", os.environ.get(
+        "DRAMA_EXTRA_MODEL_PATHS", r"D:\Comfy-Desktop\extra_paths.yaml"),
+    "--user-directory", str(COMFYUI_DIR / "ComfyUI" / "user"),
+]
 # ComfyUI input 共享目录（LoadAudio 音频直写 fallback 用；与启动参数 --input-directory 一致）
 COMFYUI_INPUT_DIR = os.environ.get(
     "DRAMA_COMFYUI_INPUT_DIR",

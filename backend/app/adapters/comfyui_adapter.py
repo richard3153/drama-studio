@@ -37,6 +37,23 @@ class ComfyUIError(RuntimeError):
     pass
 
 
+def _brief_exec_error(status: dict) -> str:
+    """从 ComfyUI 的 status.messages 里取最有用的一行。
+
+    原始 messages 里塞着整段 traceback（有时还带权重张量 dump，几十 KB），
+    直接灌进 stage/error 会把前端任务栏撑爆、也看不出到底哪个节点错了。
+    这里只留「节点类型 + 异常类型 + 异常消息」。
+    """
+    for m in status.get("messages") or []:
+        if isinstance(m, (list, tuple)) and len(m) == 2 and m[0] == "execution_error":
+            d = m[1] or {}
+            node_type = d.get("node_type") or f"node{d.get('node_id', '?')}"
+            etype = d.get("exception_type") or ""
+            emsg = str(d.get("exception_message") or "").strip().splitlines()[0] if d.get("exception_message") else ""
+            return f"{node_type} 节点失败 {etype}: {emsg[:180]}"
+    return "未知节点错误（ComfyUI 未返回 execution_error 详情）"
+
+
 class ComfyUIAdapter:
     def __init__(self, base_url: str = COMFYUI_URL):
         self.base = base_url.rstrip("/")
@@ -221,12 +238,37 @@ class ComfyUIAdapter:
             pass
         return cleared
 
+    async def _await_server(self, timeout: float = 900.0, on_stage=None) -> None:
+        """提交前等 ComfyUI 就绪。
+
+        8G 上 H3 长采样会把 ComfyUI 进程打崩，守护重启要 7-14 分钟；用户此刻点
+        「继续」如果直接提交，只会立刻再撞一次 connection failed，看着像"怎么点都报错"。
+        这里把等待吃掉：就绪了再提交，等待时间不计入任务自身的推理 timeout。
+        """
+        t0 = asyncio.get_event_loop().time()
+        announced = False
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    await c.get(f"{self.base}/system_stats")
+                return
+            except httpx.HTTPError:
+                if asyncio.get_event_loop().time() - t0 > timeout:
+                    raise ComfyUIError(
+                        f"连不上 ComfyUI（{self.base} 无响应）：等待 {int(timeout)}s 仍未就绪，"
+                        "请检查 ComfyUI 是否在运行")
+                if not announced and on_stage:
+                    on_stage("ComfyUI 未就绪，等待其启动（守护会自动拉起，冷启动约 7-14 分钟）")
+                    announced = True
+                await asyncio.sleep(15)
+
     async def run(self, wf: dict, *, filename_prefix: str = "drama_studio/out",
                   save_root: str | Path = "data/downloads",
                   timeout: float = 900.0, poll_interval: float = 1.0,
                   on_stage=None) -> list[Path]:
         """提交并等待完成，下载输出文件，返回本地路径列表。"""
         self.save_root = Path(save_root)
+        await self._await_server(on_stage=on_stage)
         # 提交用：连接短超时、读宽松（ComfyUI 忙时响应可能数分钟才回）
         submit_to = httpx.Timeout(30, read=300.0)
         # 轮询用：读超时放宽 + 循环内容错，单次慢响应不杀任务
@@ -239,7 +281,16 @@ class ComfyUIAdapter:
                     wf[nid]["inputs"]["filename_prefix"] = filename_prefix
 
             payload = {"prompt": wf, "client_id": self.client_id}
-            r = await c.post(f"{self.base}/prompt", json=payload)
+            try:
+                r = await c.post(f"{self.base}/prompt", json=payload)
+            except httpx.ConnectError as e:
+                # ComfyUI 进程不在（8G 上 H3 长采样被打崩是常态）：别把 glancing 的
+                # "All connection attempts failed" 原样甩给用户，说清是什么、下一步干嘛。
+                raise ComfyUIError(
+                    f"连不上 ComfyUI（{self.base} 无响应）：进程可能已退出，"
+                    "后端守护会自动拉起，等 8188 起来后再点「继续」") from e
+            except httpx.TimeoutException:
+                raise ComfyUIError("提交 ComfyUI 超时（排队过长或进程卡死）")
             if r.status_code != 200:
                 raise ComfyUIError(f"/prompt 失败 {r.status_code}: {r.text[:500]}")
             prompt_id = r.json()["prompt_id"]
@@ -271,9 +322,8 @@ class ComfyUIAdapter:
                         history = entry
                         break
                     if status.get("status_str") == "error":
-                        msgs = json.dumps(status.get("messages", []), ensure_ascii=False)
                         await self._abort_prompt(prompt_id)
-                        raise ComfyUIError(f"ComfyUI 执行出错: {msgs[:800]}")
+                        raise ComfyUIError("ComfyUI 执行出错：" + _brief_exec_error(status))
             if history is None:
                 await self._abort_prompt(prompt_id)
                 raise ComfyUIError(f"执行超时（{timeout}s）")

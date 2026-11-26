@@ -1823,6 +1823,15 @@ function errLine(t) {
   const hit = ERR_HINTS.find(([k]) => all.includes(k))
   return hit ? hit[1] : all.split('\n')[0]
 }
+// 已跑时长：H3 在 8G 上单条 10-30 分钟、进度长期停在 0.3，
+// 不显示 elapsed 时用户只能判断成"卡死了"，这是"任务停住"体感的一半
+function elapsedLabel(s) {
+  if (!s) return ''
+  const ms = Date.now() - new Date(String(s).replace(' ', 'T')).getTime()
+  if (!isFinite(ms) || ms < 0) return ''
+  const m = Math.floor(ms / 60000)
+  return m < 1 ? '刚开始' : `已跑 ${m} 分`
+}
 function TaskBar({ tasks, vram, refreshTasks }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(null)
@@ -1877,6 +1886,9 @@ function TaskBar({ tasks, vram, refreshTasks }) {
                 <div className="progress-fill" style={{ width: `${Math.round((t.progress || 0) * 100)}%` }} />
               </div>
               <span className="task-pct">{Math.round((t.progress || 0) * 100)}%</span>
+              {['running', 'paused'].includes(t.status) && t.started_at && (
+                <span style={{ color: 'var(--dim)', fontSize: 11, whiteSpace: 'nowrap' }}>{elapsedLabel(t.started_at)}</span>
+              )}
               <span className="task-stage" title={t.error || t.stage}>
                 {t.error ? '✗ ' + errLine(t) : (t.stage || '')}
               </span>

@@ -41,15 +41,15 @@ models:
     family: minimax_h3
     weight: "minimax_h3_fl2va_pruned_int8_convrot.safetensors (diffusion_models) + qwen3vl_32b nvfp4_awq 文本编码器"
     workflow: video_h3_i2v.json
-    vram_gb: 7.0
-    tier: low
+    vram_gb: 20.0      # 实测 staged 19995MB（底模）+ 14956MB(TE) + 4965MB(VAE)，8G 全靠分页
+    tier: high
   vid_h3_turbo:
     role: [video]
     family: minimax_h3
     weight: "同 vid_h3_int8 底模（缓存复用）+ fl2v_turbo_8step_v1.0 LoRA（官方配 4 步）"
     workflow: video_h3_turbo.json
-    vram_gb: 7.0
-    tier: low
+    vram_gb: 20.0      # 同一份底模；4 步采样换页窗口短，8G 上比 int8 稳（#355 通 / #359 崩）
+    tier: high
   vid_wan21_480p:
     role: [video]
     family: wan22

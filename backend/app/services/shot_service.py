@@ -38,7 +38,13 @@ VIDEO_WF_BY_MODEL = {
     "vid_h3_turbo": "video_h3_turbo.json",
 }
 VIDEO_WF = "i2v_wan21_480p.json"
-DEFAULT_VIDEO_MODEL = "vid_h3_int8"   # 与 models.yaml defaults.default_models.video 同步
+DEFAULT_VIDEO_MODEL = "vid_wan21_480p"   # 与 models.yaml defaults.default_models.video 同步
+# 2026-11-26 实测账（推翻 11-24 的"H3 一律"拍板，按显存分层）：
+#   H3 int8/turbo 用同一份 20GB int8 底模，8G 卡全靠 comfy_aimdo 分页，
+#   冷启动后首条 >40 分钟（#365 直接撞 2400s 超时）、热态也要 2-4 分钟起，
+#   而且长采样会撞 `access violation reading 0x…` 把进程打死（#359）。
+#   → 8G 默认走 Wan2.1 480P（fp8 + 4step LoRA，实测 108s/条）；
+#   显存 ≥16G 或单镜要 H3 音视频 latent 时，显式传 model_key="vid_h3_turbo"。
 GRID_WF = "grid_storyboard.json"
 IPA_WF = "scene_ipadapter.json"      # SDXL IPAdapter 锁脸（easy ipadapterApply，PLUS 预设）
 IPA_WF_DUAL = "scene_ipadapter_dual.json"  # 双人镜链式双 IPA（两张单人参考串接）
@@ -47,6 +53,17 @@ IPA_WEIGHT = 0.75                    # 2026-11-22 调优：0.7 身份偏弱（�
 NEGATIVE = ("nsfw, lowres, bad anatomy, bad hands, text, watermark, "
             "signature, jpeg artifacts, worst quality, blurry, deformed, "
             + ANTI_OVER_RENDER_NEG)
+
+# 基础设施类错误（ComfyUI 进程不在 / 正在重启）：回落文生图同样是向同一个 8188 提交，
+# 必然再失败一次、白等一轮 timeout，所以这类错误直接上抛让任务落 interrupted。
+_INFRA_ERR_HINTS = ("连不上 ComfyUI", "ComfyUI 未就绪", "ComfyUI 无响应",
+                    "提交 ComfyUI 超时", "All connection attempts failed",
+                    "ConnectError", "ConnectTimeout", "ReadTimeout")
+
+
+def _is_infra_error(e: Exception) -> bool:
+    s = str(e)
+    return any(h in s for h in _INFRA_ERR_HINTS)
 
 
 def _res(project: Project | None) -> tuple[int, int]:
@@ -537,6 +554,8 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
             if out:
                 return out[0]
         except Exception as e:  # 锁脸失败不阻断出图，回落文生图
+            if _is_infra_error(e):
+                raise
             update_progress(db, task, 0.25, f"IPAdapter 失败 → 回落文生图：{e}")
     elif scene_ref and params.get("scene_lock") is not False:
         # 空镜/无人镜 + 场景锁定（默认开）：直接以锚图为底图 img2img，环境还原度最高
@@ -556,6 +575,8 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
             if out:
                 return out[0]
         except Exception as e:
+            if _is_infra_error(e):
+                raise
             update_progress(db, task, 0.25, f"场景 IPA 失败 → 回落文生图：{e}")
 
     wf = comfy.load_template(FRAME_WF)
@@ -712,9 +733,11 @@ async def generate_shot_video(db, task, params: dict) -> dict:
         overrides["WanFirstLastFrameToVideo.width"] = w
         overrides["WanFirstLastFrameToVideo.height"] = h
         wf = comfy.apply_overrides(wf, overrides)
-    # 耗时提示按模型档动态：turbo LoRA 4 步实测 2s≈4min（首跑含加载），int8 全量 25 步 ≈30min
+    # 耗时提示按模型档动态：turbo LoRA 4 步热态 2-4min/条；但 ComfyUI 刚重启时 20GB 底模
+    # 要从磁盘 staged + 8G 卡换页，首条实测能到 15-30min（2026-11-26 #365 现场），别写"2-4 分钟"骗人
     if is_h3:
-        est = "约 2-4 分钟/条（turbo 4 步）" if "turbo" in model_key else "约 15-30 分钟/条（int8 全量 25 步，建议 turbo 档）"
+        est = ("约 2-4 分钟/条（turbo 4 步；冷启动首条约 10-30 分钟）" if "turbo" in model_key
+               else "约 15-30 分钟/条（int8 全量 25 步，建议 turbo 档）")
     else:
         est = "约 2-4 分钟/条"
     update_progress(db, task, 0.3, f"{model_key} 推理中（8G 显存{est}）")

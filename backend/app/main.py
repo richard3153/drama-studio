@@ -63,13 +63,17 @@ async def _capture_main_loop():
     _q.set_main_loop(asyncio.get_running_loop())
     # 长任务兜底：running 但长时间无进度 → interrupted（防"假运行"堵住 GPU 锁）
     _q.spawn_bg(_q.watchdog())
+    # ComfyUI 进程守护：H3 长采样把进程打崩后自动拉起（原 vbs 计划任务在本机起不来）
+    from .adapters.comfy_supervisor import supervisor_loop
+    _q.spawn_bg(supervisor_loop())
     if _had_stale:
         _q.spawn_bg(_purge_comfy_orphans())
 
 
 @app.get("/api/health")
 def health():
-    return {"name": "Drama Studio API", "version": "0.2.0"}
+    from .adapters.comfy_supervisor import snapshot
+    return {"name": "Drama Studio API", "version": "0.2.0", "comfy": snapshot()}
 
 
 # 前端构建产物（frontend/dist）静态托管；必须放在 /api 路由之后挂载，

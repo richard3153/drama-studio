@@ -247,6 +247,12 @@ async def rechain_from(db, t: TaskRecord, params: dict) -> dict:
             break
         done.append(sh.idx)
         prev = sh   # 链推进：下一镜以本镜新视频为源
+    if failed and not done:
+        # 一镜都没产出：不能报"完成 100%"，否则前端显示绿色的"完成"却什么都没变。
+        # 抛出去让 run_task 落 interrupted/failed，并带上首个失败点的原因。
+        f0 = failed[0]
+        raise RuntimeError(
+            f"重链未产出任何新镜：s{f0['shot_idx']} 的{f0['stage']}失败 —— {str(f0['error'])[:300]}")
     update_progress(db, t, 1.0,
                     f"向后重链完成：重链 {len(done)} 镜{('，断链于 s' + str(failed[0]['shot_idx']) + '，修复后可从该镜再链') if failed else ''}")
     return {"rechained": done, "stopped_at": failed[0]["shot_idx"] if failed else None,

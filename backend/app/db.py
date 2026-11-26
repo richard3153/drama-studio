@@ -300,7 +300,12 @@ def task_desc(type_: str, params: dict) -> str:
     """任务一句话中文描述（任务队列详细列表用）。"""
     p = params or {}
     eid = p.get("episode_id")
-    ep = f"第{eid}集" if eid else ""
+    eidx = p.get("episode_idx")
+    # 优先用集号 idx：episode_id 是数据库主键，用它显示会把第 1 集（id=21）写成「第21集」
+    ep = f"第{eidx}集" if eidx else (f"第{eid}集" if eid else "")
+    sid = p.get("shot_id")
+    sidx = p.get("shot_idx")
+    shot_lbl = f"镜头 s{sidx}" if sidx else (f"镜头 #{sid}" if sid else "镜头")
     try:
         n = int(p.get("num_episodes") or 0)
     except (TypeError, ValueError):
@@ -319,9 +324,9 @@ def task_desc(type_: str, params: dict) -> str:
         "ref_redraw": lambda: "实物参考图重绘",
         "upscale": lambda: "图片超分放大",
         "polish": lambda: "资产微调重生成",
-        "shot_frame": lambda: f"镜头 #{p.get('shot_id', '?')} {p.get('frame_type', 'first')} 帧",
-        "shot_video": lambda: f"镜头 #{p.get('shot_id', '?')} i2v 视频",
-        "shot_talk": lambda: f"镜头 #{p.get('shot_id', '?')} 口型说话（InfiniteTalk，耗时较长）",
+        "shot_frame": lambda: f"{shot_lbl} {p.get('frame_type', 'first')} 帧",
+        "shot_video": lambda: f"{shot_lbl} i2v 视频",
+        "shot_talk": lambda: f"{shot_lbl} 口型说话（InfiniteTalk，耗时较长）",
         "shot_chain": lambda: f"末帧接力首帧（承上一镜）",
         "shot_extend": lambda: f"镜头 #{p.get('shot_id', '?')} 镜内延长",
         "grid9": lambda: "九宫格故事板",
@@ -348,4 +353,7 @@ def task_to_dict(t: TaskRecord) -> dict:
         "result": json.loads(t.result_json or "{}"), "error": t.error,
         "model_key": t.model_key, "vram_gb": t.vram_gb,
         "created_at": str(t.created_at),
+        # 已跑多久：H3 在 8G 上单条能跑 10-30 分钟、进度长时间停在 0.3，
+        # 没有 elapsed 用户只能以为"卡死了"（2026-11-26 #365 现场）
+        "started_at": str(t.started_at) if t.started_at else None,
     }

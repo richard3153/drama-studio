@@ -27,7 +27,8 @@ _ticks: dict[int, float] = {}
 # 环境类错误：ComfyUI 失联/超时/断连，重跑一次通常就好，不该在队列里留红色失败。
 # 这类标 interrupted（灰「已中断」+ 继续按钮）；提示词/参数/代码类真错仍走 failed。
 _ENV_ERR_HINTS = (
-    "执行超时", "轮询连续失败", "ComfyUI 无响应",
+    "执行超时", "轮询连续失败", "ComfyUI 无响应", "ComfyUI 执行出错",
+    "连不上 ComfyUI", "ComfyUI 未就绪", "提交 ComfyUI 超时",
     "All connection attempts failed", "ConnectError", "ConnectTimeout",
     "ReadTimeout", "ServerDisconnected", "Connection reset", "WinError 10054",
     "离线",
@@ -77,6 +78,25 @@ def unsubscribe(q: asyncio.Queue):
 
 
 def create_task(db, type_: str, params: dict, model_key: str = "", vram_gb: float = 0.0) -> TaskRecord:
+    params = dict(params or {})
+    # 任务标题要显示「第N集 / 第N镜」，但 params 里存的是 DB 主键 id，两者差得很远
+    # （出现过标题「第21集向后重链」其实跑的是 id=21 的第1集）。这里统一补一份 idx 快照。
+    if params.get("episode_id") and "episode_idx" not in params:
+        try:
+            from ..db import Episode
+            ep = db.get(Episode, int(params["episode_id"]))
+            if ep is not None:
+                params["episode_idx"] = ep.idx
+        except Exception:
+            pass
+    if params.get("shot_id") and "shot_idx" not in params:
+        try:
+            from ..db import Shot
+            sh = db.get(Shot, int(params["shot_id"]))
+            if sh is not None:
+                params["shot_idx"] = sh.idx
+        except Exception:
+            pass
     t = TaskRecord(type=type_, params_json=json.dumps(params, ensure_ascii=False),
                    model_key=model_key, vram_gb=vram_gb)
     db.add(t)
