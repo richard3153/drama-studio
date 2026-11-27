@@ -1612,8 +1612,8 @@ async def regenerate(body: RegenerateIn):
         if body.entity_type == "prop" and slots:
             # 带文字道具：槽位里没有"牌面文字"时用道具名补上（名字通常就是要写的字：
             # 灵石兑换券 / 青云宗令牌 / 招魂幡）。落库而不是只塞本次 params，
-            # 这样编辑器里看得见、本地与云端两条通道都读得到同一份文字内容。
-            from .text_image import looks_textual
+            # 这样编辑器里看得见，组装提示词时也读得到同一份文字内容。
+            from .text_prop import looks_textual
             if not str(slots.get("text_content") or "").strip():
                 tname = (getattr(entity, "name", "") or "").strip()
                 if tname and len(tname) <= 12 and looks_textual(tname, slots):
@@ -1639,7 +1639,7 @@ async def regenerate(body: RegenerateIn):
             # 全新道具（还没重铸槽位）：名字本身是带文字物件时，也把要写的字塞进提示词，
             # 否则底模只会画一团形似文字的花纹
             if body.entity_type == "prop":
-                from .text_image import looks_textual
+                from .text_prop import looks_textual
                 if looks_textual(entity.name or "", {}):
                     tname = (entity.name or "").strip()
                     if tname and tname not in prompt:
@@ -1680,32 +1680,11 @@ async def regenerate(body: RegenerateIn):
 
 @router.get("/text_image/status")
 def text_image_status():
-    """带文字道具的云端通道（GPT-Image 2.5）是否就绪：面板据此显示"可直接出图/待填 key"。"""
-    from .text_image import ready
-    return ready()
-
-
-@router.post("/text_image/ping")
-async def text_image_ping():
-    """探一次连通性：只请求 `{base_url}/models`（不生成图、不花钱），
-    用来一眼区分"key 错了(401)"和"地址/网络不通"。"""
-    from .text_image import _cfg, api_key, ready
-    st = ready()
-    if not st["ok"]:
-        return {"ok": False, "msg": st["reason"]}
-    c = _cfg()
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=25) as cli:
-            r = await cli.get(c["base_url"] + "/models",
-                              headers={"Authorization": f"Bearer {api_key()}"})
-        if r.status_code == 200:
-            return {"ok": True, "msg": f"连通正常（HTTP 200，{c['model']} 可用）"}
-        if r.status_code in (401, 403):
-            return {"ok": False, "msg": f"鉴权失败（HTTP {r.status_code}）：Key 无效或无权限"}
-        return {"ok": False, "msg": f"服务返回 HTTP {r.status_code}：{r.text[:120]}"}
-    except Exception as e:
-        return {"ok": False, "msg": f"连不上 {c['base_url']}：{type(e).__name__}"}
+    """【已下线】带文字道具的云端通道（GPT-Image 2.5）已按用户要求移除：
+    该模型无本地权重且整图重渲会换构图，现在带文字道具走本地底模 + 局部改字。
+    保留该端点只为让老前端拿到明确答复，不再探测任何 API。"""
+    return {"ok": False, "removed": True,
+            "reason": "云端通道已下线：带文字道具改走本地底模 + 「📝 改字」局部重绘"}
 
 
 class RefineIn(BaseModel):

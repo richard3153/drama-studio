@@ -2070,7 +2070,7 @@ function CharacterAdjust({ slots, onChange }) {
 }
 
 /* ---------- P2 资产库 ---------- */
-/* 道具"带文字"的前端预判：与后端 text_image.looks_textual 同一套词表（双字以上，
+/* 道具"带文字"的前端预判：与后端 text_prop.looks_textual 同一套词表（双字以上，
    避免"签字笔/数字时钟"这类单字误判）。命中即卡片上提示「📝 带文字」，可局部改字。 */
 const TEXT_PROP_WORDS = ['铭文', '刻字', '题字', '字迹', '字样', '带字', '有字',
   '匾额', '牌匾', '令牌', '腰牌', '木牌', '门牌', '招牌', '招贴', '符箓', '符纸', '符咒', '黄符', '灵符',
@@ -2458,32 +2458,13 @@ function SettingsModal({ open, onClose }) {
   const [draft, setDraft] = useState(null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState('')
-  const [tist, setTist] = useState(null)      // GPT-Image 通道就绪状态
-  const [tmsg, setTmsg] = useState('')
   const load = () => api('/settings').then(d => {
     setData(d); setDraft(JSON.parse(JSON.stringify(d.config)))
   }).catch(e => setMsg('读取配置失败：' + e.message))
   useEffect(() => {
     if (!open) return
-    setMsg(''); setTmsg(''); load()
-    api('/text_image/status').then(setTist).catch(() => setTist(null))
+    setMsg(''); load()
   }, [open])
-  // 探测连通性前先落盘：不然探的是旧配置（用户刚填的 key 还没保存）
-  const pingTextImage = async () => {
-    setBusy('ping'); setTmsg('')
-    try {
-      const save2 = async () => {
-        const cur = (draft || {}).text_image
-        if (!cur) return
-        await put('/settings', { text_image: cur })
-        await load()
-      }
-      await save2()
-      const r = await post('/text_image/ping', {})
-      setTmsg((r.ok ? '✓ ' : '✗ ') + r.msg)
-      api('/text_image/status').then(setTist).catch(() => {})
-    } catch (e) { setTmsg('探测失败：' + e.message) } finally { setBusy('') }
-  }
   if (!open) return null
   const set = (g, k, v) => setDraft(d => ({ ...d, [g]: { ...((d || {})[g] || {}), [k]: v } }))
   const cfg = draft || {}
@@ -2605,73 +2586,6 @@ function SettingsModal({ open, onClose }) {
                 </CfgField>
               </div>
               <div className="cfg-tip">WAN 的 fp8 + blockswap 已写在工作流模板里，属于固定加速；面板这里管的是"要不要挂蒸馏 LoRA"和 ComfyUI 的注意力实现。</div>
-            </div>
-
-            <div className="cfg-group">
-              <div className="cfg-group-title">
-                GPT-Image 2.5 · 带文字道具
-                <span className="cfg-badge">即时生效</span>
-                {tist && <span className={'cfg-badge ' + (tist.ok ? 'ok' : 'warn')} style={{ marginLeft: 6 }}>
-                  {tist.ok ? '✓ 已就绪' : '待配置'}
-                </span>}
-              </div>
-              <div className="cfg-tip" style={{ marginTop: 0, marginBottom: 8 }}>
-                <b>默认不参与出图</b>：道具一律走本地底模，字不对用资产页「📝 改字」做局部重绘（零 token）。
-                这里保留的是历史云端整图通道配置，仅在需要"整图换一张"时才用（会改变构图/光影）；
-                GPT-Image 2.5 无本地权重，只能 HTTP 调用。
-              </div>
-              <div className="cfg-grid">
-                <CfgField label="接口地址 base_url" hint="官方 https://api.openai.com/v1；或国内中转的 …/v1">
-                  <input className="cfg-input" value={cfg.text_image?.base_url || ''}
-                    placeholder="https://api.openai.com/v1"
-                    onChange={e => set('text_image', 'base_url', e.target.value)} />
-                </CfgField>
-                <CfgField label="API Key" hint="可直接填 key，或写 env:OPENAI_API_KEY 引用环境变量（推荐）">
-                  <input className="cfg-input" type="password" value={cfg.text_image?.api_key || ''}
-                    placeholder="sk-… 或 env:OPENAI_API_KEY"
-                    onChange={e => set('text_image', 'api_key', e.target.value)} />
-                </CfgField>
-                <CfgField label="模型" hint="flare=光影强 / sunburst=色彩艳">
-                  <select className="cfg-select" value={cfg.text_image?.model || 'gpt-image-2.5-flare'}
-                    onChange={e => set('text_image', 'model', e.target.value)}>
-                    <option value="gpt-image-2.5-flare">gpt-image-2.5-flare（光影强）</option>
-                    <option value="gpt-image-2.5-sunburst">gpt-image-2.5-sunburst（色彩艳）</option>
-                    <option value="gpt-image-2">gpt-image-2（上一代·更便宜）</option>
-                  </select>
-                </CfgField>
-                <CfgField label="尺寸" hint="道具横版推荐 1536x1024">
-                  <select className="cfg-select" value={cfg.text_image?.size || '1536x1024'}
-                    onChange={e => set('text_image', 'size', e.target.value)}>
-                    <option value="1536x1024">1536×1024（横版）</option>
-                    <option value="1024x1024">1024×1024（方图）</option>
-                    <option value="1024x1536">1024×1536（竖版）</option>
-                  </select>
-                </CfgField>
-                <CfgField label="质量" hint="high 够用；max 更贵更慢">
-                  <select className="cfg-select" value={cfg.text_image?.quality || 'high'}
-                    onChange={e => set('text_image', 'quality', e.target.value)}>
-                    <option value="low">low（最快最省）</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high（推荐）</option>
-                    <option value="max">max</option>
-                  </select>
-                </CfgField>
-                <CfgField label="启用" hint="关掉后带文字道具会落回本地底模（字画不准）">
-                  <div className="cfg-switch-row">
-                    <label className="cfg-switch">
-                      <input type="checkbox" checked={!!cfg.text_image?.enabled}
-                        onChange={e => set('text_image', 'enabled', e.target.checked)} />
-                      <span>{cfg.text_image?.enabled ? '已启用' : '已关闭'}</span>
-                    </label>
-                  </div>
-                </CfgField>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-                <button className="ghost" disabled={!!busy} onClick={pingTextImage}>
-                  {busy === 'ping' ? '探测中…' : '测试连接（不生成图）'}
-                </button>
-                <span className="cfg-msg" style={{ margin: 0 }}>{tmsg || (tist && !tist.ok ? tist.reason : '')}</span>
-              </div>
             </div>
 
             <div className="cfg-group">
