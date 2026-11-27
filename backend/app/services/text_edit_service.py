@@ -32,6 +32,12 @@ from ..config import ASSETS_ROOT
 NEG = ("blurry text, gibberish characters, garbled lettering, misspelled characters, "
        "extra text, watermark, lowres, deformed")
 
+# 第 2 轮起追加的"擦旧字"指令：模型会保留原有笔画残影（实测「券」字被反复保留、
+# 越画越叠），必须先明说擦掉再写，光提高 denoise 不够。
+_ERASE_ZH = "；蒙版内原有的字形必须完全擦除，只按上面这几个字重新书写，不得保留任何旧笔画、叠字或残影"
+_ERASE_EN = ("; erase the old lettering inside the mask completely before writing, "
+             "then draw only the new letters, no ghost strokes or double lettering")
+
 # 缺省文字框（归一化）：按资产类型给"文字最常出现的位置"。
 # 刻意避开右下朱印与右侧边框——框压到印章会把印章重画淡（实测）。
 DEFAULT_BOX = {"x": 0.335, "y": 0.195, "w": 0.30, "h": 0.545}
@@ -119,13 +125,48 @@ def build_prompt(text: str, extra: str = "", lang: str = "zh", kind: str = "prop
     return f"{head}。{extra}" if extra else head
 
 
-async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
-    """任务入口：读源图 → 生成 mask → 本地 Qwen 局部重绘 → 落库新版本。"""
-    from ..scheduler.queue import update_progress
+async def _inpaint_once(comfy, db, task, *, src: Path, src_name: str, mask_path: Path,
+                        prompt: str, denoise: float, seed: int, pid: int,
+                        entity_id, tag: str) -> Path:
+    """单轮：上传原图 → 生成 mask → Qwen 局部重绘 → 返回产物路径。"""
+    mask_name = await comfy.upload_image(mask_path, subfolder="drama_studio_mask")
+    wf = comfy.load_template("prop_text_inpaint.json")
+    wf = comfy.apply_overrides(wf, {
+        "LoadImage.image": src_name,
+        "LoadImageMask.image": mask_name,
+        "KSampler.seed": seed,
+        "KSampler.denoise": denoise,
+        "positive_text": prompt,
+        "negative_text": NEG,
+    })
+    files = await comfy.run(
+        wf,
+        filename_prefix=f"drama_studio/p{pid}_text{entity_id if entity_id is not None else ''}"
+                        f"{'_' + tag if tag else ''}",
+        save_root=Path(ASSETS_ROOT) / str(pid) / "assets",
+        timeout=900,
+        on_stage=lambda m: print(f"[task {task.id}] {m}"),
+    )
+    if not files:
+        raise RuntimeError("ComfyUI 没有返回产物")
+    return Path(files[0])
 
-    src = Path(params["source_path"])
-    if not src.exists():
-        raise RuntimeError(f"源图不存在：{src}")
+
+async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
+    """任务入口：读源图 → 生成 mask → 本地 Qwen 局部重绘 → 落库新版本。
+
+    2026-11-28 增加**自动迭代**（`auto_loop`）：每画完一轮就用本地 OCR 读一遍框内的字，
+    与目标文字比对；不过就按"读得最差的那一块"重新框选（面积逐步减小到上一轮的 85% 以内），
+    再画一轮，直到读对或用完轮次。判定口径与缩框规则见 `text_judge`。
+    """
+    import asyncio
+
+    from ..scheduler.queue import update_progress
+    from . import text_judge, text_ocr
+
+    src0 = Path(params["source_path"])
+    if not src0.exists():
+        raise RuntimeError(f"源图不存在：{src0}")
     pid = int(params["project_id"])
     text = (params.get("text") or "").strip()
     if not text:
@@ -139,68 +180,165 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
         from ..text_prop import detect_lang
         lang = detect_lang(text)
 
-    box = _clamp_box(params.get("box"), kind_tag)
-    mask_path = Path(ASSETS_ROOT) / str(pid) / "masks" / f"text_mask_{int(datetime.now().timestamp()*1000)}.png"
-    make_mask(src, box, mask_path)
-    update_progress(db, task, 0.08,
-                    f"局部蒙版已生成（{kind_tag} 框 {box['w']*100:.0f}%×{box['h']*100:.0f}%，{lang}）")
+    auto = bool(params.get("auto_loop", True))
+    max_rounds = int(params.get("max_rounds") or 3)
+    max_rounds = max(1, min(6, max_rounds))
+    box0 = _clamp_box(params.get("box"), kind_tag)
+    base_denoise = float(params.get("denoise") or 0.88)
+    base_denoise = max(0.55, min(0.96, base_denoise))  # <0.55 字写不实，>0.98 框内纹理全重画
+    base_seed = int(params.get("seed") or random.randint(0, 2 ** 31 - 1))
+    prompt = build_prompt(text, params.get("extra_prompt") or "", lang=lang, kind=kind_tag)
+
+    with Image.open(src0) as im:
+        img_w, img_h = im.size
 
     comfy = ComfyUIAdapter()
-    src_name = await comfy.upload_image(src)
-    mask_name = await comfy.upload_image(mask_path, subfolder="drama_studio_mask")
+    src = src0
+    src_name = await comfy.upload_image(src0)
+    cur_box = box0
+    rounds: list[dict] = []
+    final_file: Path | None = None
+    final_box = box0
+    final_denoise = base_denoise
+    final_prompt = prompt
+    ok = False
+    all_outs: list[Path] = []
+    # 落库的不是"最后一轮"而是"最好的一轮"：Qwen 对某些字有顽固惯性（「牌」反复画成
+    # 券/黎），第 3 轮常常是「券」+ 叠笔残影，比第 1 轮还糊。按 (命中率, OCR 置信度)
+    # 选最佳，避免越迭代越差。
+    best = {"key": (-1.0, -1.0), "file": None, "box": box0,
+            "denoise": base_denoise, "prompt": prompt}
+    stagnant = 0
 
-    wf = comfy.load_template("prop_text_inpaint.json")
-    seed = int(params.get("seed") or random.randint(0, 2 ** 31 - 1))
-    denoise = float(params.get("denoise") or 0.88)
-    denoise = max(0.55, min(0.98, denoise))   # <0.55 字写不实，>0.98 框内纹理全重画
-    prompt = build_prompt(text, params.get("extra_prompt") or "", lang=lang, kind=kind_tag)
-    wf = comfy.apply_overrides(wf, {
-        "LoadImage.image": src_name,
-        "LoadImageMask.image": mask_name,
-        "KSampler.seed": seed,
-        "KSampler.denoise": denoise,
-        "positive_text": prompt,
-        "negative_text": NEG,
-    })
-    update_progress(db, task, 0.15, "本地 Qwen-Image 局部重绘中（只动文字框）")
-    files = await comfy.run(
-        wf,
-        filename_prefix=f"drama_studio/p{pid}_text{params.get('entity_id', '')}",
-        save_root=Path(ASSETS_ROOT) / str(pid) / "assets",
-        timeout=900,
-        on_stage=lambda m: print(f"[task {task.id}] {m}"),
-    )
+    for r in range(1, max_rounds + 1):
+        mask_path = (Path(ASSETS_ROOT) / str(pid) / "masks"
+                     / f"text_mask_{int(datetime.now().timestamp() * 1000)}_r{r}.png")
+        make_mask(src, cur_box, mask_path)
+        denoise = max(0.55, min(0.98, base_denoise + 0.05 * (r - 1)))
+        prompt_r = prompt if r == 1 else (prompt + (_ERASE_EN if lang == "en" else _ERASE_ZH))
+        stage = (f"第 {r}/{max_rounds} 轮局部重绘（{kind_tag} 框 "
+                 f"{cur_box['w'] * 100:.0f}%×{cur_box['h'] * 100:.0f}%，{lang}）"
+                 if max_rounds > 1 or auto else "本地 Qwen-Image 局部重绘中（只动文字框）")
+        update_progress(db, task, 0.05 + 0.9 * (r - 1) / max_rounds, stage)
+        out = await _inpaint_once(
+            comfy, db, task, src=src, src_name=src_name, mask_path=mask_path,
+            prompt=prompt_r, denoise=denoise, seed=(base_seed + (r - 1) * 7919) % (2 ** 31 - 1),
+            pid=pid, entity_id=params.get("entity_id"),
+            tag=f"r{r}" if max_rounds > 1 else "",
+        )
+        all_outs.append(out)
+
+        verdict = None
+        items = None
+        if auto:
+            items = await asyncio.to_thread(text_ocr.read_region, out, cur_box)
+            verdict = text_judge.judge(text, items, lang=lang,
+                                       min_hit=params.get("min_hit"))
+            verdict["round"] = r
+            verdict["box"] = dict(cur_box)
+            rounds.append(verdict)
+            key = (float(verdict["hit"]), float(verdict["best_score"]))
+            if key > best["key"]:
+                best = {"key": key, "file": out, "box": dict(cur_box),
+                        "denoise": denoise, "prompt": prompt_r, "round": r}
+                stagnant = 0
+            else:
+                stagnant += 1
+            update_progress(db, task, 0.05 + 0.9 * r / max_rounds,
+                            f"第 {r}/{max_rounds} 轮完成：命中 {verdict['hit'] * 100:.0f}%"
+                            f"（{verdict['reason']}）{'，已达标' if verdict['ok'] else ''}")
+            ok = ok or verdict["ok"]
+        else:
+            best = {"key": (0.0, 0.0), "file": out, "box": dict(cur_box),
+                    "denoise": denoise, "prompt": prompt_r}
+
+        final_file, final_box, final_denoise, final_prompt = (
+            best["file"], best["box"], best["denoise"], best["prompt"])
+        stop_reason = None
+        if (auto and len(rounds) >= 2
+                and not rounds[-1].get("observed") and not rounds[-2].get("observed")):
+            stop_reason = "连续两轮框内读不出字（强光/极小字/笔迹太草），停止迭代"
+        elif auto and stagnant >= 2:
+            stop_reason = "连续两轮命中率不再提升（模型对这几个字有顽固惯性），停止迭代"
+        if ok or not auto or r >= max_rounds or stop_reason:
+            if stop_reason:
+                update_progress(db, task, 0.95, stop_reason)
+            break
+
+        # 重新框选：目标字占满框时不缩（缩了会切字留残影），只换种子/强度重试；
+        # 目标字只占框一部分时，才收缩到目标所在的那一块。
+        nxt = text_judge.focus_box(cur_box, items, text, lang, img_w, img_h)
+        same = text_judge.same_box(cur_box, nxt)
+        if same and stagnant >= 1:
+            update_progress(db, task, 0.95, "框已到最小范围且命中率无变化，停止迭代（建议换词或人工微调）")
+            break
+        src, src_name = out, await comfy.upload_image(out)
+        cur_box = nxt
+
     await comfy.free_memory()
 
+    # 中间轮产物不入库，物理删除（否则 assets 目录会堆一堆废版本）
+    for f in all_outs:
+        if f != final_file:
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     saved = []
-    for f in files:
+    if final_file is not None:
+        img = None
+        # 重绘可能返回多张（ComfyUI 批量），第一张之外的一并删掉
+        meta_rounds = [{"round": v.get("round"), "box": v.get("box"), "hit": v.get("hit"),
+                        "extra": v.get("extra"), "score": v.get("best_score"),
+                        "observed": v.get("observed"), "reason": v.get("reason")}
+                       for v in rounds]
         img = AssetImage(
             project_id=pid,
             character_id=params.get("character_id"),
             kind=kind,
-            file_path=str(f),
-            prompt=prompt,
+            file_path=str(final_file),
+            prompt=final_prompt,
             meta_json=json.dumps({
                 "model_key": "qwen_image_2.1",
                 "workflow": "prop_text_inpaint.json",
                 "op": "text_inpaint",
                 "parent_asset_id": params.get("asset_id"),
-                "source_path": str(src),
+                "source_path": str(src0),
                 "entity_type": params.get("entity_type", "prop"),
                 "entity_id": params.get("entity_id"),
                 "text": text,
                 "lang": lang,
                 "surface_kind": kind_tag,
-                "box": box,
-                "denoise": denoise,
-                "seed": seed,
+                "box": final_box,
+                "denoise": final_denoise,
+                "seed": base_seed,
                 "local_only": True,
+                "auto_iter": {
+                    "enabled": bool(auto),
+                    "rounds_done": len(rounds),
+                    "max_rounds": max_rounds,
+                    "final_ok": bool(ok),
+                    "best_round": best.get("round") if auto else None,
+                    "detail": meta_rounds,
+                },
             }, ensure_ascii=False),
         )
         db.add(img)
         db.commit()
         db.refresh(img)
         saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": kind})
-    update_progress(db, task, 1.0, "局部改字完成")
+
+    if not rounds:
+        done_text = "局部改字完成"
+    elif ok:
+        done_text = f"局部改字完成（自动迭代达标，取第 {best.get('round')} 轮结果）"
+    else:
+        done_text = (f"局部改字完成（{len(rounds)} 轮均未达标，取最佳的第 {best.get('round')} 轮，"
+                     f"框 {final_box['w']*100:.0f}%×{final_box['h']*100:.0f}%，建议人工微调）")
+    update_progress(db, task, 1.0, done_text)
     return {"assets": saved, "model_key": "qwen_image_2.1", "local_only": True,
-            "lang": lang, "surface_kind": kind_tag}
+            "lang": lang, "surface_kind": kind_tag, "auto_iter": {
+                "enabled": bool(auto), "rounds": rounds, "final_ok": bool(ok),
+                "best_round": best.get("round") if auto else None,
+                "final_box": final_box, "ocr_available": text_ocr.available()}}

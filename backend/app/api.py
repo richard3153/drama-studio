@@ -1249,10 +1249,13 @@ def project_assets(pid: int):
 class TextEditIn(BaseModel):
     text: str                          # 要写的文字（中文如「青云宗令牌」，英文如 "QING YUN"）
     box: dict | None = None            # 归一化框 {x,y,w,h}，0-1；缺省按资产类型给默认框
-    denoise: float | None = None       # 重绘强度（0.55-0.98，默认 0.88）
+    denoise: float | None = None       # 重绘强度（0.55-0.98，默认 0.88；迭代时每轮 +0.03）
     seed: int | None = None
     extra_prompt: str | None = None
     lang: str | None = None            # zh / en；不填按文字内容自动判
+    auto_loop: bool = True             # **自动迭代**：每轮画完用本地 OCR 判字，不达标就缩框重画
+    max_rounds: int = 3                # 迭代上限（1-6），缩框面积每轮压到上一轮 85% 以内
+    min_hit: float | None = None       # 命中率阈值，不填按语言默认（zh 0.75 / en 0.8）
 
 
 @router.post("/assets/{aid}/text-edit")
@@ -1264,6 +1267,9 @@ async def asset_text_edit(aid: int, body: TextEditIn):
       · 道具设计图 —— 牌面/券面/铭文
       · 场景设计图 —— 门额/牌匾/招牌/墙面标识
       · 角色设计图 —— 面板旁的手写标注与底部信息行
+    2026-11-28 再加**自动迭代**（`auto_loop` 默认开）：每轮画完用本地 OCR（RapidOCR，
+    CPU 即可，零 token/零显存）读框内的字并判定"清楚无乱码"，不达标就按读得最差的那块字
+    重新框选（面积逐步收窄到上一轮 85% 以内）再画一轮，直到达标或用完 `max_rounds`。
     """
     with SessionLocal() as db:
         a = db.get(AssetImage, aid)
@@ -1282,11 +1288,15 @@ async def asset_text_edit(aid: int, body: TextEditIn):
                   "entity_id": meta.get("entity_id"),
                   "text": body.text, "box": box, "lang": body.lang,
                   "denoise": body.denoise, "seed": body.seed,
-                  "extra_prompt": body.extra_prompt}
+                  "extra_prompt": body.extra_prompt,
+                  "auto_loop": body.auto_loop,
+                  "max_rounds": max(1, min(6, body.max_rounds or 3)),
+                  "min_hit": body.min_hit}
         t = task_queue.create_task(db, "text_edit", params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": "text_edit", "box": box,
-            "surface_kind": kind_tag, "local_only": True}
+            "surface_kind": kind_tag, "local_only": True,
+            "auto_loop": body.auto_loop, "max_rounds": params["max_rounds"]}
 
 
 @router.delete("/entities/{etype}/{eid}")

@@ -1753,6 +1753,7 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted, onTextEd
                 <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.65 }}>
                   三类资产都支持在<b>同一张已生成的图上</b>框住文字区域重画——框外的纸纹、折痕、朱印、边框与光影一点不动，不耗 token、不调云端：
                   道具设计图改牌面/券面铭文，场景设计图改门额/牌匾/招牌，角色设计图改面板旁的手写标注与信息行。
+                  画完会<b>自动判字</b>（本地 OCR 读数与原字逐字比对，零 token）：没读对就按生成情况重新框选再画，框逐步收紧，默认最多 3 轮，落库交付其中最好的一轮。
                   {role === 'prop' && <div style={{ marginTop: 4 }}>
                     带文字道具在<b>生成时</b>就按语言自动分工：<b>中文</b>走 MOSS-Image SFT（8 步蒸馏，约 40 秒，毛笔字逐字准），
                     <b>英文</b>走 Ideogram 4 fp8（结构化 caption，英文单词一个不差）。英文档不支持局部重绘，改字会整图重出、构图可能变化。
@@ -2118,6 +2119,8 @@ function TextEditModal({ assetId, name, etype, onClose, onSubmitted }) {
   const [text, setText] = useState(name || '')
   const [box, setBox] = useState({ ...(TEXT_BOX_BY_ETYPE[etype] || TEXT_BOX_BY_ETYPE.prop) })
   const [denoise, setDenoise] = useState(0.88)
+  const [autoLoop, setAutoLoop] = useState(true)
+  const [maxRounds, setMaxRounds] = useState(3)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const drag = useRef(null)
@@ -2144,8 +2147,13 @@ function TextEditModal({ assetId, name, etype, onClose, onSubmitted }) {
     if (!text.trim()) { setMsg('先填要写的文字'); return }
     setBusy(true)
     try {
-      const r = await post(`/assets/${assetId}/text-edit`, { text: text.trim(), box, denoise })
-      setMsg(`✔ 任务 #${r.task_id} 已入队：只重画琥珀框内，框外一点不动（本地 Qwen-Image，零 token、零云端）。约 1–2 分钟，完成后点资产页「刷新」`)
+      const r = await post(`/assets/${assetId}/text-edit`, {
+        text: text.trim(), box, denoise,
+        auto_loop: autoLoop, max_rounds: autoLoop ? maxRounds : 1,
+      })
+      setMsg(autoLoop
+        ? `✔ 任务 #${r.task_id} 已入队：自动迭代最多 ${maxRounds} 轮——每轮画完用本地 OCR 读框内的字，读不清就缩框重画（面积压到上一轮 85% 以内），直到读对。只动琥珀框内，框外一点不动。约 1–4 分钟，完成后点资产页「刷新」`
+        : `✔ 任务 #${r.task_id} 已入队：只重画琥珀框内，框外一点不动（本地 Qwen-Image，零 token、零云端）。约 1–2 分钟，完成后点资产页「刷新」`)
       onSubmitted && onSubmitted()
     } catch (e) { setMsg('提交失败：' + e.message) }
     finally { setBusy(false) }
@@ -2189,10 +2197,26 @@ function TextEditModal({ assetId, name, etype, onClose, onSubmitted }) {
             onChange={e => setDenoise(Number(e.target.value))} style={{ flex: 1 }} />
           <span style={{ fontSize: 12, color: 'var(--dim)', width: 44 }}>{denoise.toFixed(2)}</span>
         </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label style={{ fontSize: 12, minWidth: 84, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="checkbox" checked={autoLoop} onChange={e => setAutoLoop(e.target.checked)}
+              style={{ width: 'auto', minWidth: 0 }} />
+            自动迭代判字
+          </label>
+          <span style={{ fontSize: 11, color: 'var(--dim)', flex: 1, lineHeight: 1.5 }}>
+            每轮画完本地 OCR 读一遍框内字，读不清/乱码就缩框重画，直到读对
+          </span>
+          <select value={maxRounds} disabled={!autoLoop} onChange={e => setMaxRounds(Number(e.target.value))}
+            style={{ width: 100 }}>
+            {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>最多 {n} 轮</option>)}
+          </select>
+        </div>
         <div className="page-sub" style={{ fontSize: 11, marginTop: 4 }}>
           框要贴住字本身：框压到朱印/边框会把它们一起重画变淡；字写糊/笔画不清就把强度往 0.95 拉；
           字没错只是想更清楚，可以把强度降到 0.7 左右只做重绘锐化。
-          中文按毛笔/印刷体重写，英文按印刷大写字母重写（本地 Qwen-Image，中英文同一个通道）
+          中文按毛笔/印刷体重写，英文按印刷大写字母重写（本地 Qwen-Image，中英文同一个通道）。
+          自动迭代时：第 1 轮用你框的范围，之后每轮只框"目标字所在的那一块"并压到上一轮 85% 以内，
+          重绘强度每轮 +0.03；OCR 连着两轮读不出字（强光/极小字/笔迹太草）会自动停，不白跑。
         </div>
         <div className="ops-row" style={{ marginTop: 10 }}>
           <button className="small" disabled={busy} onClick={submit}>{busy ? '提交中…' : '开始局部重绘'}</button>
