@@ -2592,7 +2592,7 @@ function SettingsModal({ open, onClose }) {
                   <ModelSelect value={cfg.models?.ref_image_anime} options={opts.ref_image}
                     onChange={v => set('models', 'ref_image_anime', v)} />
                 </CfgField>
-                <CfgField label="参考生视频 · 转场/首尾帧" hint="双帧约束（转场镜、向后重链）">
+                <CfgField label="参考生视频 · 转场/首尾帧" hint="双帧约束（转场镜、向后重链）：H3 turbo 带原生音频，Wan2.2 首尾帧 Q4 双模型 4 步更省显存">
                   <ModelSelect value={cfg.models?.ref_video} options={opts.ref_video}
                     onChange={v => set('models', 'ref_video', v)} />
                 </CfgField>

@@ -109,9 +109,9 @@ def _model_options() -> dict:
             elif key in shot_service.VIDEO_WF_BY_MODEL:
                 # 没模板映射的视频档不进下拉：选了必崩（模板回退后节点/权重对不上）
                 groups["video"].append(item)
-                # 转场双帧链路的 overrides 绑死 MiniMaxH3ImageToVideo 节点，
-                # 只有 video_h3_turbo.json 能对上，其余档列出来就是误导
-                if shot_service.VIDEO_WF_BY_MODEL[key] == "video_h3_turbo.json":
+                # 参考生视频（首尾帧/转场双帧）只列真有 end_image 约束的档：
+                # H3 turbo（24fps 音视频）与 Wan2.2 首尾帧 Q4（16fps 双模型 4 步）。
+                if key in shot_service.REF_VIDEO_MODELS:
                     groups["ref_video"].append(item)
         else:
             groups["image"].append(item)
@@ -235,8 +235,8 @@ def settings_put(body: dict):
 
     # ⑥ 视频档必须有工作流模板：shot_service 里 default_video 走
     #    VIDEO_WF_BY_MODEL.get(key, wan21)，没有映射的档会"拿 wan21 模板套别的权重"，
-    #    结构对不上，跑到 ComfyUI 才报节点/权重错；转场双帧更硬——overrides 绑死
-    #    MiniMaxH3ImageToVideo 节点，只有 h3_turbo 模板能用。
+    #    结构对不上，跑到 ComfyUI 才报节点/权重错；参考生视频更硬——模板节点名与
+    #    帧率/帧数网格绑死，只接受 REF_VIDEO_MODELS 里那两档（H3 turbo / Wan2.2 首尾帧 Q4）。
     wf_map = shot_service.VIDEO_WF_BY_MODEL
     for k in ("default_video", "ref_video", "talk_video"):
         v = models.get(k)
@@ -244,8 +244,10 @@ def settings_put(body: dict):
             errs.append(f"models.{k} = {v.strip()}：没有对应工作流模板（可选："
                         + "、".join(sorted(wf_map)) + "）")
     rv = (models.get("ref_video") or "").strip()
-    if rv and wf_map.get(rv) != "video_h3_turbo.json":
-        errs.append(f"models.ref_video = {rv}：转场双帧只认 H3 turbo 模板（节点名绑死），只能选 vid_h3_turbo")
+    if rv and rv not in shot_service.REF_VIDEO_MODELS:
+        errs.append(f"models.ref_video = {rv}：首尾帧/转场双帧只接受 "
+                    + "、".join(shot_service.REF_VIDEO_MODELS)
+                    + "（其余视频档是单帧模板，没有 end_image 约束）")
     lora_pick = (lora.get("video_step_lora") or "").strip()
     if lora_pick and lora_pick not in {x["name"] for x in _scan_loras(lora_dir_new or None)}:
         errs.append(f"lora.video_step_lora = {lora_pick}：LoRA 目录里找不到这个文件")

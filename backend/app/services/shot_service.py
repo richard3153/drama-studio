@@ -41,6 +41,13 @@ VIDEO_WF_BY_MODEL = {
 VIDEO_WF = "i2v_wan21_480p.json"
 DEFAULT_VIDEO_MODEL = "vid_wan21_480p"   # 兜底常量；实际以 settings.models.default_video 为准
 
+# 参考生视频（转场镜 / 首尾帧双帧约束）可用档：模板里必须真有 end_image 输入。
+#   · vid_h3_turbo     → MiniMaxH3ImageToVideo（首帧 + 可选尾帧，24fps，带原生音频 latent）
+#   · vid_wan22_flf_q4 → WanFirstLastFrameToVideo（首尾帧强制双帧，16fps，High/LowNoise 双模型 4 步）
+# 单帧 i2v 模板（i2v_wan21_480p.json / video_h3_i2v.json 里尾帧是可断开的）也能双帧，但
+# 转场链路要求两端都锁帧 + 1–2s 短帧，只在这两档上做过验证，其它档不进面板。
+REF_VIDEO_MODELS = ("vid_h3_turbo", "vid_wan22_flf_q4")
+
 
 def default_video_model() -> str:
     """生视频主链路默认档（后台配置可改，改完即时生效）。"""
@@ -1126,31 +1133,28 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
     if not dst.first_frame_path or not Path(dst.first_frame_path).exists():
         raise RuntimeError(f"下镜 #{dst.idx} 缺首帧，先生成它再出转场镜")
 
-    # 转场镜走 H3 turbo 双帧：模板双 LoadImage 默认连接 first/last frame（首=A末帧 尾=B首帧），
-    # turbo LoRA 4 步采样——转场镜是 1-2s 的过渡件，速度优先；底模与主视频同款，缓存可复用。
-    # 下面的 overrides 写的是 MiniMaxH3ImageToVideo.* / CreateVideo.* 节点，只有
-    # video_h3_turbo.json 能对上：面板「参考生视频」若被设成 wan2.1/wan2.2 档，
-    # 换模板后节点不存在会直接抛 ComfyUIError。保存时 api 已拦，这里再兜一道。
+    # 参考生视频档（面板可切换，两档模板与节点名完全不同，overrides 必须按档分派）：
+    #   · vid_h3_turbo  → video_h3_turbo.json，MiniMaxH3ImageToVideo + 24fps 音视频 latent；
+    #   · vid_wan22_flf_q4 → i2v_first_last.json，WanFirstLastFrameToVideo + 双 KSamplerAdvanced
+    #     （High/LowNoise 各一）+ 16fps。转场是 1–2s 过渡件，两档都够快。
+    # 其余视频档（单帧 i2v 模板）没有 end_image 输入，不能用于首尾帧约束，这里兜底回 H3。
     rv = ref_video_model()
-    if VIDEO_WF_BY_MODEL.get(rv) != "video_h3_turbo.json":
+    if rv not in REF_VIDEO_MODELS:
         rv = "vid_h3_turbo"
     model_key, model = await pick_model("video", None, rv)
-    wf_name = VIDEO_WF_BY_MODEL.get(model_key)
-    if wf_name != "video_h3_turbo.json":
-        # pick_model 可能因档位不可用回退到别的视频档：模板/节点名只认 H3 turbo，
-        # 回退档的方言、帧数网格、画幅也全都不一样，必须整条按 H3 走。
+    if model_key not in REF_VIDEO_MODELS:
+        # pick_model 可能因档位不可用回退到别的视频档：回退档的模板/方言/帧数网格都不一样，整条按 H3 走。
         model_key = "vid_h3_turbo"
         model = (registry().get("models") or {}).get(model_key) or model
-        wf_name = "video_h3_turbo.json"
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
-    family = "minimax_h3"        # 模板固定 H3：方言/帧数/画幅都按它算
+    family = model.get("family") or "minimax_h3"
+    wf_name = VIDEO_WF_BY_MODEL[model_key]
     comfy = ComfyUIAdapter()
     wf = comfy.load_template(wf_name)
 
-    fps = 24
+    fps = 24 if family == "minimax_h3" else 16
     duration = clamp_duration(max(1, min(2, int(params.get("duration") or 1))), family)
-    length = _h3_length(duration)
     mech = _TRANSITION_MECHANISM.get(
         (params.get("mechanism") or "").strip().lower(),
         _TRANSITION_MECHANISM["generic"])
@@ -1162,17 +1166,39 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
     start_name = await comfy.upload_image(src_frame)
     end_name = await comfy.upload_image(dst.first_frame_path)
     seed = random.randint(0, 2 ** 31 - 1)
-    w, h = _h3_dims(project)
     overrides = {
         "LoadImage@0.image": start_name,
         "LoadImage@1.image": end_name,
-        "MiniMaxH3ImageToVideo.prompt": prompt,
-        "MiniMaxH3ImageToVideo.width": w,
-        "MiniMaxH3ImageToVideo.height": h,
-        "MiniMaxH3ImageToVideo.length": length,
-        "RandomNoise.noise_seed": seed,
         "CreateVideo.fps": fps,
     }
+    if family == "minimax_h3":
+        length = _h3_length(duration)
+        w, h = _h3_dims(project)
+        overrides.update({
+            "MiniMaxH3ImageToVideo.prompt": prompt,
+            "MiniMaxH3ImageToVideo.width": w,
+            "MiniMaxH3ImageToVideo.height": h,
+            "MiniMaxH3ImageToVideo.length": length,
+            "RandomNoise.noise_seed": seed,
+        })
+    else:
+        # Wan 双帧（首尾帧）：16fps、帧数 4n+1，画幅取分镜桶并对齐 16；
+        # 两个 KSamplerAdvanced（HighNoise/LowNoise）共用一个种子，条件走 WanFirstLastFrameToVideo。
+        length = max(17, min(49, int(round(duration * fps / 4.0)) * 4 + 1))
+        w, h = _res(project)
+        w, h = max(320, w // 16 * 16), max(320, h // 16 * 16)
+        neg = dialect_negative(
+            family, "low quality, blurry, watermark, text, static freeze, jump cut, "
+                    "inconsistent character, flickering")
+        overrides.update({
+            "positive_text": prompt,
+            "negative_text": neg,
+            "KSamplerAdvanced@0.noise_seed": seed,
+            "KSamplerAdvanced@1.noise_seed": seed,
+            "WanFirstLastFrameToVideo.width": w,
+            "WanFirstLastFrameToVideo.height": h,
+            "WanFirstLastFrameToVideo.length": length,
+        })
     wf = comfy.apply_overrides(wf, overrides)
     out = await comfy.run(wf, timeout=2400, save_root=save_root,
                           filename_prefix=f"drama_studio/p{src.project_id}_trans_{src.idx}_{dst.idx}")
