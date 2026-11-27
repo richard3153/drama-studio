@@ -14,8 +14,9 @@ from ..style_presets import (ANTI_OVER_RENDER_NEG, CHAR_SHEET_NEG, CHAR_VIEW_NEG
 
 # 角色/场景/道具的“中性”正向尾巴（不再堆砌 masterpiece/8k，规避过度渲染）
 POSITIVE_SUFFIX = {
-    "portrait": ("character reference sheet, full body, clean plain background, "
-                 "consistent art style"),
+    # 【2026-11-27】portrait 的版式词已由 assemble_character_design_prompt 写在
+    # base_prompt 开头（设计图版式最前、权重最高），此处不再重复，防止 token 溢出
+    "portrait": "",
     "scene": ("concept art, environment design, consistent art style, unoccupied space"),
     "prop": ("item reference sheet, single object, clean plain background"),
 }
@@ -293,13 +294,13 @@ async def generate_asset(db, task, params: dict) -> dict:
             f"{params.get('entity_type', '')} #{params.get('entity_id', '')}。"
             f"请先在资产编辑器补全槽位/描述后再渲染")
     if role == "portrait":
-        # 【硬性要求 2026-11-21】角色资产必须三视图 sheet 版式：入口统一归一，
-        # 单人立绘(single)/角色板(board)通道废弃——任何调用方传什么都以 sheet 出图。
+        # 【2026-11-27 版式改版】角色资产从「三视图 sheet」改为「人物设计图」：
+        # 中心全身立绘 + 环绕服装分层/表情/材质/随身物件 + 手写标注（用户要求，
+        # 参照 RunningHub 上的人物设计图工作流）。版式改为 3:4 竖版，
+        # 横幅 16:9 装不下"竖立绘 + 上下两排细节"。
         params["portrait_mode"] = "sheet"
-        # 三视图 sheet = 宽横幅版式（16:9，1344x768）。
-        # 兜底修正：此前默认 832x1216 竖版，横幅三视图会被压成竖条崩版。
-        w = int(params.get("width") or 1344)
-        h = int(params.get("height") or 768)
+        w = int(params.get("width") or 768)
+        h = int(params.get("height") or 1024)
     else:
         # 场景/道具跟随项目全局画幅（角色定妆照固定竖版不参与）
         from ..aspect import asset_dims
@@ -329,7 +330,10 @@ async def generate_asset(db, task, params: dict) -> dict:
     # 场景/道具：负向提示换 NEGATIVE_ENV（人形硬排除），画质尾词换无皮肤/发丝版
     negative = _negative_for(role, params.get("style_preset") or "")
     quality = quality_suffix(params.get("style_preset") or "",
-                             human=(role not in ("scene", "prop")))
+                             human=(role not in ("scene", "prop")),
+                             # 角色设计图 prompt 已压到 60+ 词，画质词必须用精简版，
+                             # 否则连同方言词一起溢出 SDXL 的 77-token 块（实测版式退化）
+                             compact=(role == "portrait"))
     if role == "portrait":
         # 【硬性要求】sheet 三视图专属词块：信息栏需画姓名/身高小字，全局 NEG 的裸
         # "text" 会压制它 → 剔除裸 text（watermark/乱码拦截仍在 NEG 与 CHAR_SHEET_NEG 里）。
@@ -361,7 +365,7 @@ async def generate_asset(db, task, params: dict) -> dict:
     save_root = ASSETS_ROOT / str(params["project_id"]) / "assets"
     try:
         files = await comfy.run(wf, filename_prefix=f"drama_studio/p{params['project_id']}_{role}{params.get('entity_id','')}",
-                                save_root=save_root, timeout=600, on_stage=on_stage)
+                                save_root=save_root, timeout=1200, on_stage=on_stage)
     except Exception as e:
         # 自强化：失败产物反向弱化本次命中的词块（基础设施故障不计入，见 prompt_bank）
         try:
@@ -395,18 +399,18 @@ async def generate_asset(db, task, params: dict) -> dict:
         db.refresh(img)
         saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": kind})
 
-    # 三视图 sheet（一次成图）自动裁 face_ref：新版式左半就是面部特写，
-    # 裁左半区域即可作为 IPA 锁脸参考（此前 sheet 模式不产 face_ref，锁脸链路断）。
+    # 人物设计图（一次成图）自动裁 face_ref：立绘居中，头在画面上部中央，
+    # 裁中间列的上部区域即可当 IPA 锁脸参考（避开四角的细节/表情小图）。
     if role == "portrait" and params.get("portrait_mode") == "sheet" and files:
         try:
             from PIL import Image
             eid = params.get("entity_id")
             with Image.open(files[0]) as im:
                 iw, ih = im.size
-                # 只取版式左半的「头肩特写」区域：此前裁到 0.5w/0.85h 会把右侧全身像
-                # 一起裁进参考图，IPAdapter 把「特写+全身」学成混合身份/版式 →
-                # 锁脸信号稀、脸型漂移（#91 治理）。0.36w/0.72h 落在单人头肩内。
-                face = im.convert("RGB").crop((0, 0, int(iw * 0.36), int(ih * 0.72)))
+                # 中心列 x:0.30-0.70，上部 y:0.03-0.30 —— 只框住主立绘的头肩。
+                # 裁太宽会把右上表情小图一起带进参考（IPAdapter 会学成"拼版"）。
+                face = im.convert("RGB").crop((int(iw * 0.30), int(ih * 0.03),
+                                               int(iw * 0.70), int(ih * 0.30)))
             face_path = Path(files[0]).with_name(
                 f"p{params['project_id']}_portrait{eid}_sheetface_{files[0].stem.rsplit('_', 1)[-1]}.png")
             face_path.parent.mkdir(parents=True, exist_ok=True)

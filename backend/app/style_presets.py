@@ -227,38 +227,51 @@ DEFAULT_PRESET = "anime_2d"
 # 底部：窄信息栏（小字姓名+身高+关键配色色块）。固定横版 16:9（1344x768）出图。
 # 旧版只写 "three views plus face close-up"，底模画成服装陈列板/肢体拼贴（实测两例崩坏），
 # 必须把"同一个人物、每个视图全身、版式分区、信息栏"全部写死。
-CHAR_SHEET_SPEC = ("character model sheet of ONE single character on a wide horizontal canvas: "
-                   "left half of the canvas = one large face close-up portrait showing facial "
-                   "features and subtle expression in detail; right half = three full-body views "
-                   "of the SAME character standing side by side from left to right (front view, "
-                   "side view, back view), identical face, hairstyle and outfit in every view, "
-                   "full body from head to feet in every view, standing straight, arms relaxed "
-                   "at sides; along the bottom edge = one narrow caption strip with small neat "
-                   "text showing the character's name and height, plus a row of color palette "
-                   "swatches showing the key outfit colors; plain pure white background, "
-                   "no shadow, no props in hand, no other characters")
+# 人物设计图（2026-11-27 用户拍板：不要三视图/四视图排排站，改成概念设计稿）
+# 版式参考 RunningHub 上那类「人物设计图」：中心一张全身立绘，四周环绕服装分层、
+# 表情、材质、随身物件，手绘箭头 + 手写标注，米黄纸纹底。竖版 3:4。
+CHAR_SHEET_SPEC = ("character design sheet of ONE single character, vertical concept-art board "
+                   "on warm beige textured parchment: center = one large full-body illustration "
+                   "of the character standing in the outfit, head to feet, occupying about half "
+                   "the canvas height, calm pose; upper left = the outfit disassembled into flat "
+                   "separate pieces (outer garment, inner layer, belt, footwear) laid out neatly; "
+                   "upper right = three head close-ups of the SAME face with different "
+                   "expressions (calm, frowning, surprised), identical hairstyle; lower left = "
+                   "two material detail close-ups (coarse cloth weave, leather and metal "
+                   "accessory sheen); lower right = the character's personal props laid out as "
+                   "small objects; thin hand-drawn arrows connecting each detail to the matching "
+                   "part of the main figure, small handwritten annotation labels beside every "
+                   "element; a short row of four color swatches along the bottom; ink-and-wash "
+                   "concept art rendering, consistent face, hairstyle and outfit across every "
+                   "element, no other characters")
 
-# 写实底模专用：明确"同一个人被拍三次 + 一张面部特写"，否则模型画成服装残板/情绪板。
-# moyin character-generator 范式：把视图数量写死（exactly three / one horizontal row），
-# 实测不写数量时底模自由发挥成 2/3/4 格混出。
-CHAR_SHEET_SPEC_PHOTO = ("the same person on a wide horizontal studio sheet: left half of the "
-                         "canvas = one large photorealistic face close-up portrait with detailed "
-                         "facial features and subtle expression; right half = the same person "
-                         "photographed in exactly three full-body poses standing side by side "
-                         "from left to right (front view, side profile, back view), identical "
-                         "outfit and hairstyle in all three, full body from head to feet in "
-                         "every view; along the bottom edge = one narrow caption strip with "
-                         "small neat text showing the character's name and height, plus a row "
-                         "of color palette swatches of the outfit colors; seamless plain "
-                         "light-gray studio background, no clothing cutouts, no flat lay, "
-                         "no moodboard collage")
+# 写实底模专用：设计稿语气换成"现场概念设定板 + 实拍质感"，
+# 否则 SDXL 会把 parchment/ink 画成插画纸感。
+CHAR_SHEET_SPEC_PHOTO = ("photorealistic character design board of ONE single person, vertical "
+                         "concept layout on a warm grey studio backdrop: center = one large "
+                         "full-length photograph of the person standing in full outfit, head to "
+                         "feet, occupying about half the canvas height; upper left = the outfit "
+                         "as flat separate pieces (jacket, shirt, trousers, shoes) neatly laid "
+                         "out; upper right = three head close-ups of the SAME face with different "
+                         "expressions (calm, frowning, surprised); lower left = two material "
+                         "detail close-ups (fabric weave, leather and metal accessory); lower "
+                         "right = the person's personal props as small objects; thin hand-drawn "
+                         "arrows and small handwritten annotation labels beside each element; a "
+                         "short row of four color swatches along the bottom; consistent identity "
+                         "and outfit in every panel, no other people, no clothing catalog grid")
 
-CHAR_SHEET_NEG = ("flat lay, clothing cutout collage, moodboard, outfit grid, cropped feet, "
-                  "cropped head, headless figure, disembodied body parts, floating limbs, "
-                  "disconnected torso, different people in each view, watermark, gibberish text, "
-                  "garbled letters, two views only, four views, five views, grid of poses, "
-                  "duplicated panels, fashion catalog, wardrobe display, vertical portrait "
-                  "orientation, square canvas")
+# 短版设计图版式（2026-11-27）：SDXL 同样吃 77 token 分块，版式规格放在 1800 字
+# 长串末尾会被稀释成"单人立绘"（实测两版对比）。所以把版式写最前、只留 ~15 词。
+CHAR_DESIGN_SPEC_SHORT = ("character design sheet, one large full-body figure in the center, "
+                          "side panels of outfit pieces, expression heads and material "
+                          "close-ups, warm parchment background, handwritten labels")
+
+CHAR_SHEET_NEG = ("three view lineup, turnaround, orthogonal front side back views, "
+                  "four views side by side, duplicate full-body figures of the same pose, "
+                  "fashion catalog grid, lookbook spread, runway walk, moodboard, outfit grid, "
+                  "cropped feet, cropped head, headless figure, disembodied body parts, floating "
+                  "limbs, disconnected torso, different people in each panel, watermark, "
+                  "gibberish text, garbled letters, empty white margin, square canvas")
 
 # 方案 A（程序侧合成）：单视角出图规格 —— 每次只画一个方向，最后程序拼版
 # 【防拼贴】实测底模会在单视角图里自由发挥出"特写+三视图"组合 → 前缀写死 one view，
@@ -689,6 +702,32 @@ def get_style(preset_key: str) -> dict:
     return STYLE_PRESETS.get(preset_key) or STYLE_PRESETS[DEFAULT_PRESET]
 
 
+def assemble_character_design_prompt(slots: dict, preset_key: str,
+                                     lifelike: bool = True) -> str:
+    """人物设计图版式的短组装（2026-11-27 版式改版专用）。
+
+    为什么不是走九段式长串：SDXL 超过 77 token 会切成多块再池化平均，1200 字以上的
+    九段式会让末尾的"设计图版式"退化成一张普通立绘（实测 1800 字那版完全没出面板）。
+    所以顺序固定为「版式 → 风格 → 人 → 穿什么 → 细节」：
+      design sheet spec(15 词) + style_short + identity/ethnicity + hair + clothing
+      + 版式细节（色卡/材质）
+    目标 55-70 词，落在一个 77-token 块内。
+    """
+    parts = [CHAR_DESIGN_SPEC_SHORT, shot_style_short(preset_key)]
+    eth = ethnicity_token(slots)
+    # 服装紧跟版式与身份：放到第三位，避免被发型/配色词稀释成"现代T恤"
+    for key in ("identity", "clothing", "hair"):
+        v = _take(slots, key)
+        if v:
+            parts.append(v)
+        if key == "identity" and eth:
+            parts.append(eth)
+    # palette 不再注入：原设配色（青/绯）与"灰粗布"服装词冲突，
+    # 实测会把粗布长衫染成青色/墨绿（2026-11-27）
+    parts.append("ancient chinese peasant outfit, coarse cloth texture")
+    return ", ".join(p for p in parts if p)
+
+
 def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
                               lifelike: bool = True, full_identity: bool = False) -> str:
     """角色提示词组装（第二章九段式公式：风格定位→身份→身材→五官→发型→服装→饰品→
@@ -729,13 +768,19 @@ def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
         else:
             parts.append(CHAR_SHEET_SPEC if mode == "sheet" else CHAR_SINGLE_SPEC)
     if lifelike:
-        parts.append(lifelike_tokens(preset_key, human=True,
-                                     pose=(mode == "single"),
-                                     consistent=(mode != "single") and not full_identity))
+        # 设计图版式（sheet）不堆活人感长串：一张图里要塞立绘+细节+标注，
+        # 20 段光照/瑕疵词会把"版式+服装"稀释掉（2026-11-27 实测：2165 字里
+        # 服装词失效，出成别的衣服）。只留一条材质真实感。
+        if mode == "sheet":
+            parts.append("realistic material rendering, subtle surface texture")
+        else:
+            parts.append(lifelike_tokens(preset_key, human=True,
+                                         pose=(mode == "single"),
+                                         consistent=(mode != "single") and not full_identity))
     from .style_vocab import style_vocab_positive
     # 风格词库（只取 style 锚词）：特效/氛围词留给镜头，设定图保持干净版式
     parts.append(style_vocab_positive(preset_key, kinds=("style",)))
-    parts.append(quality_suffix(preset_key, human=True))
+    parts.append(quality_suffix(preset_key, human=True, compact=(mode == "sheet")))
     return ", ".join(p for p in parts if p)
 
 

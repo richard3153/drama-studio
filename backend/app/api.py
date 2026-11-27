@@ -23,7 +23,8 @@ from .services.asset_service import (generate_asset, generate_portrait,
                                      generate_portrait_composed, refine_asset)
 from .services import asset_service, pipeline_service, script_service, shot_service, voice_service
 from .services.script_service import MOVING_CAMERA, build_candidate_prompts
-from .style_presets import (STYLE_PRESETS, assemble_character_prompt,
+from .style_presets import (STYLE_PRESETS, assemble_character_design_prompt,
+                            assemble_character_prompt,
                             assemble_prop_prompt, assemble_scene_prompt)
 
 router = APIRouter(prefix="/api")
@@ -421,8 +422,8 @@ def update_project(pid: int, body: ProjectUpdate):
                     if not slots:
                         continue
                     if etype == "character":
-                        row.base_prompt = assemble_character_prompt(
-                            slots, p.style_preset, "sheet", lifelike, lifelike_full)
+                        row.base_prompt = assemble_character_design_prompt(
+                            slots, p.style_preset)
                     elif etype == "scene":
                         row.base_prompt = assemble_scene_prompt(
                             slots, p.style_preset, lifelike, fallback_subject=row.name)
@@ -976,8 +977,9 @@ class ConfirmIn(BaseModel):
 
 
 def _portrait_dims(mode: str | None) -> tuple[int, int]:
-    """【硬性要求】角色资产必须三视图：一律 16:9 横幅（1344x768），单人竖版通道已废弃。"""
-    return (1344, 768)
+    """【2026-11-27 版式改版】角色资产改为「人物设计图」：3:4 竖版 1024x1360。
+    中心竖立绘 + 上下两排细节/表情/分层，横幅装不下（旧 16:9 三视图已废弃）。"""
+    return (768, 1024)
 
 
 @router.post("/projects/{pid}/confirm-candidates")
@@ -1004,9 +1006,9 @@ async def confirm_candidates(pid: int, body: ConfirmIn):
             if _dup_check(Character, c.name):
                 created["skipped_dup"].append(f"角色:{c.name}")
                 continue
-            # 【硬性要求】角色资产必须三视图：候选携带的 portrait_mode 一律归一 sheet
-            prompt = (assemble_character_prompt(c.slots, preset, "sheet",
-                                               lifelike, lifelike_full)
+            # 【2026-11-27 版式改版】角色 = 人物设计图（中心立绘+环绕细节+手写标注），
+            # 不再三视图；用短版组装器把版式压进 SDXL 的单个 77-token 块
+            prompt = (assemble_character_design_prompt(c.slots, preset)
                       if c.slots else c.base_prompt)
             row = Character(project_id=pid, name=c.name, description=c.description,
                             base_prompt=prompt,
@@ -1373,11 +1375,10 @@ def update_entity(etype: str, eid: int, body: EntityUpdate):
             lifelike = bool(project.lifelike) if project else True
             lifelike_full = bool(getattr(project, "lifelike_full", 0)) if project else False
             if etype == "character":
-                # 【硬性要求】角色资产必须三视图：请求携带的 portrait_mode 一律归一 sheet
+                # 【2026-11-27 版式改版】角色资产 = 人物设计图，短版组装器
                 mode = "sheet"
                 row.portrait_mode = mode
-                row.base_prompt = assemble_character_prompt(body.slots, preset, mode,
-                                                            lifelike, lifelike_full)
+                row.base_prompt = assemble_character_design_prompt(body.slots, preset)
             elif etype == "scene":
                 row.base_prompt = assemble_scene_prompt(body.slots, preset, lifelike,
                                                         fallback_subject=row.name)
@@ -1512,13 +1513,15 @@ def _character_task_params(db, pid, entity, preset, lifelike, lifelike_full,
                      "prefer_tier": tier, "model_key": model_key})
         return "asset_compose", base
     if gm == "layout":
-        # 版式模型整张多视图：默认 Qwen-Image（版式/多视图/中文小字渲染能力最强，
-        # 实测 SDXL 整张版式必崩、compose img2img 转向弱）——8G 显存 offload 可跑。
-        # 信息栏文字注入真实角色名（实测不注入时 Qwen 自由发挥伪文字）。
-        caption = f', caption strip shows the Chinese text "{entity.name}" in small neat font'
-        base.update({"task_type": "asset", "base_prompt": entity.base_prompt + caption,
+        # 版式模型整张多视图：默认跟随 models.yaml 的 portrait 底模（2026-11-27 起
+        # = RealVisXL/SDXL：Qwen-Image 在本机 8G 卡上装不下，10-26 分钟不出图）。
+        # 需要 Qwen 版式时在上游显式传 model_key="img_qwen_image"。
+        # 中文名标签不再注入：SDXL 的 CLIP 对中文无表征，纯噪声 token 还会挤占
+        # 设计图提示词本就紧张的 77-token 预算；手写标注保持"伪文字"效果，
+        # 真实姓名后续用 PIL 后期叠加。
+        base.update({"task_type": "asset", "base_prompt": entity.base_prompt,
                      "portrait_mode": "sheet", "prefer_tier": tier,
-                     "model_key": model_key or "img_qwen_image",
+                     "model_key": model_key,
                      "entity_name": entity.name})
         return "asset", base
     # 【硬性要求】角色资产必须三视图：gm single/board 通道废弃，一律 sheet
@@ -1565,8 +1568,7 @@ async def regenerate(body: RegenerateIn):
         slots = json.loads(getattr(entity, "prompt_json", "{}") or "{}")
         if slots:
             if body.entity_type == "character":
-                prompt = assemble_character_prompt(slots, preset, "sheet",
-                                                   lifelike, lifelike_full)
+                prompt = assemble_character_design_prompt(slots, preset)
             elif body.entity_type == "scene":
                 prompt = assemble_scene_prompt(slots, preset, lifelike,
                                                fallback_subject=entity.name)
