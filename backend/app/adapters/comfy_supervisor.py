@@ -25,8 +25,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..config import (BASE_DIR, COMFYUI_DIR, COMFYUI_LAUNCH_ARGS, COMFYUI_PYTHON,
-                      COMFYUI_URL, DATA_DIR)
+from ..config import (BASE_DIR, COMFYUI_DIR, COMFYUI_PYTHON,
+                      COMFYUI_URL, DATA_DIR, EXTRA_MODEL_PATHS)
 
 STATE_FILE = DATA_DIR / ".comfy_supervisor.json"
 BOOT_COOLDOWN = 900.0          # 冷启动 7-14 分钟，冷却期内不重复拉起
@@ -108,20 +108,49 @@ def _boot_age() -> float:
     return time.time() - last if last else 1e9
 
 
+def _launch_spec() -> tuple[Path, Path, list[str]]:
+    """拉起前按后台配置现算启动参数（cwd, python, args）。
+
+    为什么不在导入期算：config.COMPYUI_LAUNCH_ARGS 是进程启动时求值的常量，
+    面板把注意力后端改成 sage 之后，旧实现即便点了「重启 ComfyUI」，
+    新进程仍以旧参数（pytorch）起来——配置写着 sage 但没生效，还看不出原因。
+    现在每次拉起都读 settings：改完注意力/安装目录/extra_paths，点重启即生效。
+    """
+    try:
+        from .. import settings as _S
+        srv = _S.load().get("server") or {}
+        acc = _S.load().get("accel") or {}
+    except Exception:
+        srv, acc = {}, {}
+    comfy_dir = Path(str(srv.get("comfyui_dir") or COMFYUI_DIR))
+    python = Path(str(COMFYUI_PYTHON))
+    if comfy_dir != Path(COMFYUI_DIR):      # 面板换了安装目录 → python 跟着换
+        python = comfy_dir / "ComfyUI" / ".venv" / "Scripts" / "python.exe"
+    extra = str(srv.get("extra_model_paths") or EXTRA_MODEL_PATHS)
+    args = ["-u", "-s", r"ComfyUI\main.py", "--enable-manager",
+            "--extra-model-paths-config", extra,
+            "--user-directory", str(comfy_dir / "ComfyUI" / "user")]
+    if str(acc.get("attention") or "").lower() == "sage":
+        args.append("--use-sage-attention")
+    return comfy_dir, python, args
+
+
 def _start() -> bool:
-    if not COMFYUI_PYTHON.exists():
-        print(f"[comfy-supervisor] 启动失败：找不到 {COMFYUI_PYTHON}")
+    comfy_dir, python, args = _launch_spec()
+    if not python.exists():
+        print(f"[comfy-supervisor] 启动失败：找不到 {python}")
         return False
     _BOOT_LOG.parent.mkdir(parents=True, exist_ok=True)
     try:
         fout = open(_BOOT_LOG, "ab")
         ferr = open(_BOOT_ERR, "ab")
         p = subprocess.Popen(
-            [str(COMFYUI_PYTHON), *COMFYUI_LAUNCH_ARGS],
-            cwd=str(COMFYUI_DIR), stdout=fout, stderr=ferr, stdin=subprocess.DEVNULL,
+            [str(python), *args],
+            cwd=str(comfy_dir), stdout=fout, stderr=ferr, stdin=subprocess.DEVNULL,
             creationflags=_CREATE_NO_WINDOW | _CREATE_NEW_GROUP)
         _write_state(last_start=time.time(), pid=p.pid)
-        print(f"[comfy-supervisor] ComfyUI 进程不在，已拉起 pid={p.pid}（冷启动约 7-14 分钟）")
+        print(f"[comfy-supervisor] ComfyUI 进程不在，已拉起 pid={p.pid}（冷启动约 7-14 分钟）"
+              f" args={' '.join(args)}")
         return True
     except Exception as e:
         print(f"[comfy-supervisor] 拉起失败：{e}")

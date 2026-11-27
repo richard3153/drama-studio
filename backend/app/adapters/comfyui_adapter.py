@@ -312,6 +312,17 @@ class ComfyUIAdapter:
                         if cls == "KSampler" and "cfg" in wf[nid]["inputs"]:
                             wf[nid]["inputs"]["cfg"] = max(5.0, float(wf[nid]["inputs"]["cfg"]))
 
+            # 步数蒸馏 LoRA 文件选择（面板「LoRA 与加速」里选的那个）。
+            # 只接管 wan2.1 480P 蒸馏族（lightx2v_I2V_14B_480p…）：双帧模板的
+            # wan2.2 高低噪双 LoRA、H3 turbo 模板的 fl2v_turbo 都有配套文件，
+            # 按全局一个名字硬换会直接把模板换崩（模型/步数全错配）。
+            _pick_lora = (_S.get("lora", "video_step_lora") or "").strip()
+            if _pick_lora:
+                for nid in _lora_nodes:
+                    cur = str(wf[nid].get("inputs", {}).get("lora_name") or "")
+                    if cur and cur != _pick_lora and "lightx2v_I2V_14B_480p" in cur:
+                        wf[nid]["inputs"]["lora_name"] = _pick_lora
+
             payload = {"prompt": wf, "client_id": self.client_id}
             try:
                 r = await c.post(f"{self.base}/prompt", json=payload)

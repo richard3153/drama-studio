@@ -1976,9 +1976,20 @@ function SettingsModal({ open, onClose }) {
   const cfg = draft || {}
   const opts = (data && data.options) || {}
   const save = async () => {
+    // 只提交真正改过的键：整份 config 回传时，后端按"哪些键变了"判要不要重启，
+    // 全量提交会让"只改了个下拉"也提示重启后端。这条 diff 让提示与事实一致。
+    const base = (data && data.config) || {}
+    const patch = {}
+    Object.keys(cfg).forEach(g => {
+      const cur = cfg[g] || {}, old = base[g] || {}
+      const ch = {}
+      Object.keys(cur).forEach(k => { if (String(cur[k]) !== String(old[k])) ch[k] = cur[k] })
+      if (Object.keys(ch).length) patch[g] = ch
+    })
+    if (!Object.keys(patch).length) { setMsg('没有改动。'); return }
     setBusy('save')
     try {
-      const r = await put('/settings', draft)
+      const r = await put('/settings', patch)
       setData(d => ({ ...d, config: r.config, effective: { ...(d.effective || {}), models: r.config.models } }))
       setDraft(JSON.parse(JSON.stringify(r.config)))
       await load()

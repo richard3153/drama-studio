@@ -119,9 +119,12 @@ async def settings_get():
             "models": "即时生效（下一次生成任务按新档位选模）",
             "lora": "即时生效（提交工作流时按开关处理）",
             "accel.video_steps": "即时生效（下次提交采样参数）",
-            "accel.attention": "需重启 ComfyUI 生效（sage 需已安装 sageattention）",
+            "accel.attention": "需重启 ComfyUI 生效（面板「重启 ComfyUI」即带 --use-sage-attention 拉起；sage 需已安装 sageattention）",
             "server.ollama_model": "即时生效（下一次剧本/拆解调用即换模型）",
-            "server": "需重启后端生效（服务地址与路径在进程启动时写入环境变量）",
+            "server.comfyui_dir": "需重启 ComfyUI 生效（安装目录与 python 解释器按它重算）",
+            "server.extra_model_paths": "需重启 ComfyUI 生效（启动参数 --extra-model-paths-config 按它重算）",
+            "server.comfyui_url": "需重启后端生效（服务地址在进程启动时写入环境变量）",
+            "server.ollama_url": "需重启后端生效（服务地址在进程启动时写入环境变量）",
         },
     }
 
@@ -130,15 +133,52 @@ async def settings_get():
 def settings_put(body: dict):
     from . import settings as S
     patch = body or {}
+    # ① 值校验：面板可写任意字符串，写错不该等到任务跑起来才炸。
+    #    参考生图必须落 SDXL 族（首帧走 scene_ipadapter、九宫格走 grid_storyboard，
+    #    换成 Qwen/Flux 权重工作流里 CheckpointLoader 直接 400）。
+    reg = registry().get("models", {})
+    errs: list[str] = []
+    for k, v in (patch.get("models") or {}).items():
+        if not isinstance(v, str) or not v.strip():
+            continue
+        key = v.strip()
+        info = reg.get(key)
+        if not info:
+            errs.append(f"{k} = {key}：models.yaml 里没有这个档")
+            continue
+        roles = set(info.get("role") or [])
+        fam = info.get("family")
+        if k in ("ref_image_photo", "ref_image_anime"):
+            if fam != "sdxl" or not (roles & {"scene", "portrait"}):
+                errs.append(f"{k} = {key}：参考生图只能用 SDXL 族（首帧/九宫格模板绑死 SDXL）")
+        elif k == "default_image":
+            if not (roles & {"portrait", "scene", "prop", "image_edit"}):
+                errs.append(f"{k} = {key}：不是图像档")
+        elif "video" not in roles:
+            errs.append(f"{k} = {key}：不是视频档")
+    lora_pick = ((patch.get("lora") or {}).get("video_step_lora") or "").strip()
+    if lora_pick and lora_pick not in {x["name"] for x in _scan_loras()}:
+        errs.append(f"lora.video_step_lora = {lora_pick}：LoRA 目录里找不到这个文件")
+    if errs:
+        raise HTTPException(400, "；".join(errs))
+
+    # ② 只有"真改了的键"才算需要重启（前端保存时会把整份 config 一起回传，
+    #    按 body 有没有该组来判会让每次保存都提示重启后端+重启 ComfyUI）。
+    before = S.load()
     cfg = S.save(patch)
+    changed_srv = {k for k in (cfg.get("server") or {})
+                   if (before.get("server") or {}).get(k) != (cfg.get("server") or {}).get(k)}
+    changed_acc = {k for k in (cfg.get("accel") or {})
+                   if (before.get("accel") or {}).get(k) != (cfg.get("accel") or {}).get(k)}
     need = []
-    # 精确到键：ollama_model 每次调用都重新读配置，改完即时生效；
-    # video_steps 在提交采样时读，也即时生效；只有服务地址/路径要重启后端、注意力要重启 ComfyUI。
-    if set((patch.get("server") or {}).keys()) - {"ollama_model"}:
+    # ComfyUI 启动相关（安装目录 / extra_model_paths / 注意力）→ supervisor 每次拉起现读配置，
+    # 点「重启 ComfyUI」即生效；服务地址在后端进程启动时写环境变量 → 重启后端。
+    if changed_srv & {"comfyui_url", "ollama_url"}:
         need.append("重启后端")
-    if "attention" in (patch.get("accel") or {}):
+    if (changed_srv & {"comfyui_dir", "extra_model_paths"}) or ("attention" in changed_acc):
         need.append("重启 ComfyUI")
-    return {"ok": True, "config": cfg, "need_restart": need}
+    return {"ok": True, "config": cfg, "need_restart": need,
+            "changed": {"server": sorted(changed_srv), "accel": sorted(changed_acc)}}
 
 
 @router.get("/settings/loras")

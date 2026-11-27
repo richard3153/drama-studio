@@ -21,10 +21,11 @@ COMFYUI_DIR = Path(os.environ.get(
 COMFYUI_PYTHON = Path(os.environ.get(
     "DRAMA_COMFYUI_PYTHON",
     str(COMFYUI_DIR / "ComfyUI" / ".venv" / "Scripts" / "python.exe")))
+EXTRA_MODEL_PATHS = os.environ.get(
+    "DRAMA_EXTRA_MODEL_PATHS", r"D:\Comfy-Desktop\extra_paths.yaml")
 COMFYUI_LAUNCH_ARGS = [
     "-u", "-s", r"ComfyUI\main.py", "--enable-manager",
-    "--extra-model-paths-config", os.environ.get(
-        "DRAMA_EXTRA_MODEL_PATHS", r"D:\Comfy-Desktop\extra_paths.yaml"),
+    "--extra-model-paths-config", EXTRA_MODEL_PATHS,
     "--user-directory", str(COMFYUI_DIR / "ComfyUI" / "user"),
 ]
 # 加速方法（后台配置 accel.attention=sage 时由 settings.bootstrap 置位）：

@@ -859,15 +859,21 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
         raise RuntimeError("镜头首帧提示词为空，先点「重组装提示词」")
 
     _grid_fam = style_family(preset)
-    model_key, model = await pick_model("grid9", "low",
-                                        model_key=ref_image_key(_grid_fam),
-                                        style_family=_grid_fam,
-                                        allowed_families=frozenset(("sdxl",)))
+    try:
+        model_key, model = await pick_model("grid9", "low",
+                                            model_key=ref_image_key(_grid_fam),
+                                            style_family=_grid_fam,
+                                            allowed_families=frozenset(("sdxl",)))
+    except RuntimeError:
+        # 写实族选中的 RealVisXL 没有 grid9 角色（九宫格模板是 SDXL 动漫拼版），
+        # 面板把参考生图指向非宫格档时不能让整条任务 failed —— 退到注册表里带 grid9 的 SDXL 档。
+        model_key, model = await pick_model("grid9", "low",
+                                            style_family=_grid_fam,
+                                            allowed_families=frozenset(("sdxl",)))
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
 
     comfy = ComfyUIAdapter()
-    wf = comfy.load_template(GRID_WF)
     save_root = ASSETS_ROOT / str(shot.project_id) / "shots"
     w, h = _res(project)
     base_seed = random.randint(0, 2**31 - 1)

@@ -44,7 +44,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "accel": {
         "attention": "pytorch",   # pytorch | sage
-        "video_steps": 4,         # 关掉步数蒸馏 LoRA 时自动抬到 20
+        # 只在"关掉步数蒸馏 LoRA"时才用的采样步数：蒸馏 LoRA 旁路后 4 步必糊，
+        # 抬到 20 步（16-24 区间实测可用）。开着蒸馏时工作流自带 4 步，这个值不参与。
+        "video_steps": 20,
     },
 }
 
@@ -80,6 +82,16 @@ def load() -> dict:
     return cfg
 
 
+def _to_bool(v) -> bool:
+    """把面板/接口可能传的 "false"/"0"/"" 也当假——bool("false") 是 True，
+    不处理会把"关掉蒸馏 LoRA"这种开关点成开的。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return str(v).strip().lower() not in ("", "0", "false", "no", "off", "none")
+
+
 def save(patch: dict) -> dict:
     """合并写入（白名单过滤 + 类型纠正），返回保存后的完整配置。"""
     cur = load()
@@ -91,14 +103,25 @@ def save(patch: dict) -> dict:
             if k not in _ALLOWED[grp]:
                 continue
             if isinstance(DEFAULTS[grp][k], bool):
-                v = bool(v)
+                v = _to_bool(v)
             elif isinstance(DEFAULTS[grp][k], int) and not isinstance(v, str):
                 try:
                     v = int(v)
                 except Exception:
                     continue
+            elif isinstance(DEFAULTS[grp][k], int) and isinstance(v, str):
+                try:
+                    v = int(v.strip())
+                except Exception:
+                    continue
             elif not isinstance(v, str):
                 v = str(v)
+            if grp == "accel" and k == "video_steps":
+                v = max(1, min(80, int(v)))          # 采样步数兜底夹到可用区间
+            if grp == "accel" and k == "attention":
+                v = str(v).strip().lower()
+                if v not in ("pytorch", "sage"):
+                    continue                          # 只认这两个，别把启动参数写歪
             clean.setdefault(grp, {})[k] = v.strip() if isinstance(v, str) else v
     cfg = _deep_merge(cur, clean)
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
