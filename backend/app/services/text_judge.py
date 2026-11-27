@@ -1,15 +1,17 @@
 """改字判定 + 下一轮重绘框计算（自动迭代的核心）。
 
 一轮 inpaint 之后发生什么，全看这里：
-  1. `judge()`   —— 把 OCR 读到的字与目标文字比对，给出"过/不过"和命中率；
-  2. `focus_box()` —— 不过就重新框选：优先框住"读得最差的那一块字"，并把面积压到
-     上一轮的 85% 以内（用户要的"重绘范围逐步减小"），到像素下限就停，避免越缩越糊。
+  1. `judge()`      —— 把 OCR 读到的字与目标文字比对，给出"过/不过"和命中率；
+  2. `locate_bad()` —— 定位"具体是第几个字写错了"；
+  3. `char_box()`   —— 把整段框收窄到那一个字（逐字修复，范围越修越小）；
+  4. `focus_box()`  —— 定位不到单字时的整段框收缩（目标字占满框则不缩，防切字留残影）。
 
-判定口径（刻意现实，不追求 100%）：
-  · 中文按**字符命中率**：目标里 75% 的字被读出来即算过（毛笔字 + 做旧底很难全对）；
-  · 英文按**单词命中率**：80%；
-  · 另设"杂质"上限：框内读出的字里，不属于目标的比例 > 45% 视为框太大/周围还有乱字，
-    即使命中率够也不算过 —— 这种情况交给 focus_box 缩框解决；
+判定口径（刻意现实，不追求 100% 绝对像素级，但要求"读得出、读得对"）：
+  · 中文按**字符命中率**：≤4 字的短句要求全对（错一个字就是错牌匾），长句 ≥90%；
+  · 英文按**单词命中率**：85%；
+  · 另加 OCR 置信度下限（中 0.40 / 英 0.45），读得太虚不算过；
+  · 框内读出的其它标注（`extra`）**只作报告、不做否决**——设计图本身就到处是标注，
+    只要目标这几个字读清楚了就算达标；
   · 尺寸标注（300 / 507.68 / 620×840）不是文字内容，判定前剔除。
 """
 from __future__ import annotations
@@ -82,6 +84,52 @@ def judge(target: str, items: list[dict] | None, lang: str = "zh",
 
     return {"ok": reason == "ok", "hit": round(hit, 3), "extra": round(extra, 3),
             "best_score": round(best, 3), "observed": observed[:60], "reason": reason}
+
+
+def locate_bad(items: list[dict] | None, target: str, lang: str = "zh") -> dict | None:
+    """找出被写错/漏写的那个字：返回 {k, char, n, kind}，找不到返回 None。
+
+    逐字修复的前提是知道"错在第几个字"。整串比对用 difflib 对齐目标与 OCR 读数，
+    取第一处 replace/delete 段（observed 多字属于插入，跳过继续找）。
+    """
+    if lang == "en" or not items:
+        return None
+    observed = "".join(it["text"] for it in _meaningful(items))
+    t = _norm(target)
+    o = _norm(observed)
+    if not t or not o:
+        return None
+    import difflib
+    sm = difflib.SequenceMatcher(None, t, o, autojunk=False)
+    for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
+        if tag in ("replace", "delete") and i2 > i1:
+            return {"k": i1, "char": t[i1], "n": len(t), "kind": tag}
+    return None
+
+
+def char_box(box: dict, k: int, n: int, vertical: bool = True, pad: float = 0.55) -> dict:
+    """把整段框收窄到第 k 个字（按 n 等分），单字四周留 `pad` 个单字尺寸的余量。
+
+    这是"重绘范围逐步减小"的极致形态：一次只重写一个字形，模型不必同时猜五个字，
+    成功率比整段重写高得多（实测整段重写常出现"改对一个、写坏另一个"）。
+    横向排布（框宽 > 框高）时按宽度等分。
+    """
+    box = {x: float(box[x]) for x in ("x", "y", "w", "h")}
+    n = max(1, int(n))
+    k = max(0, min(n - 1, int(k)))
+    if n == 1:
+        return dict(box)
+    if vertical:
+        cell = box["h"] / n
+        y0 = box["y"] + cell * k
+        lo = max(box["y"], y0 - cell * pad)
+        hi = min(box["y"] + box["h"], y0 + cell * (1 + pad))
+        return {"x": box["x"], "y": lo, "w": box["w"], "h": hi - lo}
+    cell = box["w"] / n
+    x0 = box["x"] + cell * k
+    lo = max(box["x"], x0 - cell * pad)
+    hi = min(box["x"] + box["w"], x0 + cell * (1 + pad))
+    return {"x": lo, "y": box["y"], "w": hi - lo, "h": box["h"]}
 
 
 def focus_box(box: dict, items: list[dict] | None, target: str, lang: str,

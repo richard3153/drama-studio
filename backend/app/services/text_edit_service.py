@@ -209,13 +209,22 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
     best = {"key": (-1.0, -1.0), "file": None, "box": box0,
             "denoise": base_denoise, "prompt": prompt}
     stagnant = 0
+    col_box = dict(box0)      # 最近一次的"整段框"，逐字修复时以它为基准定位错字
+    single_char: str | None = None   # 非空表示本轮只重写这一个字
 
     for r in range(1, max_rounds + 1):
         mask_path = (Path(ASSETS_ROOT) / str(pid) / "masks"
                      / f"text_mask_{int(datetime.now().timestamp() * 1000)}_r{r}.png")
         make_mask(src, cur_box, mask_path)
-        denoise = max(0.55, min(0.98, base_denoise + 0.05 * (r - 1)))
-        prompt_r = prompt if r == 1 else (prompt + (_ERASE_EN if lang == "en" else _ERASE_ZH))
+        denoise = max(0.55, min(0.95, base_denoise + 0.05 * (r - 1)))
+        if single_char:
+            # 单字轮：提示词只描述这一个字，避免模型在窄框里再猜整串
+            prompt_r = build_prompt(single_char, params.get("extra_prompt") or "",
+                                    lang=lang, kind=kind_tag)
+        else:
+            prompt_r = prompt
+        if r > 1:
+            prompt_r = prompt_r + (_ERASE_EN if lang == "en" else _ERASE_ZH)
         stage = (f"第 {r}/{max_rounds} 轮局部重绘（{kind_tag} 框 "
                  f"{cur_box['w'] * 100:.0f}%×{cur_box['h'] * 100:.0f}%，{lang}）"
                  if max_rounds > 1 or auto else "本地 Qwen-Image 局部重绘中（只动文字框）")
@@ -268,11 +277,23 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
         # 重新框选：目标字占满框时不缩（缩了会切字留残影），只换种子/强度重试；
         # 目标字只占框一部分时，才收缩到目标所在的那一块。
         nxt = text_judge.focus_box(cur_box, items, text, lang, img_w, img_h)
+        # 能定位到"具体写错了哪个字"且整串 ≥3 个字时，改为**只重写这一个字**：框收窄到
+        # 该字所在的一段（约整段高度的 1/n），提示词也只给这一个字。整段重写常出现
+        # "改对一个、又写坏另一个"（实测「青云宗令牌」第 1 轮「牌」对了、「青」却成「胃」）。
+        bad = text_judge.locate_bad(items, text, lang) if auto else None
+        if bad and bad["n"] >= 3:
+            single_char = bad["char"]
+            nxt = text_judge.char_box(col_box, bad["k"], bad["n"],
+                                      vertical=col_box["h"] >= col_box["w"])
+        else:
+            single_char = None
+            col_box = dict(nxt)
         same = text_judge.same_box(cur_box, nxt)
         if same and stagnant >= 1:
             update_progress(db, task, 0.95, "框已到最小范围且命中率无变化，停止迭代（建议换词或人工微调）")
             break
-        src, src_name = out, await comfy.upload_image(out)
+        # 下一轮仍从**原始图**重画（不是在上轮产物上再叠一遍）：叠着改会把上轮的错字/
+        # 残笔一起留在框内，越迭代越糊（实测第 3 轮出「牌」+「券」底的叠字）。
         cur_box = nxt
 
     await comfy.free_memory()

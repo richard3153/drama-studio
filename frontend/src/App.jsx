@@ -1753,7 +1753,7 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted, onTextEd
                 <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.65 }}>
                   三类资产都支持在<b>同一张已生成的图上</b>框住文字区域重画——框外的纸纹、折痕、朱印、边框与光影一点不动，不耗 token、不调云端：
                   道具设计图改牌面/券面铭文，场景设计图改门额/牌匾/招牌，角色设计图改面板旁的手写标注与信息行。
-                  画完会<b>自动判字</b>（本地 OCR 读数与原字逐字比对，零 token）：没读对就按生成情况重新框选再画，框逐步收紧，默认最多 3 轮，落库交付其中最好的一轮。
+                  画完会<b>自动判字</b>（本地 OCR 读数与原字逐字比对，零 token）：没读对就按生成情况重新框选再画，框逐步收紧、能定位到错字时只重写那一个字，默认最多 3 轮，落库交付其中最好的一轮。<span style={{ color: 'var(--dim)' }}>小提示：旧字的下半截若落在框外会留一道残笔，拖框时把下缘多留一点。</span>
                   {role === 'prop' && <div style={{ marginTop: 4 }}>
                     带文字道具在<b>生成时</b>就按语言自动分工：<b>中文</b>走 MOSS-Image SFT（8 步蒸馏，约 40 秒，毛笔字逐字准），
                     <b>英文</b>走 Ideogram 4 fp8（结构化 caption，英文单词一个不差）。英文档不支持局部重绘，改字会整图重出、构图可能变化。
