@@ -13,7 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from ..adapters.ollama_adapter import OllamaAdapter, _strip_think
+from ..adapters.ollama_adapter import OllamaAdapter, _strip_think, effective_model
 from ..style_presets import (_clean, QUALITY_SUFFIX, QUALITY_SUFFIX_ENV,
                              quality_suffix, single_moment,
                              assemble_character_prompt,
@@ -281,9 +281,10 @@ def _multi_layout_hint(names: list[str], looks: list[str]) -> str:
     return ", multiple characters in the same frame, standing apart, clear separation between characters"
 
 
-async def _chat_json(prompt: str, system: str, *, model: str = "qwen3.5:4b",
+async def _chat_json(prompt: str, system: str, *, model: str = "",
                      retries: int = 2, on_stage=None) -> dict:
     ollama = OllamaAdapter()
+    model = (model or "").strip() or effective_model()
     last_err = None
     for attempt in range(retries + 1):
         try:
@@ -491,7 +492,7 @@ async def continue_outline(db, task, params: dict) -> dict:
         try:
             prompt = f"本集标题：{ep.title}\n本集大纲：\n{ep.outline}\n\n请写本集完整剧本。"
             text = await OllamaAdapter().chat(prompt, system=SCRIPT_FORMAT_SYSTEM,
-                                              model=params.get("model") or "qwen3.5:4b",
+                                              model=params.get("model") or effective_model(),
                                               temperature=LLM_TEMP)
             ep.script_text = text
             ep.status = "script"
@@ -534,7 +535,7 @@ async def write_episode_script(db, task, params: dict) -> dict:
     update_progress(db, task, 0.2, "按影视标准格式写剧本")
     prompt = f"本集标题：{ep.title}\n本集大纲：\n{ep.outline}\n\n请写本集完整剧本。"
     text = await OllamaAdapter().chat(prompt, system=SCRIPT_FORMAT_SYSTEM,
-                                      model=params.get("model") or "qwen3.5:4b",
+                                      model=params.get("model") or effective_model(),
                                       temperature=LLM_TEMP)
     ep.script_text = text
     ep.status = "script"
@@ -1050,7 +1051,7 @@ async def breakdown_episode(db, task, params: dict) -> dict:
     ep = db.get(Episode, params["episode_id"])
     project = db.get(Project, ep.project_id)
     preset = project.style_preset if project else "anime_2d"
-    model = params.get("model") or "qwen3.5:4b"
+    model = params.get("model") or effective_model()
 
     update_progress(db, task, 0.05, "规则解析剧本场景块（零 LLM）")
     scenes = parse_script(ep.script_text)
@@ -1744,7 +1745,7 @@ async def refine_text(db, task, params: dict) -> dict:
     system = ("你是短剧编剧编辑。" + ("润色给定剧本文本，保持标准剧本格式与人物。" if action == "polish"
               else "续写给定剧本文本约300字，保持标准剧本格式与风格连贯。") + "直接输出文本。")
     text = await OllamaAdapter().chat(params["text"], system=system,
-                                      model=params.get("model") or "qwen3.5:4b",
+                                      model=params.get("model") or effective_model(),
                                       temperature=LLM_TEMP)
     return {"text": text}
 

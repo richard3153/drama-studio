@@ -5,8 +5,14 @@ import re
 import httpx
 
 from ..config import OLLAMA_URL
+from .. import settings as app_settings
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def effective_model() -> str:
+    """当前生效的 LLM 档：后台配置面板 > 适配器默认（qwen3.5:4b）。"""
+    return (app_settings.get("server", "ollama_model") or "").strip() or "qwen3.5:4b"
 
 
 def _strip_think(text: str) -> str:
@@ -18,10 +24,11 @@ class OllamaAdapter:
     def __init__(self, base_url: str = OLLAMA_URL):
         self.base = base_url.rstrip("/")
 
-    async def chat(self, prompt: str, *, system: str = "", model: str = "qwen3.5:4b",
+    async def chat(self, prompt: str, *, system: str = "", model: str = "",
                    json_mode: bool = False, temperature: float = 0.7,
                    timeout: float = 600.0, num_ctx: int = 8192,
                    disable_think: bool = True) -> str:
+        model = (model or "").strip() or effective_model()
         payload = {
             "model": model,
             "stream": False,

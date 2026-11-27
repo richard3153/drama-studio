@@ -120,7 +120,8 @@ async def settings_get():
             "lora": "即时生效（提交工作流时按开关处理）",
             "accel.video_steps": "即时生效（下次提交采样参数）",
             "accel.attention": "需重启 ComfyUI 生效（sage 需已安装 sageattention）",
-            "server": "需重启后端生效",
+            "server.ollama_model": "即时生效（下一次剧本/拆解调用即换模型）",
+            "server": "需重启后端生效（服务地址与路径在进程启动时写入环境变量）",
         },
     }
 
@@ -128,11 +129,14 @@ async def settings_get():
 @router.put("/settings")
 def settings_put(body: dict):
     from . import settings as S
-    cfg = S.save(body or {})
+    patch = body or {}
+    cfg = S.save(patch)
     need = []
-    if "server" in (body or {}):
+    # 精确到键：ollama_model 每次调用都重新读配置，改完即时生效；
+    # video_steps 在提交采样时读，也即时生效；只有服务地址/路径要重启后端、注意力要重启 ComfyUI。
+    if set((patch.get("server") or {}).keys()) - {"ollama_model"}:
         need.append("重启后端")
-    if "accel" in (body or {}):
+    if "attention" in (patch.get("accel") or {}):
         need.append("重启 ComfyUI")
     return {"ok": True, "config": cfg, "need_restart": need}
 
