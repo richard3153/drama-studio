@@ -17,3 +17,4 @@ frontend/dist/
 *.err.log
 data/downloads/
 tmp_ref/
+backend/_backend_starting.lock

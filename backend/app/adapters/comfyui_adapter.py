@@ -95,6 +95,19 @@ class ComfyUIAdapter:
                 if pos or neg:
                     return (ComfyUIAdapter._walk_to_text(wf, pos, "positive"),
                             ComfyUIAdapter._walk_to_text(wf, neg, "negative"))
+        # SamplerCustomAdvanced 家族没有 positive/negative：它的 conditioning 挂在 guider 上
+        # （DualModelGuider / BasicGuider）。Ideogram 4 本地链就是这种结构，多走一层。
+        for cls in ("SamplerCustomAdvanced", "SamplerCustom"):
+            for nid in idx.get(cls, []):
+                g = wf[nid].get("inputs", {}).get("guider")
+                if not (isinstance(g, list) and g and g[0] in wf):
+                    continue
+                gin = wf[g[0]].get("inputs", {})
+                pos = gin["positive"][0] if isinstance(gin.get("positive"), list) and gin["positive"] else None
+                neg = gin["negative"][0] if isinstance(gin.get("negative"), list) and gin["negative"] else None
+                if pos or neg:
+                    return (ComfyUIAdapter._walk_to_text(wf, pos, "positive"),
+                            ComfyUIAdapter._walk_to_text(wf, neg, "negative"))
         return pos, neg
 
     @staticmethod
@@ -299,7 +312,11 @@ class ComfyUIAdapter:
             from .. import settings as _S
             _idx = self.index_by_class(wf)
             _lora_nodes = (_idx.get("LoraLoaderModelOnly") or []) + (_idx.get("LoraLoader") or [])
-            if _lora_nodes and not _S.get("lora", "enable_video_step_lora", True):
+            # 文字渲染档的 LoRA 是 MOSS 的 8 步 DMD 蒸馏 LoRA（不是视频加速 LoRA）：
+            # 关掉它会直接把 8 步图像烧糊，所以按文件名跳过「加速」这一层治理。
+            _text_lora = any("moss" in str(wf[n].get("inputs", {}).get("lora_name") or "").lower()
+                             for n in _lora_nodes)
+            if _lora_nodes and not _text_lora and not _S.get("lora", "enable_video_step_lora", True):
                 for nid in _lora_nodes:
                     ins = wf[nid].get("inputs", {})
                     ins["strength_model"] = 0.0

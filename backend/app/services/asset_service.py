@@ -64,7 +64,17 @@ FAMILY_TEMPLATE = {
         "scene": "char_portrait_flux2.json",
         "prop": "char_portrait_flux2.json",
     },
+    # 文字渲染专用家族（2026-11-28 用户指定，全部本地权重）：只服务 role=prop 的带文字道具
+    "moss_image": {
+        "prop": "prop_text_moss.json",
+    },
+    "ideogram4": {
+        "prop": "prop_text_ideogram4.json",
+    },
 }
+
+# 带文字道具的语言 → 文字渲染档（用户指定分工，不碰云端）
+TEXT_MODEL_BY_LANG = {"zh": "img_moss_text", "en": "img_ideogram4_text"}
 
 # 微调（img2img）默认幅度 10%（denoise 0.10-0.15 区间）
 DEFAULT_POLISH_STRENGTH = 0.12
@@ -319,10 +329,27 @@ async def generate_asset(db, task, params: dict) -> dict:
 
     prefer = params.get("prefer_tier")
 
-    model_key, model = await pick_model(role, prefer,
-                                        params.get("model_key"),
-                                        style_family=style_family(params.get("style_preset") or ""),
-                                        allowed_families=_supported_families(role))
+    # —— 带文字道具：按语言显式点名文字渲染档（2026-11-28 用户拍板）——
+    # 中文 → img_moss_text（MOSS-Image SFT INT8 + 8 步 DMD 蒸馏；实测 768x1344/36s，
+    #        「灵石兑换券」五字竖排一次写对，纸纹/朱印/水墨全保真）
+    # 英文 → img_ideogram4_text（Ideogram 4 fp8 双模型 + Qwen3-VL 8B 编码器；实测 ~160s）
+    # 两档都是本地权重，不碰任何云端 API。用户显式指定 model_key 时尊重用户选择。
+    surface = (params.get("surface_text") or "").strip() if role == "prop" else ""
+    text_lang = ""
+    if surface and not params.get("model_key"):
+        from ..text_prop import detect_lang
+        text_lang = detect_lang(surface)
+        # 两类文字档都要求 16 倍数画幅（Ideogram4Scheduler / EmptyFlux2LatentImage 的硬约束）
+        w = max(256, (int(w) + 15) // 16 * 16)
+        h = max(256, (int(h) + 15) // 16 * 16)
+
+    if text_lang in TEXT_MODEL_BY_LANG:
+        model_key, model = await pick_model(role, None, TEXT_MODEL_BY_LANG[text_lang])
+    else:
+        model_key, model = await pick_model(role, prefer,
+                                            params.get("model_key"),
+                                            style_family=style_family(params.get("style_preset") or ""),
+                                            allowed_families=_supported_families(role))
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
 
@@ -347,21 +374,72 @@ async def generate_asset(db, task, params: dict) -> dict:
         neg_parts = [p.strip() for p in negative.split(",") if p.strip() and p.strip() != "text"]
         negative = ", ".join(neg_parts) + f", {CHAR_SHEET_NEG}"
     from .model_vocab import image_dialect   # 模型方言词库（family 已知 → 直接取该族母语词）
-    prompt = ", ".join(x for x in (params['base_prompt'], suffix, quality,
-                                   image_dialect(family, role)) if x)
+    if text_lang:
+        # 文字渲染档的提示词要"干净"：base_prompt 里为 Qwen 写的中文手写指令、
+        # 以及整段风格套词（smooth stylized skin / toon-shaded / cinematic bloom …）
+        # 都不该进文字档——中文件只留主体+文字指令，英文件用槽位拼 caption。
+        drop = ("visibly rendered on the surface", "accurate strokes",
+                "handwritten brush calligraphy", "correctly spelled",
+                "no gibberish lettering")
+        segs = [s.strip() for s in (params["base_prompt"] or "").split(",")]
+        base = ", ".join(s for s in segs if s and not any(k in s for k in drop))
+        slots = params.get("prop_slots") or {}
+        if text_lang == "zh":
+            # 中文件保留风格套词（MOSS 靠它们保持 3D 国风质感），只把"已含同一串字"的
+            # 描述剔掉（否则模型会把「灵石兑换券」画两遍），再强调"只准出现这几个字"
+            from ..text_caption import _strip_text
+            base = _strip_text(surface, base)
+            prompt = (f'{base}，画面主体上以清晰可读的中文书写「{surface}」，'
+                      '笔画结构正确、逐字可辨、字体与载体材质相符；'
+                      f'画面中只出现「{surface}」这几个字，禁止任何其他文字、小字、'
+                      '印章文字、装饰性字样、英文乱码')
+        else:
+            # Ideogram 4 必须吃结构化 JSON caption（实测自然语言 prompt 一律回灰底
+            # 「Image blocked by safety filter」，连 "a red apple" 都被拦；README 有记录）
+            from ..text_caption import build_caption
+            prompt = build_caption(str(slots.get("subject") or "").strip() or base,
+                                   surface, w, h,
+                                   details=str(slots.get("details") or ""),
+                                   material=str(slots.get("material") or ""),
+                                   era=str(slots.get("era") or ""))
+        # 文字档统一负向（两族共用；Ideogram4 模板里 negative 走 ConditioningZeroOut，不写文本）
+        negative = ("blurry, deformed, extra objects, watermark, gibberish text, "
+                    "distorted characters, misspelled letters, human, hands, frame")
+        quality = ""
+    else:
+        prompt = ", ".join(x for x in (params['base_prompt'], suffix, quality,
+                                       image_dialect(family, role)) if x)
+    seed = random.randint(0, 2**31 - 1)
     overrides = {
         "positive_text": prompt,
         "negative_text": negative,
         "EmptyLatentImage.width": w,
         "EmptyLatentImage.height": h,
-        "KSampler.seed": random.randint(0, 2**31 - 1),
     }
     # 一次渲染任务 = 一个 render_session（compose 多图归一次计数；前端「渲染 N 次」按此去重）
     render_session = f"{task.id}-{int(datetime.now().timestamp() * 1000)}"
+    if family == "ideogram4":
+        # Ideogram4 采样链（SamplerCustomAdvanced）没有 KSampler，也没有独立负向文本节点：
+        # seed 在 RandomNoise，宽高还要同步给 Ideogram4Scheduler，negative 由 ConditioningZeroOut 提供。
+        overrides.pop("negative_text", None)
+        overrides.update({"RandomNoise.noise_seed": seed,
+                          "Ideogram4Scheduler.width": w, "Ideogram4Scheduler.height": h})
+    else:
+        overrides["KSampler.seed"] = seed
     if family == "sdxl":
         overrides["CheckpointLoaderSimple.ckpt_name"] = model["weight"]
     elif family == "flux2_klein":
         overrides["UNETLoader.unet_name"] = model["weight"]
+    elif family == "moss_image":
+        # MOSS 工作流权重由注册表给（换档不用改模板）
+        overrides.update({"UNETLoader.unet_name": model["weight"],
+                          "CLIPLoader.clip_name": model["clip_weight"],
+                          "LoraLoaderModelOnly.lora_name": model["lora_weight"]})
+    elif family == "ideogram4":
+        # 两个 UNETLoader：@0 主模型、@1 unconditional（模板里 @0 在前）
+        overrides.update({"UNETLoader@0.unet_name": model["weight"],
+                          "UNETLoader@1.unet_name": model["uncond_weight"],
+                          "CLIPLoader.clip_name": model["clip_weight"]})
     wf = comfy.apply_overrides(wf, overrides)
 
     def on_stage(msg):

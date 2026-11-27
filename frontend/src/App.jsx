@@ -1741,11 +1741,13 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted, onTextEd
             {role === 'prop' && (
               <div className="card" style={{ borderColor: 'var(--line)', marginTop: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-strong)', marginBottom: 4 }}>
-                  📝 带文字道具：字不对就在原图上局部改
+                  📝 带文字道具：按文字语言自动分工，全本地
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.65 }}>
-                  生成仍走本地底模（Qwen-Image 实测能把中文大字写准）。字写歪、写错或有伪字时，用「📝 改字」在
+                  要写的字自动从「牌面文字」槽位/道具名取：<b>中文</b>走 MOSS-Image SFT（8 步蒸馏，约 40 秒，毛笔字逐字准）；
+                  <b>英文</b>走 Ideogram 4 fp8（做结构化 caption 后英文单词一个不差）。字写歪、写错或有伪字时，用「📝 改字」在
                   <b>同一张图上</b>框住文字区域重画——框外的纸纹、折痕、朱印、边框与光影一点不动，不耗 token、不调云端。
+                  <div style={{ marginTop: 4 }}>注：英文道具（Ideogram 4）不支持局部重绘，改字会整图重出、构图可能变化。</div>
                 </div>
                 <div className="ops-row" style={{ marginTop: 6 }}>
                   <button className="small" disabled={!versions.length}
@@ -2071,7 +2073,8 @@ function CharacterAdjust({ slots, onChange }) {
 
 /* ---------- P2 资产库 ---------- */
 /* 道具"带文字"的前端预判：与后端 text_prop.looks_textual 同一套词表（双字以上，
-   避免"签字笔/数字时钟"这类单字误判）。命中即卡片上提示「📝 带文字」，可局部改字。 */
+   避免"签字笔/数字时钟"这类单字误判）。命中即卡片上提示「📝 带文字」。
+   英文道具（双语项目）按整词匹配，跟后端 TEXT_PROP_WORDS_EN 保持一致。 */
 const TEXT_PROP_WORDS = ['铭文', '刻字', '题字', '字迹', '字样', '带字', '有字',
   '匾额', '牌匾', '令牌', '腰牌', '木牌', '门牌', '招牌', '招贴', '符箓', '符纸', '符咒', '黄符', '灵符',
   '诏书', '圣旨', '榜文', '告示', '公文', '文书', '度牒', '通关文牒', '路引', '经卷', '经书', '秘籍', '功法卷',
@@ -2079,11 +2082,17 @@ const TEXT_PROP_WORDS = ['铭文', '刻字', '题字', '字迹', '字样', '带�
   '契约', '地契', '房契', '契书', '账簿', '账册', '账本', '名录', '花名册', '票据', '兑换券', '银票', '票号',
   '印章', '官印', '玉玺', '印玺', '封条', '舆图', '地图', '阵图', '图谱', '碑刻', '石碑', '墓志',
   '牌位', '灵位', '谥册', '册封', '刻着', '刻有', '写着', '写有', '印着', '印有', '题着', '铭刻', '镌刻']
+const TEXT_PROP_WORDS_EN = ['token', 'plaque', 'tablet', 'stele', 'sign', 'signboard', 'banner', 'poster',
+  'certificate', 'decree', 'edict', 'warrant', 'manifest', 'contract', 'deed', 'scroll', 'manuscript',
+  'grimoire', 'ledger', 'register', 'roster', 'ticket', 'voucher', 'coupon', 'passport', 'permit', 'badge',
+  'talisman', 'charm', 'seal', 'stamp', 'label', 'notice', 'map', 'chart']
 const TEXT_PROP_EXCLUDE = ['字典', '书桌', '书架', '文具', '签字笔', '标签纸', '印泥盒', '印刷机']
 function looksTextualProp(name, extra) {
   let text = [name || '', extra || ''].join(' ')
   TEXT_PROP_EXCLUDE.forEach(w => { text = text.split(w).join('') })
-  return TEXT_PROP_WORDS.some(w => text.includes(w))
+  if (TEXT_PROP_WORDS.some(w => text.includes(w))) return true
+  const words = new Set((text.toLowerCase().match(/[a-z]+/g) || []))
+  return TEXT_PROP_WORDS_EN.some(w => words.has(w))
 }
 
 /* ---------- 图片文字局部微调（框选重绘，只动框内） ---------- */
@@ -2293,7 +2302,7 @@ function AssetsPage({ project, refreshTasks, setStage }) {
               <div className="name-row">
                 <span className="name">{a.name}</span>
                 {etype === 'prop' && looksTextualProp(a.name, a.description) &&
-                  <span className="tag" title="文字是画面主体 → 生成后如有错字，用「📝 改字」局部重绘（别整图重渲）">📝 带文字</span>}
+                  <span className="tag" title="文字是画面主体 → 生成自动分流：中文走 MOSS-Image、英文走 Ideogram 4（全本地）；错字用「📝 改字」局部重绘（英文档需整图重出）">📝 带文字</span>}
                 {a.render_count > 0 && <span className="tag">渲染 {a.render_count} 次</span>}
                 {a.image_ids.length > 1 && <span className="tag" title="含微调/超分等衍生图">{a.image_ids.length} 图</span>}
               </div>

@@ -52,6 +52,12 @@ async def pick_model(role: str, prefer_tier: str | None = None,
             raise RuntimeError(f"模型 {model_key} 不支持 role={role}")
         return model_key, candidates[model_key]
 
+    # 自动选档排除专用档（auto: false）：文字渲染档（MOSS 中文 / Ideogram4 英文）体积
+    # 15-26GB，只有「带文字道具」链路按语言显式点名才用；自动选档选中它们只会拖慢一切。
+    candidates = {k: v for k, v in candidates.items() if v.get("auto", True)}
+    if not candidates:
+        raise RuntimeError(f"registry 中没有可自动选档的 role={role} 模型")
+
     # 全局底模（defaults.default_models，2026-11-24 拍板：图片=Qwen-Image / 视频=MiniMax H3）：
     # 未显式指定 model_key 且未指定 prefer_tier 时直取。辅助链路（首帧 IPA/宫格/微调）
     # 显式传 prefer_tier="low" 走 SDXL，不受此表影响；显式 prefer_tier 视为用户点名档位。

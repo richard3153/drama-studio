@@ -38,23 +38,64 @@ TEXT_PROP_EXCLUDE = ("字典", "书桌", "书架", "文具", "签字笔", "标�
 TEXT_PROP_PATTERNS = ("刻着", "刻有", "写着", "写有", "印着", "印有", "题着", "题有",
                       "铭着", "铭刻", "镌刻", "上书", "字样", "带字", "刻满", "写满")
 
+# 英文道具名（英文短剧/双语项目）：按整词匹配，避免 "tabletop" 命中 "tablet" 之类的子串误判
+TEXT_PROP_WORDS_EN = (
+    "token", "plaque", "tablet", "stele", "sign", "signboard", "banner", "poster",
+    "certificate", "decree", "edict", "warrant", "manifest", "contract", "deed",
+    "scroll", "manuscript", "grimoire", "ledger", "register", "roster",
+    "ticket", "voucher", "coupon", "passport", "permit", "badge",
+    "talisman", "charm", "seal", "stamp", "label", "notice", "map", "chart",
+)
+
+
+def _has_en_word(text: str) -> bool:
+    import re
+    words = set(re.findall(r"[a-z]+", str(text or "").lower()))
+    return bool(words & set(TEXT_PROP_WORDS_EN))
+
 
 def looks_textual(name: str = "", slots: dict | None = None) -> bool:
-    """这个道具是不是"带文字"的（名字/用途/细节里出现牌榜契约类词）。"""
+    """这个道具是不是"带文字"的（名字/用途/细节里出现牌榜契约类词，或英文词）。"""
     text = " ".join([str(name or "")] + [str(v or "") for v in (slots or {}).values()])
     if any(w in text for w in TEXT_PROP_EXCLUDE):
         for w in TEXT_PROP_EXCLUDE:
             text = text.replace(w, "")
-    return any(w in text for w in TEXT_PROP_WORDS) or any(p in text for p in TEXT_PROP_PATTERNS)
+    return (any(w in text for w in TEXT_PROP_WORDS)
+            or any(p in text for p in TEXT_PROP_PATTERNS)
+            or _has_en_word(text))
+
+
+def detect_lang(text: str = "") -> str:
+    """要写的字走哪条文字渲染通道：含汉字 → zh（MOSS），纯拉丁 → en（Ideogram4）。
+
+    2026-11-28 用户拍板的分工：中文文字渲染用 moss_image_sft_int8_convrot
+    （Qwen3.5-9B 编码器 + 8 步 DMD 蒸馏，中文竖排一次写对），英文文字渲染用
+    ideogram4_fp8_scaled（Ideogram v4 双模型 + Qwen3-VL 8B 编码器，英文排版最强）。
+    两者都是本地权重，不触任何云端 API。
+    """
+    t = str(text or "")
+    if any("\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff" for ch in t):
+        return "zh"
+    if any("a" <= ch.lower() <= "z" for ch in t):
+        return "en"
+    # 纯数字/符号（"07"、"№7"）：默认走中文档，别丢给英文排版
+    return "zh"
 
 
 def surface_text(name: str = "", slots: dict | None = None) -> str:
-    """要写在道具表面上的字：优先 text_content 槽位，否则用道具名兜底（≤12 字）。"""
+    """要写在道具表面上的字：优先 text_content 槽位，否则用道具名兜底。
+
+    中文名 ≤12 字；英文名按词算 ≤6 词（"QING YUN SECT TOKEN" 这类 4 词长名也要收）。
+    """
     s = slots or {}
     explicit = str(s.get("text_content") or s.get("text") or "").strip()
     if explicit:
         return explicit
     n = str(name or "").strip()
-    if n and len(n) <= 12 and looks_textual(n, s):
+    if not n or not looks_textual(n, s):
+        return ""
+    if len(n) <= 12:
+        return n
+    if all(ch.isascii() for ch in n) and len(n.split()) <= 6:
         return n
     return ""

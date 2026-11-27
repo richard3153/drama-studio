@@ -1639,12 +1639,18 @@ async def regenerate(body: RegenerateIn):
             # 全新道具（还没重铸槽位）：名字本身是带文字物件时，也把要写的字塞进提示词，
             # 否则底模只会画一团形似文字的花纹
             if body.entity_type == "prop":
-                from .text_prop import looks_textual
+                from .text_prop import looks_textual, detect_lang
                 if looks_textual(entity.name or "", {}):
                     tname = (entity.name or "").strip()
                     if tname and tname not in prompt:
-                        prompt = (f'{prompt}, Chinese characters "{tname}" visibly rendered on the surface, '
-                                  'accurate strokes, handwritten brush calligraphy, correctly spelled')
+                        # 文字语言跟着道具名走：英文名不能再写"中文书法"指令（会把 Ideogram4
+                        # 的 caption 高层描述污染成"Chinese characters"，容易诱发中文伪字）
+                        if detect_lang(tname) == "en":
+                            prompt = (f'{prompt}, with the English text "{tname}" carved on the surface, '
+                                      'bold legible capitals, spelled exactly, the only lettering')
+                        else:
+                            prompt = (f'{prompt}, Chinese characters "{tname}" visibly rendered on the surface, '
+                                      'accurate strokes, handwritten brush calligraphy, correctly spelled')
         if body.iso_layout and body.entity_type == "scene":
             # 场景缩略图法：45° 等距剖面布局全景图，展示完整空间结构（用户参照 iso diorama 风格）
             prompt = (f"isometric cutaway diorama, 45-degree elevated dollhouse view of the complete space, "
@@ -1667,12 +1673,16 @@ async def regenerate(body: RegenerateIn):
                       "width": width, "height": height, "auto_polish": auto_polish,
                       "style_preset": preset}
             if body.entity_type == "prop":
-                # 【已回退】不再按名字自动分流到云端整图：云端会把整张图重画。
-                # 现在道具始终走本地底模（text_content 槽位已能写准中文），
-                # 字不对时用资产卡「📝 改字」做局部重绘（POST /assets/{aid}/text-edit）。
-                # text_mode 字段保留兼容旧前端，但不再影响生成路径。
+                # 【2026-11-28 用户拍板】带文字道具按语言走本地文字渲染档：
+                # 中文 → MOSS-Image SFT INT8（img_moss_text），英文 → Ideogram 4 fp8（img_ideogram4_text）。
+                # 这里只把"要写的字 + 语言"落进 params，选档与模板在 asset_service 里完成；
+                # 两个文字档全是本地权重，不触任何云端 API。text_mode 字段保留兼容旧前端。
                 params["prop_slots"] = slots
                 params["entity_name"] = getattr(entity, "name", "") or ""
+                from .text_prop import surface_text
+                _st = surface_text(params["entity_name"], slots)
+                if _st:
+                    params["surface_text"] = _st
         t = task_queue.create_task(db, type_, params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": type_}
