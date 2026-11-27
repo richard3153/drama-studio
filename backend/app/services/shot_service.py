@@ -519,9 +519,12 @@ def _scene_anchor(db, shot: Shot) -> str | None:
         if not p.exists():
             continue
         is_iso = bool(meta.get("iso_layout")) or "isometric" in (r.prompt or "").lower()
+        # 【2026-11-28】场景资产已改出「场景设计图」（多面板+箭头标注+色卡），
+        # 直接当 IPAdapter 环境参考会把首帧画成设定板 —— 自动回退只认单张成图。
+        is_design = bool(meta.get("design_sheet"))
         if is_iso and iso is None:
             iso = r.file_path
-        if plain is None:
+        if plain is None and not is_design:
             plain = r.file_path
     return iso or plain
 

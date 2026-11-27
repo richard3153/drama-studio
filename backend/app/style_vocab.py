@@ -251,6 +251,74 @@ PRESET_VOCAB: dict[str, dict[str, list[str]]] = {
         "fx": ["radial speed lines", "impact sparks", "energy burst shockwaves"],
         "negative": ["photorealistic photograph"],
     },
+    # ---------- 风格库扩充（2026-11-28，配合 style_presets 新增 24 风格）----------
+    # 只给"画风差异大、需要独立特效/氛围语言"的风格建包；其余新风格走族兜底即可
+    # （兜底不会串味：族负向已按 3d/动漫/绘画分开，见 _ANTI_NEG_BY_FAM）。
+    "anime_thick": {
+        "style": ["2.5D thick-paint anime rendering", "soft digital brush blending",
+                  "rim-lit glossy highlights"],
+        "atmosphere": ["dramatic colored key light", "soft gradient background"],
+        "fx": ["glowing rim light bloom", "floating light particles"],
+        "negative": ["flat cel shading, photorealistic photograph"],
+    },
+    "guoman": {
+        "style": ["chinese donghua animation style", "semi-realistic cel shading",
+                  "ornate fantasy costume embroidery"],
+        "atmosphere": ["immortal mountain backdrop", "cinematic bloom haze"],
+        "fx": ["glowing spell sigils", "spirit energy ribbons", "floating embers"],
+        "negative": ["japanese school uniform, western fantasy armor"],
+    },
+    "illustrious": {
+        "style": ["highly detailed anime illustration", "intricate hair strands",
+                  "layered fabric folds", "illustrator-grade rendering"],
+        "atmosphere": ["pastel-to-neon gradient lighting", "bokeh light dots"],
+        "fx": ["sparkle highlights", "soft lens bloom"],
+        "negative": ["rough sketch, flat colors, photorealistic photograph"],
+    },
+    "blind_box": {
+        "style": ["designer toy vinyl figure", "glossy toy surface", "chunky stylized shape"],
+        "atmosphere": ["clean pastel studio backdrop", "softbox product lighting"],
+        "fx": ["specular highlight sweep", "floating sparkle accents"],
+        "negative": ["realistic human skin, gritty realism, photograph of a real person"],
+    },
+    "clay_stopmotion": {
+        "style": ["plasticine clay sculpture", "hand-sculpted texture", "visible fingerprints"],
+        "atmosphere": ["miniature set lighting", "warm practical lamps"],
+        "fx": ["dust motes on miniature set", "subtle frame-by-frame jitter"],
+        "negative": ["smooth cgi render, photorealistic photograph"],
+    },
+    "iso_25d": {
+        "style": ["isometric 2.5D render", "clean geometric shapes", "soft ambient occlusion"],
+        "atmosphere": ["diorama studio lighting", "plain gradient backdrop"],
+        "fx": ["floating UI markers", "soft contact shadows"],
+        "negative": ["first-person perspective, photorealistic photograph, cluttered detail"],
+    },
+    "blueprint": {
+        "style": ["technical blueprint linework", "white lines on cyan paper",
+                  "precise construction grid"],
+        "atmosphere": ["flat schematic presentation", "no shading, value from line weight"],
+        "fx": ["dimension ticks and arrows", "section hatch marks"],
+        "negative": ["painterly brush texture, photorealistic photograph, colored rendering"],
+    },
+    "wasteland": {
+        "style": ["post-apocalyptic realism", "rusted metal and dust film",
+                  "bleached sunlight, high contrast"],
+        "atmosphere": ["dust haze horizon", "abandoned industrial ruin"],
+        "fx": ["blowing sand and ash", "heat shimmer"],
+        "negative": ["clean modern city, lush green paradise"],
+    },
+    "dark_gothic": {
+        "style": ["dark gothic art", "ornate black iron filigree", "cold desaturated palette"],
+        "atmosphere": ["candle-lit gloom", "vast cathedral shadow"],
+        "fx": ["drifting ash", "flickering candle glow"],
+        "negative": ["bright cheerful palette, cute cartoon"],
+    },
+    "linocut": {
+        "style": ["linocut relief print", "carved gouge linework", "flat ink blocks"],
+        "atmosphere": ["high contrast print composition"],
+        "fx": ["ink texture grain", "carved hatch marks"],
+        "negative": ["smooth digital gradient, photorealistic photograph"],
+    },
 }
 
 

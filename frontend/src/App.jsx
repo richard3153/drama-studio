@@ -10,7 +10,7 @@ const STAGES = [
   { key: 'export', ico: '📤', lbl: '成片', enabled: true },
 ]
 const ROLE_BY_ENTITY = { character: 'portrait', scene: 'scene', prop: 'prop' }
-const ENTITY_LABEL = { character: '角色', scene: '场景', prop: '道具' }
+const ENTITY_LABEL = { character: '角色', scene: '场景设计图', prop: '道具设计图' }
 // 资产槽位中文释义（表单左侧灰字 → 右侧字段名，避免满屏英文键名）
 const SLOT_ZH = {
   identity: '身份', ethnicity: '国籍/人种', build: '体型', appearance: '外貌气质',
@@ -1713,6 +1713,13 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted, onTextEd
                     </div>
                   </>
                 )}
+                {role === 'scene' && !('text_content' in slots) && (
+                  <div className="row" style={{ marginBottom: 6 }}>
+                    <span style={{ color: 'var(--dim)', fontSize: 13, whiteSpace: 'nowrap' }}>牌匾/招牌文字（可选）</span>
+                    <input value={slots.text_content || ''} placeholder="门额上要写的字，如 青云宗 · 中文/英文都行"
+                      onChange={e => setSlots(s => ({ ...s, text_content: e.target.value }))} style={{ flex: 1 }} />
+                  </div>
+                )}
                 <div className="slot-grid">
                   {Object.entries(slots).map(([k, v]) => (
                     <div className="slot-cell" key={k}>
@@ -1738,16 +1745,18 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted, onTextEd
                 <textarea value={prompt} onChange={e => setPrompt(e.target.value)} style={{ minHeight: 110 }} />
               </>
             )}
-            {role === 'prop' && (
+            {(role === 'prop' || role === 'scene' || role === 'portrait') && (
               <div className="card" style={{ borderColor: 'var(--line)', marginTop: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-strong)', marginBottom: 4 }}>
-                  📝 带文字道具：按文字语言自动分工，全本地
+                  📝 图上的文字：局部改字，全本地
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.65 }}>
-                  要写的字自动从「牌面文字」槽位/道具名取：<b>中文</b>走 MOSS-Image SFT（8 步蒸馏，约 40 秒，毛笔字逐字准）；
-                  <b>英文</b>走 Ideogram 4 fp8（做结构化 caption 后英文单词一个不差）。字写歪、写错或有伪字时，用「📝 改字」在
-                  <b>同一张图上</b>框住文字区域重画——框外的纸纹、折痕、朱印、边框与光影一点不动，不耗 token、不调云端。
-                  <div style={{ marginTop: 4 }}>注：英文道具（Ideogram 4）不支持局部重绘，改字会整图重出、构图可能变化。</div>
+                  三类资产都支持在<b>同一张已生成的图上</b>框住文字区域重画——框外的纸纹、折痕、朱印、边框与光影一点不动，不耗 token、不调云端：
+                  道具设计图改牌面/券面铭文，场景设计图改门额/牌匾/招牌，角色设计图改面板旁的手写标注与信息行。
+                  {role === 'prop' && <div style={{ marginTop: 4 }}>
+                    带文字道具在<b>生成时</b>就按语言自动分工：<b>中文</b>走 MOSS-Image SFT（8 步蒸馏，约 40 秒，毛笔字逐字准），
+                    <b>英文</b>走 Ideogram 4 fp8（结构化 caption，英文单词一个不差）。英文档不支持局部重绘，改字会整图重出、构图可能变化。
+                  </div>}
                 </div>
                 <div className="ops-row" style={{ marginTop: 6 }}>
                   <button className="small" disabled={!versions.length}
@@ -2098,9 +2107,16 @@ function looksTextualProp(name, extra) {
 /* ---------- 图片文字局部微调（框选重绘，只动框内） ---------- */
 // 与"整图重渲"的区别：这里在**同一张已生成的图**上，只把文字框内部重新采样。
 // 框外的纸纹、折痕、朱印、边框、光影全部沿用原图 latent（SetLatentNoiseMask）。
-function TextEditModal({ assetId, name, onClose, onSubmitted }) {
+/* 三类资产的默认文字框（归一化）：文字最常出现的位置 */
+const TEXT_BOX_BY_ETYPE = {
+  prop: { x: 0.335, y: 0.195, w: 0.30, h: 0.545 },       // 牌面/券面竖排主体区
+  scene: { x: 0.26, y: 0.22, w: 0.48, h: 0.26 },          // 门额/牌匾/招牌横块
+  character: { x: 0.04, y: 0.86, w: 0.92, h: 0.11 },      // 设计图底部标注/信息行
+}
+
+function TextEditModal({ assetId, name, etype, onClose, onSubmitted }) {
   const [text, setText] = useState(name || '')
-  const [box, setBox] = useState({ x: 0.335, y: 0.195, w: 0.30, h: 0.545 })
+  const [box, setBox] = useState({ ...(TEXT_BOX_BY_ETYPE[etype] || TEXT_BOX_BY_ETYPE.prop) })
   const [denoise, setDenoise] = useState(0.88)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -2143,7 +2159,10 @@ function TextEditModal({ assetId, name, onClose, onSubmitted }) {
           <button className="modal-x" onClick={onClose}>✕</button>
         </div>
         <div className="page-sub" style={{ marginTop: -4 }}>
-          在图上按住拖动框住文字区域（琥珀框＝会重画的区域）；框外纸纹/折痕/朱印/光影一律保留
+          在图上按住拖动框住文字区域（琥珀框＝会重画的区域）；框外纸纹/折痕/朱印/光影一律保留。
+          {etype === 'scene' && '场景设计图：框住门额 / 牌匾 / 招牌上的字。'}
+          {etype === 'character' && '角色设计图：框住面板旁的手写标注或信息行，别框到立绘和脸。'}
+          {etype === 'prop' && '道具设计图：框住牌面 / 券面 / 铭文本身。'}
         </div>
         {msg && <div className="card" style={{ borderColor: 'var(--ok)', margin: '8px 0', fontSize: 12 }}>{msg}</div>}
         <div ref={stage} onMouseDown={down} onMouseMove={move} onMouseUp={up} onMouseLeave={up}
@@ -2160,9 +2179,9 @@ function TextEditModal({ assetId, name, onClose, onSubmitted }) {
         <div className="row" style={{ marginTop: 10 }}>
           <label style={{ fontSize: 12, minWidth: 84 }}>要写的字</label>
           <input value={text} onChange={e => setText(e.target.value)} maxLength={24}
-            placeholder="如 青云宗令牌" style={{ flex: 1 }} />
-          <button className="small ghost" onClick={() => setBox({ x: 0.335, y: 0.195, w: 0.30, h: 0.545 })}
-            title="回到默认的中上竖排文字区">重置框</button>
+            placeholder="中文如 青云宗令牌，英文如 QING YUN SECT" style={{ flex: 1 }} />
+          <button className="small ghost" onClick={() => setBox({ ...(TEXT_BOX_BY_ETYPE[etype] || TEXT_BOX_BY_ETYPE.prop) })}
+            title="回到该类资产的默认文字区">重置框</button>
         </div>
         <div className="row" style={{ marginTop: 8 }}>
           <label style={{ fontSize: 12, minWidth: 84 }}>重绘强度</label>
@@ -2172,7 +2191,8 @@ function TextEditModal({ assetId, name, onClose, onSubmitted }) {
         </div>
         <div className="page-sub" style={{ fontSize: 11, marginTop: 4 }}>
           框要贴住字本身：框压到朱印/边框会把它们一起重画变淡；字写糊/笔画不清就把强度往 0.95 拉；
-          字没错只是想更清楚，可以把强度降到 0.7 左右只做重绘锐化
+          字没错只是想更清楚，可以把强度降到 0.7 左右只做重绘锐化。
+          中文按毛笔/印刷体重写，英文按印刷大写字母重写（本地 Qwen-Image，中英文同一个通道）
         </div>
         <div className="ops-row" style={{ marginTop: 10 }}>
           <button className="small" disabled={busy} onClick={submit}>{busy ? '提交中…' : '开始局部重绘'}</button>
@@ -2206,12 +2226,13 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   const img = id => `${API}/assets/${id}/file`
 
   // 卡片上的「📝 改字」：在**最新一张图**上框选文字区局部重绘（不重画整图、不耗 token）
-  const openTextEdit = (a) => {
+  // 2026-11-28 起三类资产都有文字：道具设计图牌面 / 场景设计图门额 / 角色设计图标注
+  const openTextEdit = (a, etype) => {
     if (!a.image_ids || !a.image_ids.length) {
       setNotice(`「${a.name}」还没有图：先渲染一张，再来局部改字`)
       return
     }
-    setTextEdit({ asset: a, imageId: a.image_ids[a.image_ids.length - 1] })
+    setTextEdit({ asset: a, etype, imageId: a.image_ids[a.image_ids.length - 1] })
   }
 
   const stashConfirm = async (ids) => {
@@ -2293,10 +2314,14 @@ function AssetsPage({ project, refreshTasks, setStage }) {
                 : <div className="media-empty">未生成 · 点击配置{etype === 'character' && !a.has_prompt ? '（先补全槽位）' : ''}</div>}
               <button className="asset-del" title="删除资产（含全部生成图，不可恢复）"
                 onClick={e => { e.stopPropagation(); deleteAsset(etype, a) }}>删除</button>
-              {etype === 'prop' && a.image_ids.length > 0 &&
-                <button className="small" title="在最新一张图上框住文字区域局部重绘：框外纸纹/朱印/光影不动，不耗 token、不调云端"
+              {a.image_ids.length > 0 &&
+                <button className="small" title={etype === 'scene'
+                  ? '在最新一张场景设计图上框住门额/牌匾/招牌文字局部重绘：框外墙面/光影不动，不耗 token、不调云端'
+                  : etype === 'character'
+                    ? '在最新一张角色设计图上框住面板旁的手写标注/信息行局部重绘：框外立绘与版式不动，不耗 token'
+                    : '在最新一张道具设计图上框住牌面/券面文字局部重绘：框外纸纹/朱印/光影不动，不耗 token、不调云端'}
                   style={{ position: 'absolute', bottom: 8, right: 8, background: 'rgba(245,166,35,.92)', borderColor: '#f5a623', color: '#1a1a1a', fontWeight: 600 }}
-                  onClick={e => { e.stopPropagation(); openTextEdit(a) }}>📝 改字</button>}
+                  onClick={e => { e.stopPropagation(); openTextEdit(a, etype) }}>📝 改字</button>}
             </div>
             <div className="info">
               <div className="name-row">
@@ -2317,7 +2342,7 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   return (
     <div>
       <div className="page-title">资产库 · {project.name}</div>
-      <div className="page-sub">每个资产都可以手动调整：改提示词、选模型档位、重新渲染追加新版本</div>
+      <div className="page-sub">角色 / 场景 / 道具统一出<b>设计图</b>（对齐 RunningHub 无限画布 RHTV 的概念设定板）：改提示词、选模型档位、重新渲染追加新版本；图上的字用「📝 改字」框选局部重写</div>
       <div className="row" style={{ margin: '8px 0 12px' }}>
         <button className="small ghost" onClick={() => setStyleLib(true)}
           title="对齐 RunningHub RHTV 的风格库：分类 + 搜索 + 缩略卡片，点卡片整体切换全片画风">🎨 风格库</button>
@@ -2330,9 +2355,9 @@ function AssetsPage({ project, refreshTasks, setStage }) {
       {wall(data.props, 'prop')}
       {editing && <AssetEditor asset={editing} models={models} refreshTasks={refreshTasks}
         onDeleted={load}
-        onTextEdit={a => { setEditing(null); openTextEdit(a) }}
+        onTextEdit={a => { const et = editing._etype; setEditing(null); openTextEdit(a, et) }}
         onClose={(reload, note) => { setEditing(null); if (reload) load(); if (note) setNotice(note) }} />}
-      {textEdit && <TextEditModal assetId={textEdit.imageId} name={textEdit.asset.name}
+      {textEdit && <TextEditModal assetId={textEdit.imageId} name={textEdit.asset.name} etype={textEdit.etype}
         onClose={() => setTextEdit(null)}
         onSubmitted={() => { setNotice(`「${textEdit.asset.name}」局部改字任务已入队：只重画框内文字，框外不动。约 1-2 分钟，完成后点「刷新」看新版本`); refreshTasks && refreshTasks() }} />}
       {styleLib && <StyleLibraryModal project={project} onClose={() => setStyleLib(false)}

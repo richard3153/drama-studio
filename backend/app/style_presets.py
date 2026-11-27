@@ -216,6 +216,156 @@ STYLE_PRESETS = {
                        "isometric view, clean minimal composition"),
         "motion_hint": "等距视角平移、几何体缓旋",
     },
+    # ---------- 风格库扩充（2026-11-28，参照 liblib.art 生图模型库分类补齐）----------
+    # 选型原则：只收"能被底模听懂"的画风锚词（材质/笔触/渲染方式），不收具体模型名；
+    # 每个新风格都在 STYLE_FAMILY 登记族（决定质感尾词与负向），否则会落到 anime 兜底。
+    "anime_thick": {
+        "category": "动漫卡通", "label": "日系厚涂2.5D",
+        "style_lock": ("japanese 2.5D thick-paint illustration, soft digital brushwork, "
+                       "rich color gradients, glowing rim light, semi-realistic anime rendering"),
+        "motion_hint": "光影缓移、发丝与衣料飘动，半写实质感",
+    },
+    "guoman": {
+        "category": "动漫卡通", "label": "国漫新番",
+        "style_lock": ("chinese donghua animation style, semi-realistic cel shading, "
+                       "ornate chinese fantasy costume detail, glowing vfx particles, "
+                       "cinematic bloom"),
+        "motion_hint": "法术光效、衣袂翻飞，国漫式分镜节奏",
+    },
+    "anime_90s": {
+        "category": "动漫卡通", "label": "90年代赛璐璐",
+        "style_lock": ("1990s retro anime cel style, hand-painted cels, simple flat shading, "
+                       "vintage film grain, muted nostalgic colors, VHS softness"),
+        "motion_hint": "有限帧动画感、轻抖动，复古颗粒",
+    },
+    "illustrious": {
+        "category": "动漫卡通", "label": "高精度二次元插画",
+        "style_lock": ("highly detailed anime illustration, illustrator-grade rendering, "
+                       "dramatic composition, intricate hair and fabric detail, "
+                       "pastel-to-neon gradient lighting"),
+        "motion_hint": "静态构图为主，光斑与粒子缓动",
+    },
+    "colored_pencil": {
+        "category": "插画数字", "label": "彩铅手绘",
+        "style_lock": ("colored pencil drawing, visible waxy pencil strokes, layered hatching, "
+                       "paper grain, soft blended shading"),
+        "motion_hint": "手绘逐帧感，轻微笔触抖动",
+    },
+    "charcoal": {
+        "category": "插画数字", "label": "炭笔素描",
+        "style_lock": ("charcoal sketch, rough expressive smudges, grainy paper texture, "
+                       "high contrast darks, visible erasure marks"),
+        "motion_hint": "单色高对比，光影像炭粉一样过渡",
+    },
+    "marker_sketch": {
+        "category": "插画数字", "label": "马克笔草图",
+        "style_lock": ("alcohol marker sketch, translucent overlapping strokes, "
+                       "bold graphic color blocks, loose confident linework, sketchbook feel"),
+        "motion_hint": "设计稿式快速运镜，色块平移",
+    },
+    "riso_print": {
+        "category": "插画数字", "label": "孔版印刷",
+        "style_lock": ("risograph print, limited two-tone ink, visible misregistration offset, "
+                       "coarse halftone dot grain, flat bold shapes"),
+        "motion_hint": "套色偏移抖动、网点闪烁",
+    },
+    "linocut": {
+        "category": "插画数字", "label": "木刻版画",
+        "style_lock": ("linocut relief print, carved bold gouge lines, high contrast black ink, "
+                       "coarse paper texture, limited color block print"),
+        "motion_hint": "刀刻线条硬切，画面高对比",
+    },
+    "paper_cut": {
+        "category": "插画数字", "label": "剪纸拼贴",
+        "style_lock": ("layered paper cut collage, hand-cut edges with soft drop shadow, "
+                       "flat colored paper shapes, craft texture"),
+        "motion_hint": "纸片分层位移、投影变化",
+    },
+    "gouache": {
+        "category": "插画数字", "label": "不透明水彩绘本",
+        "style_lock": ("opaque gouache illustration, matte flat paint layers, visible brush "
+                       "edges, muted storybook palette, paper texture"),
+        "motion_hint": "绘本翻页感，色块稳定不闪烁",
+    },
+    "blind_box": {
+        "category": "潮玩3D", "label": "盲盒潮玩",
+        "style_lock": ("designer toy blind-box style, vinyl figure with glossy finish, "
+                       "chunky stylized proportions, collectible display lighting, "
+                       "clean pastel backdrop"),
+        "motion_hint": "手办转台旋转、灯光扫过表面",
+    },
+    "clay_stopmotion": {
+        "category": "潮玩3D", "label": "黏土定格",
+        "style_lock": ("stop-motion clay animation look, hand-sculpted plasticine texture, "
+                       "fingerprints and tool marks, miniature set lighting"),
+        "motion_hint": "逐格定格微动，手工质感抖动",
+    },
+    "plush_toy": {
+        "category": "潮玩3D", "label": "毛绒玩偶",
+        "style_lock": ("plush toy look, soft fuzzy fabric texture, embroidered details, "
+                       "huggable rounded shapes, soft studio light"),
+        "motion_hint": "柔软挤压回弹，绒毛微动",
+    },
+    "voxel": {
+        "category": "潮玩3D", "label": "体素方块",
+        "style_lock": ("voxel art, everything built from visible cubes, blocky stepped edges, "
+                       "limited palette, isometric game camera"),
+        "motion_hint": "方块拼合/拆解动画，等距视角",
+    },
+    "iso_25d": {
+        "category": "潮玩3D", "label": "等距2.5D",
+        "style_lock": ("isometric 2.5D render, three-quarter top-down camera, clean geometric "
+                       "environment, soft ambient occlusion, mobile-game diorama look"),
+        "motion_hint": "等距视角平移推近，剖面展开",
+    },
+    "mecha_hard": {
+        "category": "潮玩3D", "label": "硬表面机甲",
+        "style_lock": ("hard-surface mecha design, panel-lined armor, industrial greebles, "
+                       "metallic scratch wear, cool rim lighting, precise mechanical detail"),
+        "motion_hint": "机械关节展开、液压缓动",
+    },
+    "y2k_gloss": {
+        "category": "复古未来", "label": "Y2K千禧高光",
+        "style_lock": ("Y2K aesthetic, chrome gradients, translucent plastic, bubble gloss "
+                       "highlights, star sparkle accents, early-2000s digital optimism"),
+        "motion_hint": "高光扫过、闪片爆闪",
+    },
+    "vaporwave": {
+        "category": "复古未来", "label": "蒸汽波",
+        "style_lock": ("vaporwave aesthetic, pastel magenta and cyan gradients, marble statue "
+                       "motifs, grid floor, glow bloom, retro VHS overlay"),
+        "motion_hint": "网格地平线滚动、VHS 抖动",
+    },
+    "dark_gothic": {
+        "category": "暗黑废土", "label": "暗黑哥特",
+        "style_lock": ("dark gothic fantasy art, ornate black iron filigree, desaturated cold "
+                       "palette, candle-lit gloom, cathedral scale"),
+        "motion_hint": "烛火摇曳、阴影缓慢爬动",
+    },
+    "wasteland": {
+        "category": "暗黑废土", "label": "废土末世",
+        "style_lock": ("post-apocalyptic wasteland look, rusted metal and dust, bleached harsh "
+                       "sunlight, scavenged jury-rigged gear, desolate horizon"),
+        "motion_hint": "风沙弥漫、镜头手持感",
+    },
+    "blueprint": {
+        "category": "设计工程", "label": "工程蓝图",
+        "style_lock": ("technical blueprint drawing, white linework on cyan-blue paper, precise "
+                       "construction lines, dimension ticks, grid background, engineering schematic"),
+        "motion_hint": "线条逐笔绘制、标注依次出现",
+    },
+    "tech_wire": {
+        "category": "设计工程", "label": "科技线框",
+        "style_lock": ("tech wireframe render, glowing holographic line lattice, translucent "
+                       "surfaces, scanning grid, cyan-amber accent glow"),
+        "motion_hint": "线框扫描、结构逐层展开",
+    },
+    "glass_neon": {
+        "category": "设计工程", "label": "玻璃拟态霓虹",
+        "style_lock": ("glassmorphism render, frosted translucent surfaces, neon edge glow, "
+                       "gradient light refraction, minimal futuristic UI mood"),
+        "motion_hint": "折射光斑缓移、边缘霓虹呼吸",
+    },
 }
 
 DEFAULT_PRESET = "anime_2d"
@@ -309,6 +459,51 @@ CHAR_BOARD_SPEC = ("professional character design board layout: one large full-b
                    "color palette swatch row, pure white background, clean sheet layout, "
                    "same character in every panel, no text, no other characters")
 
+# 场景设计图 / 道具设计图版式（2026-11-28 用户要求：对齐 RunningHub 无限画布 RHTV 的资产范式，
+# 场景不再出"单张空镜照"、道具不再出"白底单品"，一律出概念设定板/设计稿）：
+#   · 一张主图占中心 + 环绕侧面视图 / 顶视图 / 材质特写面板
+#   · 手绘箭头 + 手写标注 + 尺寸线 + 底部色卡
+#   · 米黄纸纹底（Qwen-Image 对 parchment/annotation 响应好，实测角色设计图已成立）
+# SDXL 会把这种长版式稀释（77 token 分块），所以另留一个 ~15 词的短版兜底。
+SCENE_DESIGN_SPEC = ("environment design sheet, one large main establishing view of the location "
+                     "occupying the center, secondary panels around it showing the same space from "
+                     "a second angle and a simple top-down floor plan sketch, close-up panels of "
+                     "key material, lighting and set-dressing details, thin hand-drawn arrows "
+                     "connecting each detail to its place in the main view, small handwritten "
+                     "annotation labels beside the panels, a short row of color swatches at the "
+                     "bottom, warm beige parchment concept-board background, unoccupied space, "
+                     "consistent architecture and lighting across all panels")
+SCENE_DESIGN_SPEC_SHORT = ("environment design sheet, main view centered, side panels of "
+                           "another angle plus floor plan and material close-ups, handwritten "
+                           "labels, parchment board, unoccupied space")
+
+PROP_DESIGN_SPEC = ("prop design sheet, one large three-quarter view of the single item "
+                    "centered and dominating the sheet, smaller panels around it showing the "
+                    "same item in front view, side view and top view, close-up panels of surface "
+                    "ornament, carving and material texture, thin dimension lines with "
+                    "measurement ticks, small handwritten annotation labels beside each panel, "
+                    "a short row of color swatches at the bottom, warm beige parchment "
+                    "concept-board background, consistent shape and material in every panel")
+PROP_DESIGN_SPEC_SHORT = ("prop design sheet, main three-quarter view centered, front side "
+                          "and top view panels, material close-ups, dimension lines, handwritten "
+                          "labels, parchment board")
+
+# 设计图负向：拦"多物件重复/两套主角"和"衣物目录拼贴"。
+# 注意不能把裸 text 放进来——设计图本来就要写标注（与角色设计图同一处理）。
+DESIGN_SHEET_NEG = ("two different objects, duplicated main object, clone of the same item "
+                    "twice, product catalog grid, clothing catalog, lookbook spread, "
+                    "watermark, cropped dimension line, empty white margin, square canvas")
+
+# 从提示词里剥掉设计图版式（分镜/镜头复用场景概念时用：
+# 版式词进了首帧提示词会把镜头画成设定板）。
+def strip_design_spec(text: str) -> str:
+    t = text or ""
+    for spec in (SCENE_DESIGN_SPEC, PROP_DESIGN_SPEC,
+                 SCENE_DESIGN_SPEC_SHORT, PROP_DESIGN_SPEC_SHORT):
+        t = t.replace(spec, "")
+    return ", ".join(x.strip() for x in t.split(",") if x.strip())
+
+
 # 场景（空镜）规格 —— 2026-11-23 改为"纯正向空场表述"：
 # SDXL 对正向否定句（no people / no human figure）几乎不响应，反而会因 "people" 这个词
 # 把人物拉进画面（实测「废弃矿洞」出成少女侧身像）。人形排除一律交给 NEGATIVE_ENV 负向词。
@@ -346,6 +541,15 @@ STYLE_FAMILY = {
     "guofeng_ink": "paint", "gongbi": "paint", "xianxia": "paint", "guochao": "paint",
     "ukiyoe": "paint", "thick_paint": "paint", "watercolor": "paint",
     "oil_painting": "paint", "flat_vector": "paint", "fantasy_art": "paint",
+    # 风格库扩充（2026-11-28）：不登记会落到 anime 兜底，质感尾词/负向会串味
+    "anime_thick": "paint", "guoman": "anime", "anime_90s": "anime",
+    "illustrious": "anime",
+    "colored_pencil": "paint", "charcoal": "paint", "marker_sketch": "paint",
+    "riso_print": "paint", "linocut": "paint", "paper_cut": "paint", "gouache": "paint",
+    "blind_box": "3d", "clay_stopmotion": "3d", "plush_toy": "3d", "voxel": "3d",
+    "iso_25d": "3d", "mecha_hard": "3d", "y2k_gloss": "3d", "vaporwave": "3d",
+    "dark_gothic": "paint", "wasteland": "photo",
+    "blueprint": "paint", "tech_wire": "3d", "glass_neon": "3d",
 }
 
 IMPERFECTION = {
@@ -564,6 +768,31 @@ SHOT_STYLE_SHORT = {
     "korean_webtoon": "korean webtoon art",
     "guofeng_ink": "chinese ink painting",
     "xianxia": "chinese fantasy illustration",
+    # 风格库扩充（2026-11-28）：分镜只留一个定调锚，防止 77-token 块被画风词挤爆
+    "anime_thick": "japanese 2.5D thick-paint anime",
+    "guoman": "chinese donghua animation",
+    "anime_90s": "1990s retro anime cel",
+    "illustrious": "detailed anime illustration",
+    "blind_box": "designer toy 3D render",
+    "clay_stopmotion": "clay stop-motion look",
+    "plush_toy": "plush toy 3D",
+    "voxel": "voxel art",
+    "iso_25d": "isometric 2.5D render",
+    "mecha_hard": "hard-surface mecha CG",
+    "y2k_gloss": "Y2K chrome gloss",
+    "vaporwave": "vaporwave pastel",
+    "dark_gothic": "dark gothic art",
+    "wasteland": "post-apocalyptic wasteland",
+    "blueprint": "technical blueprint",
+    "tech_wire": "holographic wireframe",
+    "glass_neon": "glassmorphism neon",
+    "colored_pencil": "colored pencil drawing",
+    "gouache": "gouache storybook illustration",
+    "riso_print": "risograph print",
+    "linocut": "linocut print",
+    "charcoal": "charcoal sketch",
+    "marker_sketch": "marker sketch",
+    "paper_cut": "paper cut collage",
 }
 
 
@@ -804,22 +1033,31 @@ def assemble_character_prompt(slots: dict, preset_key: str, mode: str = "sheet",
 
 
 def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
-                          fallback_subject: str = "") -> str:
+                          fallback_subject: str = "", design_sheet: bool = True) -> str:
     """场景提示词组装（第二章公式）；空镜不加皮肤瑕疵，只加真实光影与去过度渲染。
+
+    2026-11-28 版式改版：场景资产从"单张空镜概念图"改为 **场景设计图**
+    （对齐 RunningHub 无限画布 RHTV 的资产范式）：主视角 + 第二角度 + 平面草图 +
+    材质/光影特写 + 手绘箭头与手写标注 + 色卡，米黄纸纹底。
+    design_sheet=False 用于 iso 布局图等"单张成图"的兜底通道（版式会与
+    isometric diorama 打架）。
 
     与道具同病同治：拆解 LLM 偶发漏掉 space 槽位时用场景名顶上，
     避免提示词没有空间主体词导致出图不对题。
     """
     s = get_style(preset_key)
-    # 权重顺序：空间主体词前置（SDXL 前 75 token 权重最高），风格锁随后——
-    # 主体弱、风格锁里的人像词靠前，就会出人（#84 事故）。
+    # 权重顺序：空间主体词前置（SDXL 前 75 token 权重最高），版式紧随其后，
+    # 风格锁再次——主体弱、风格锁里的人像词靠前，就会出人（#84 事故）。
     head = []
     if not (slots.get("space") or "").strip() and fallback_subject:
         head.append(fallback_subject.strip())
     space = _take(slots, "space")
     if space:
         head.append(space)
-    parts = head + [style_lock_for("scene", preset_key)]
+    parts = head
+    if design_sheet:
+        parts.append(SCENE_DESIGN_SPEC)
+    parts.append(style_lock_for("scene", preset_key))
     for key in ("era", "elements", "light"):
         v = _take(slots, key)
         if v:
@@ -827,6 +1065,13 @@ def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     mood = _take(slots, "mood")
     if mood:
         parts.append(f"mood: {mood}")
+    # 场景里出现的牌匾/招牌/门额文字：把字写进提示词，生成时就争取写对，
+    # 写不对再用资产卡「📝 改字」局部重绘（中文/英文都支持）。
+    text_content = (_take(slots, "text_content") or _take(slots, "text") or "").strip()
+    if text_content:
+        parts.append(f'Chinese characters "{text_content}" written on a plaque, signboard '
+                     'or door lintel in the scene, accurate strokes, correctly spelled, '
+                     'no gibberish lettering')
     parts.append(SCENE_EMPTY_SPEC)
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=False))
@@ -837,8 +1082,12 @@ def assemble_scene_prompt(slots: dict, preset_key: str, lifelike: bool = True,
 
 
 def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
-                         fallback_subject: str = "") -> str:
+                         fallback_subject: str = "", design_sheet: bool = True) -> str:
     """道具提示词组装（第二章道具三分类理论）。
+
+    2026-11-28 版式改版：道具资产从"白底单品图"改为 **道具设计图**
+    （对齐 RHTV）：三视图 + 材质/纹样特写 + 尺寸线 + 手写标注 + 色卡，米黄纸纹底。
+    白底单品规格 PROP_SPEC 只在 design_sheet=False 的旧通道保留。
 
     实测坑：本地 LLM 拆解偶发漏掉 subject 槽位，导致提示词里没有物品本体词，
     底模自由发挥出完全无关的物品（监控屏幕→皮球）。两层兜底：
@@ -850,7 +1099,10 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     subject = _take(slots, "subject") or (fallback_subject or "").strip()
     # 物品主体词前置（同场景：主体弱 → 风格锁/质感动词把人形拽进画面）
     head = [subject] if subject else []
-    parts = head + [style_lock_for("prop", preset_key)]
+    parts = head
+    if design_sheet:
+        parts.append(PROP_DESIGN_SPEC)
+    parts.append(style_lock_for("prop", preset_key))
     purpose = _take(slots, "purpose")
     if purpose:
         parts.append(f"story function: {purpose}")
@@ -862,22 +1114,26 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
     # 实测（项目2「灵石兑换券」1024×1024，Qwen-Image）：只要提示词明确给出
     # "四个竖排汉字 灵石兑换券"，五个字全部写对；不给文字内容时只能出伪字。
     # 这是本地底模/云端通道共用的"准字"关键，所以放在道具组装里而不是某个模型分支。
+    # 设计图模式下这段字同时是"牌面文字 + 面板旁的手写标注"，措辞要照顾两处。
     text_content = (_take(slots, "text_content") or _take(slots, "text") or "").strip()
     if text_content:
         parts.append(
-            f'Chinese characters "{text_content}" visibly rendered on the surface, '
-            'accurate strokes, handwritten brush calligraphy, correctly spelled, '
-            'no gibberish lettering')
+            f'Chinese characters "{text_content}" visibly rendered on the surface '
+            'and repeated as a hand-written annotation label beside the panel, '
+            'accurate strokes, correctly spelled, no gibberish lettering')
     material = _take(slots, "material")
     if material:
         parts.append(f"material & color: {material}")
     if category == "bond":
         interaction = _take(slots, "interaction")
         parts.append(f"interaction: {interaction or 'held and used by its owner'}")
-    if category == "ambient":
+    if category == "ambient" and not design_sheet:
+        # 环境氛围道具在旧通道里要"虚化融进环境"；设计图模式必须主体清晰、居中可读，
+        # 否则连轮廓都画不清（面板/标注全部失效）
         parts.append("worn aged patina, shallow depth of field, background blurred, "
                      "blended into environment")
-    parts.append(PROP_SPEC)
+    if not design_sheet:
+        parts.append(PROP_SPEC)
     if lifelike:
         parts.append(lifelike_tokens(preset_key, human=False))
     from .style_vocab import style_vocab_positive

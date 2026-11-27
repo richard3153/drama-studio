@@ -1247,11 +1247,12 @@ def project_assets(pid: int):
 
 
 class TextEditIn(BaseModel):
-    text: str                          # 要写的中文字（如「青云宗令牌」）
-    box: dict | None = None            # 归一化框 {x,y,w,h}，0-1；缺省=画面中部竖排区
+    text: str                          # 要写的文字（中文如「青云宗令牌」，英文如 "QING YUN"）
+    box: dict | None = None            # 归一化框 {x,y,w,h}，0-1；缺省按资产类型给默认框
     denoise: float | None = None       # 重绘强度（0.55-0.98，默认 0.88）
     seed: int | None = None
     extra_prompt: str | None = None
+    lang: str | None = None            # zh / en；不填按文字内容自动判
 
 
 @router.post("/assets/{aid}/text-edit")
@@ -1259,8 +1260,10 @@ async def asset_text_edit(aid: int, body: TextEditIn):
     """图片文字**局部**微调：在已生成的图上只重画框内文字，框外媒质/光影一字不动。
 
     纯本地通道（Qwen-Image 2.1 + mask 局部重绘），不产生任何 token 与云端调用。
-    与旧「GPT-Image 云端整图重渲」的区别：整图重渲会把构图、纸纹、光影全换掉，
-    等于换一张图；这里只有文字框内部被重新采样。
+    2026-11-28 从"只服务道具"扩到三类资产：
+      · 道具设计图 —— 牌面/券面/铭文
+      · 场景设计图 —— 门额/牌匾/招牌/墙面标识
+      · 角色设计图 —— 面板旁的手写标注与底部信息行
     """
     with SessionLocal() as db:
         a = db.get(AssetImage, aid)
@@ -1269,19 +1272,21 @@ async def asset_text_edit(aid: int, body: TextEditIn):
         if not Path(a.file_path).exists():
             raise HTTPException(400, "源图文件已丢失，无法局部微调")
         meta = json.loads(a.meta_json or "{}")
-        box = text_edit_service._clamp_box(body.box)
+        kind_tag = "character" if a.kind == "base_look" else (
+            a.kind if a.kind in ("scene", "prop") else "prop")
+        box = text_edit_service._clamp_box(body.box, kind_tag)
         params = {"asset_id": aid, "project_id": a.project_id,
                   "source_path": str(a.file_path), "kind": a.kind,
                   "character_id": a.character_id,
                   "entity_type": meta.get("entity_type", ""),
                   "entity_id": meta.get("entity_id"),
-                  "text": body.text, "box": box,
+                  "text": body.text, "box": box, "lang": body.lang,
                   "denoise": body.denoise, "seed": body.seed,
                   "extra_prompt": body.extra_prompt}
         t = task_queue.create_task(db, "text_edit", params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": "text_edit", "box": box,
-            "local_only": True}
+            "surface_kind": kind_tag, "local_only": True}
 
 
 @router.delete("/entities/{etype}/{eid}")
@@ -1653,9 +1658,13 @@ async def regenerate(body: RegenerateIn):
                                       'accurate strokes, handwritten brush calligraphy, correctly spelled')
         if body.iso_layout and body.entity_type == "scene":
             # 场景缩略图法：45° 等距剖面布局全景图，展示完整空间结构（用户参照 iso diorama 风格）
+            # 【2026-11-28】场景资产已是「场景设计图」，base_prompt 里有面板/箭头/色卡版式；
+            # 拼进 iso 提示词前必须剥掉，否则"等距剖面"会被画成一张设定板。
+            from .style_presets import strip_design_spec
             prompt = (f"isometric cutaway diorama, 45-degree elevated dollhouse view of the complete space, "
                       f"entire layout visible in one frame, walls, furniture and prop placement clearly arranged, "
-                      f"miniature 3D model style, soft studio lighting, plain dark background. Scene: {prompt}")
+                      f"miniature 3D model style, soft studio lighting, plain dark background. "
+                      f"Scene: {strip_design_spec(prompt)}")
         if body.entity_type == "character":
             type_, params = _character_task_params(db, body.project_id, entity, preset,
                                                    lifelike, lifelike_full, auto_polish,
@@ -1671,6 +1680,8 @@ async def regenerate(body: RegenerateIn):
                       "base_prompt": prompt,
                       "model_key": body.model_key, "prefer_tier": body.prefer_tier,
                       "width": width, "height": height, "auto_polish": auto_polish,
+                      # iso 布局图是"单张成图"通道，不参与设计图版式/标记
+                      "design_sheet": not bool(body.iso_layout),
                       "style_preset": preset}
             if body.entity_type == "prop":
                 # 【2026-11-28 用户拍板】带文字道具按语言走本地文字渲染档：

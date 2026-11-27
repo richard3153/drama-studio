@@ -32,14 +32,26 @@ from ..config import ASSETS_ROOT
 NEG = ("blurry text, gibberish characters, garbled lettering, misspelled characters, "
        "extra text, watermark, lowres, deformed")
 
-# 缺省文字框（归一化）：竖排五字常见位置的中上段。
+# 缺省文字框（归一化）：按资产类型给"文字最常出现的位置"。
 # 刻意避开右下朱印与右侧边框——框压到印章会把印章重画淡（实测）。
 DEFAULT_BOX = {"x": 0.335, "y": 0.195, "w": 0.30, "h": 0.545}
+DEFAULT_BOX_BY_KIND = {
+    # 道具设计图：牌面/券面文字多在主体中部竖向区域（沿用旧默认）
+    "prop": DEFAULT_BOX,
+    # 场景设计图：文字多在门额/牌匾/招牌，落在画面中上偏中的横块
+    "scene": {"x": 0.26, "y": 0.22, "w": 0.48, "h": 0.26},
+    # 角色设计图：文字是面板旁的手写标注与底部信息行（通栏窄条，别框到立绘和脸）
+    "character": {"x": 0.04, "y": 0.86, "w": 0.92, "h": 0.11},
+}
 
 
-def _clamp_box(box: dict | None) -> dict:
+def _default_box_for(kind: str) -> dict:
+    return dict(DEFAULT_BOX_BY_KIND.get(kind or "prop", DEFAULT_BOX))
+
+
+def _clamp_box(box: dict | None, kind: str = "prop") -> dict:
     """归一化框（0-1），越界/太小都收回来——mask 太小等于没重画，太大等于重画整图。"""
-    b = dict(DEFAULT_BOX)
+    b = _default_box_for(kind)
     for k in ("x", "y", "w", "h"):
         try:
             if box and box.get(k) is not None:
@@ -72,13 +84,38 @@ def make_mask(src: Path, box: dict | None, out_path: Path,
     return out_path
 
 
-def build_prompt(text: str, extra: str = "") -> str:
-    """中文指令式提示词：说清"哪块、写成什么、其余别动"。"""
+# 按资产类型给"这个字写在哪"的语境补充：模型需要知道载体，否则会把字画成浮空贴图
+_KIND_ZH = {
+    "prop": "文字写在物件本体表面，随载体弧度与透视贴合",
+    "scene": "文字写在门额 / 牌匾 / 招牌 / 墙面标识上，透视与所在平面一致",
+    "character": "文字是设计图纸上的手写标注与信息行，小小一行，笔迹与图纸手写风格一致",
+}
+_KIND_EN = {
+    "prop": "the lettering sits on the object surface, following its curvature and perspective",
+    "scene": "the lettering is painted on a plaque, signboard or wall sign, aligned to that plane",
+    "character": "the lettering is a small hand-written annotation on the design sheet",
+}
+
+
+def build_prompt(text: str, extra: str = "", lang: str = "zh", kind: str = "prop") -> str:
+    """局部改字的指令式提示词（中文载体写毛笔/印刷体，英文载体写印刷大写字母）。
+
+    2026-11-28：从"只服务道具牌面"扩到角色设计图标注 / 场景牌匾，并按语言分流——
+    之前英文招牌也吃"中文毛笔字"指令，模型会把英文画成伪汉字。
+    """
     t = (text or "").strip()
-    head = (f"把画面中文字所在区域的字，改写为「{t}」，"
-            "中文毛笔字或印刷体，字形准确、笔画清晰、逐字可读，字距与排版自然；"
-            "文字所在纸面/布面/牌面的纹理、折痕、做旧痕迹、朱印、边框与光照保持原样，"
-            "画面其余部分完全不变，不要新增任何多余文字")
+    if lang == "en":
+        head = (f'rewrite only the lettering inside the masked area as "{t}", '
+                "clean printed capital letters, correct spelling, evenly spaced on one line, "
+                "letter by letter legible, " + _KIND_EN.get(kind, _KIND_EN["prop"]) + "; "
+                "keep the original surface texture, wear, stains, frame and lighting exactly "
+                "as they are, everything outside the mask unchanged, no extra text")
+    else:
+        head = (f"把画面中文字所在区域的字，改写为「{t}」，"
+                "中文毛笔字或印刷体，字形准确、笔画清晰、逐字可读，字距与排版自然；"
+                + _KIND_ZH.get(kind, _KIND_ZH["prop"]) + "；"
+                "文字所在材质（纸面/牌面/布面/墙面/金属面）的纹理、折痕、做旧痕迹、朱印、"
+                "边框与光照保持原样，画面其余部分完全不变，不要新增任何多余文字")
     return f"{head}。{extra}" if extra else head
 
 
@@ -93,11 +130,20 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
     text = (params.get("text") or "").strip()
     if not text:
         raise RuntimeError("没填要写的文字内容")
+    kind = params.get("kind") or "prop"
+    # 资产 kind 是 base_look / scene / prop → 归一到提示词语境的三类
+    kind_tag = ("character" if kind == "base_look" else kind) if kind in (
+        "base_look", "scene", "prop") else "prop"
+    lang = (params.get("lang") or "").strip().lower()
+    if lang not in ("zh", "en"):
+        from ..text_prop import detect_lang
+        lang = detect_lang(text)
 
-    box = _clamp_box(params.get("box"))
+    box = _clamp_box(params.get("box"), kind_tag)
     mask_path = Path(ASSETS_ROOT) / str(pid) / "masks" / f"text_mask_{int(datetime.now().timestamp()*1000)}.png"
     make_mask(src, box, mask_path)
-    update_progress(db, task, 0.08, f"局部蒙版已生成（框 {box['w']*100:.0f}%×{box['h']*100:.0f}%）")
+    update_progress(db, task, 0.08,
+                    f"局部蒙版已生成（{kind_tag} 框 {box['w']*100:.0f}%×{box['h']*100:.0f}%，{lang}）")
 
     comfy = ComfyUIAdapter()
     src_name = await comfy.upload_image(src)
@@ -107,7 +153,7 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
     seed = int(params.get("seed") or random.randint(0, 2 ** 31 - 1))
     denoise = float(params.get("denoise") or 0.88)
     denoise = max(0.55, min(0.98, denoise))   # <0.55 字写不实，>0.98 框内纹理全重画
-    prompt = build_prompt(text, params.get("extra_prompt") or "")
+    prompt = build_prompt(text, params.get("extra_prompt") or "", lang=lang, kind=kind_tag)
     wf = comfy.apply_overrides(wf, {
         "LoadImage.image": src_name,
         "LoadImageMask.image": mask_name,
@@ -126,7 +172,6 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
     )
     await comfy.free_memory()
 
-    kind = params.get("kind") or "prop"
     saved = []
     for f in files:
         img = AssetImage(
@@ -144,6 +189,8 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
                 "entity_type": params.get("entity_type", "prop"),
                 "entity_id": params.get("entity_id"),
                 "text": text,
+                "lang": lang,
+                "surface_kind": kind_tag,
                 "box": box,
                 "denoise": denoise,
                 "seed": seed,
@@ -155,4 +202,5 @@ async def run_text_edit(db: Session, task: TaskRecord, params: dict) -> dict:
         db.refresh(img)
         saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": kind})
     update_progress(db, task, 1.0, "局部改字完成")
-    return {"assets": saved, "model_key": "qwen_image_2.1", "local_only": True}
+    return {"assets": saved, "model_key": "qwen_image_2.1", "local_only": True,
+            "lang": lang, "surface_kind": kind_tag}

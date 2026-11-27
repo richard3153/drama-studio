@@ -13,12 +13,16 @@ from ..style_presets import (ANTI_OVER_RENDER_NEG, CHAR_SHEET_NEG, CHAR_VIEW_NEG
                              anti_over_render_neg, quality_suffix, style_family)
 
 # 角色/场景/道具的“中性”正向尾巴（不再堆砌 masterpiece/8k，规避过度渲染）
+# 【2026-11-28】场景/道具改为「设计图」版式后，这里的尾巴不能再写
+# "clean plain background"（那是白底单品的语言，会把设计图的米黄纸纹底顶掉），
+# 也不能重复写 "design sheet"（版式已在 base_prompt 最前，重复会让 iso 布局图
+# 等单张成图通道也长出面板）。只留"主体聚焦 + 版面一致"。
 POSITIVE_SUFFIX = {
     # 【2026-11-27】portrait 的版式词已由 assemble_character_design_prompt 写在
     # base_prompt 开头（设计图版式最前、权重最高），此处不再重复，防止 token 溢出
     "portrait": "",
-    "scene": ("concept art, environment design, consistent art style, unoccupied space"),
-    "prop": ("item reference sheet, single object, clean plain background"),
+    "scene": "consistent art style, unoccupied space, high detail",
+    "prop": "single object focus, consistent design across panels, high detail",
 }
 NEGATIVE = (
     "nsfw, lowres, bad anatomy, bad hands, text, watermark, "
@@ -470,15 +474,23 @@ async def generate_asset(db, task, params: dict) -> dict:
 
     kind = KIND_BY_ROLE[role]
     saved = []
+    # 【2026-11-28】场景/道具现在出的是「设计图」（多面板+标注），必须打标记：
+    # ① 分镜首帧的自动回退会拿"该场景最新一张图"当 IPAdapter 环境参考，
+    #    设计图的箭头/标注/多视角一旦进了参考会把首帧画成设定板（#100 现场）；
+    # ② 前端资产卡要靠这个标记区分"设计图"与"旧版单张图"。
+    is_design = role in ("scene", "prop") and bool(params.get("design_sheet", True))
     for f in files:
+        meta = {"model_key": model_key, "workflow": template_name,
+                "entity_type": params.get("entity_type", ""),
+                "entity_id": params.get("entity_id"),
+                "render_session": render_session}
+        if is_design:
+            meta["design_sheet"] = True
+            meta["design_kind"] = role
         img = AssetImage(project_id=params["project_id"], kind=kind,
                          character_id=params.get("entity_id") if role == "portrait" else None,
                          file_path=str(f), prompt=prompt,
-                         meta_json=json.dumps({"model_key": model_key, "workflow": template_name,
-                                               "entity_type": params.get("entity_type", ""),
-                                               "entity_id": params.get("entity_id"),
-                                               "render_session": render_session},
-                                              ensure_ascii=False))
+                         meta_json=json.dumps(meta, ensure_ascii=False))
         db.add(img)
         db.commit()
         db.refresh(img)
@@ -765,7 +777,8 @@ async def refine_asset(db, task, params: dict) -> dict:
         "ImageScale.height": sh,
         "ImageScale.crop": "disabled",
         "positive_text": f"{base_prompt}, subtle natural texture, film-like grain, "
-                         f"unretouched detail, keep composition and identity unchanged",
+                         f"unretouched detail, keep composition and identity unchanged, "
+                         f"preserve every handwritten annotation and lettering exactly as is",
         "negative_text": NEGATIVE,
         "KSampler.denoise": strength,
         "KSampler.seed": random.randint(0, 2**31 - 1),
@@ -859,7 +872,7 @@ async def auto_scene_anchors(db, task, params: dict) -> dict:
             # 生成 45° iso 布局全景图（与资产页 iso_layout 出图同一提示词结构）
             slots = json.loads(sc.prompt_json or "{}")
             base = (assemble_scene_prompt(slots, preset, lifelike,
-                                          fallback_subject=sc.name)
+                                          fallback_subject=sc.name, design_sheet=False)
                     if slots else (sc.base_prompt or sc.name))
             iso_prompt = (
                 "isometric cutaway diorama, 45-degree elevated dollhouse view of the complete space, "
@@ -868,6 +881,7 @@ async def auto_scene_anchors(db, task, params: dict) -> dict:
             await generate_asset(db, task, {
                 "project_id": pid, "role": "scene", "entity_type": "scene",
                 "entity_id": sc.id, "base_prompt": iso_prompt,
+                "design_sheet": False,
                 "style_preset": preset})
             iso = _scene_iso_image(db, pid, sc.id)
         if iso:

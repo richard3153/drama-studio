@@ -19,6 +19,7 @@ from ..style_presets import (_clean, QUALITY_SUFFIX, QUALITY_SUFFIX_ENV,
                              assemble_character_prompt,
                              assemble_end_frame_prompt, assemble_prop_prompt,
                              assemble_scene_prompt, assemble_shot_prompt, get_style,
+                             strip_design_spec,
                              style_lock_for, lifelike_tokens, shot_style_short)
 from .model_vocab import model_tokens, predict_video_family   # 模型提示词库（组装期按预判的下游模型组词）
 from .action_vocab import detect_action, action_tokens   # 打斗词库（动作镜自动识别+编排词）
@@ -712,7 +713,9 @@ def _scene_concept_for(scene_name: str, scenes_rows: dict) -> str:
         return concept
     base = getattr(row, "base_prompt", "") or ""
     if base:
-        return base
+        # 场景资产自 2026-11-28 起是「场景设计图」，base_prompt 里带多面板版式；
+        # 它进分镜首帧会把镜头画成设定板 —— 复用前剥掉设计图版式段。
+        return strip_design_spec(base)
     # 没匹配到资产且场景名是纯中文：丢掉（中文 token 对 CLIP 是噪声）
     return "" if not re.search(r"[A-Za-z]", scene_name or "") else scene_name
 
