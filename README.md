@@ -82,7 +82,8 @@
 | 可视化 | 分镜时间轴（镜头卡：参考图/提示词/参数全溯源）、参考溯源窗口（可换角色/场景参考）、提示词模板编辑器、全局画幅设置（16:9/21:9/4:3/9:16/3:4/1:1）；生成设置区为两列自适应网格（标题→控件→说明三段式，开关做状态卡片，开启高亮） | React + Vite |
 | 图片增强 | 单张超分放大（upscale 工作流）、初图 10% 自动微调 | ComfyUI |
 | RHTV 可视化控件 | 对齐 RunningHub 无限画布，把"靠提示词碰运气"的地方做成按钮：**导演台**（镜头卡 🎥 → 13 条运镜预设 + 7 组按钮：景别 / 机位 / 运镜 / 速度 / 焦段 / 焦点 / 转场，每个按钮带一行"画面后果"副行；点一下即写字段并**零 LLM 整集重算提示词**，机位词（low-angle / over-the-shoulder / dutch angle…）进首帧与关键帧，位移型运镜或人物轨迹自动挂尾帧）；**风格库**（33 种风格按 5 分类 + 搜索 + 缩略卡片网格，点卡片整体切换项目风格锁并重组装全部资产提示词）；**人物调节**（面部 / 表情基调 / 发型 / 妆容 / 体型 / 姿态 / 服装质感 / 随身饰物 8 组 47 chips，点选替换槽位、再点取消，直接进设计图提示词） | `app/director.py` · `GET /api/director/meta` · `POST /api/shots/{id}/director-apply` |
-| 后台配置 | 左侧导航「⚙️ 配置」一个入口管全部参数：6 个模型档（生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / 参考生视频 / 口型）、LoRA 根目录与 4 步蒸馏 LoRA、注意力后端（PyTorch / SageAttention）、WAN 采样步数、ComfyUI 与 Ollama 服务地址。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝 | settings.py + `/api/settings` |
+| 带文字道具（准字通道） | 令牌铭文 / 符箓榜文 / 契约账册 / 票券告示这类"画面主体就是文字"的道具，两件事保证字写对：① **牌面文字槽位**（`text_content`）——拆解/渲染时自动用道具名补上（如「灵石兑换券」），组装时把"要写的中文"整句塞进提示词（实测 Qwen-Image 1024×1024 五字全对）；② **GPT-Image 2.5 云端通道**（`gpt-image-2.5-flare`/`sunburst`，闭源模型无本地权重，只能 HTTP）+「📝 准字重渲」按钮强制走云端。自动判定：云端配了 key 才走云端，否则落本地 Qwen（不会因为名字里有"牌"字就渲染失败） | `app/text_image.py` · `GET /api/text_image/status` · `POST /api/text_image/ping` · `POST /api/regenerate {text_mode}` |
+| 后台配置 | 左侧导航「⚙️ 配置」一个入口管全部参数：6 个模型档（生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / 参考生视频 / 口型）、LoRA 根目录与 4 步蒸馏 LoRA、注意力后端（PyTorch / SageAttention）、WAN 采样步数、ComfyUI 与 Ollama 服务地址、**GPT-Image 2.5（base_url / key / 模型 / 尺寸 / 质量 + 一键探测）**。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝 | settings.py + `/api/settings` |
 
 ## 方法论（内建于代码，非文档）
 

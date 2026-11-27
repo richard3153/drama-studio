@@ -310,6 +310,47 @@ async def generate_asset(db, task, params: dict) -> dict:
     # 自动选档已由 models.yaml defaults.default_models 承担（2026-11-24 全局拍板：
     # 图片=Qwen-Image）。此前的 photo→flux2 / 3d→qwen 自动规则删除——用户显式传
     # model_key/prefer_tier 时仍走各自通道（如首帧 IPA 锁 SDXL、微调锁 low）。
+    # —— 带文字道具：走 GPT-Image 2.5 云端通道 ——
+    # 令牌铭文 / 符箓榜文 / 契约账册这类"画面主体就是文字"的道具，本地底模
+    # （Qwen-Image 也包括）只会画伪文字。GPT-Image 2.5 是闭源云模型、没有本地权重，
+    # 所以这里是一条独立的 HTTP 通道，不参与 pick_model（见 app/text_image.py）。
+    # 未配置 key 时直接失败并给出可操作提示——比悄悄回退本地出伪字好：
+    # 用户看到的是"这张图字是错的"，而任务能跑通会让人误以为通道生效了。
+    if role == "prop" and params.get("text_mode"):
+        from ..text_image import generate as ti_generate, ready as ti_ready, text_prompt
+        st = ti_ready()
+        if not st["ok"]:
+            raise RuntimeError(
+                "这张道具被判为「带文字」，需要 GPT-Image 2.5 云端通道，当前不可用：" + st["reason"])
+        from ..scheduler.queue import update_progress
+        update_progress(db, task, 0.05, f"云端出图（{st.get('model')}，准字通道）")
+        cloud_prompt = text_prompt(params.get("base_prompt") or "",
+                                   params.get("prop_slots") or {},
+                                   params.get("entity_name") or "")
+        files = await ti_generate(
+            cloud_prompt, params["project_id"],
+            f"p{params['project_id']}_prop{params.get('entity_id', '')}")
+        update_progress(db, task, 0.9, "生成完成，写入资产库")
+        kind = KIND_BY_ROLE[role]
+        saved = []
+        for f in files:
+            img = AssetImage(project_id=params["project_id"], kind=kind,
+                             file_path=str(f), prompt=cloud_prompt,
+                             meta_json=json.dumps({"model_key": "gpt_image_2_5",
+                                                   "provider": "cloud",
+                                                   "model": st.get("model"),
+                                                   "size": st.get("size"),
+                                                   "text_mode": True,
+                                                   "entity_type": "prop",
+                                                   "entity_id": params.get("entity_id")},
+                                                  ensure_ascii=False))
+            db.add(img)
+            db.commit()
+            db.refresh(img)
+            saved.append({"asset_id": img.id, "file_path": img.file_path, "kind": kind})
+        # 云端图不再走 10% 微调：那一步要回本地 SDXL img2img，会把写对的字磨糊
+        return {"assets": saved, "model_key": "gpt_image_2_5"}
+
     prefer = params.get("prefer_tier")
 
     model_key, model = await pick_model(role, prefer,

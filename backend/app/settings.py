@@ -48,6 +48,16 @@ DEFAULTS: dict[str, Any] = {
         # 抬到 20 步（16-24 区间实测可用）。开着蒸馏时工作流自带 4 步，这个值不参与。
         "video_steps": 20,
     },
+    # 带文字道具的云端出图通道（GPT-Image 2.5，闭源 API 模型，本地无权重）
+    "text_image": {
+        "enabled": True,
+        "base_url": "https://api.openai.com/v1",   # 或任意 OpenAI 兼容中转（…/v1）
+        "api_key": "",                              # 直接填 key，或写 env:OPENAI_API_KEY
+        "model": "gpt-image-2.5-flare",             # flare=光影强 / sunburst=色彩艳
+        "size": "1536x1024",
+        "quality": "high",
+        "timeout_s": 240,
+    },
 }
 
 # 允许写入的键（白名单；避免前端误传把 yaml 写坏）
@@ -57,6 +67,7 @@ _ALLOWED = {
                "default_video", "ref_video", "talk_video"},
     "lora": {"dir", "video_step_lora", "enable_video_step_lora"},
     "accel": {"attention", "video_steps"},
+    "text_image": {"enabled", "base_url", "api_key", "model", "size", "quality", "timeout_s"},
 }
 
 

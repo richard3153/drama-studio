@@ -16,7 +16,7 @@ const SLOT_ZH = {
   identity: '身份', ethnicity: '国籍/人种', build: '体型', appearance: '外貌气质',
   face: '面部特征', hair: '发型', clothing: '服装', accessories: '配饰',
   expression: '表情', pose: '姿态', palette: '配色', material: '材质',
-  shape: '形状结构', text: '文字/标识', lighting: '光线氛围', layout: '空间布局',
+  shape: '形状结构', text: '文字/标识', text_content: '牌面文字（要写的中文）', lighting: '光线氛围', layout: '空间布局',
 }
 
 async function api(path, opts) {
@@ -1514,6 +1514,9 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
   const [w, setW] = useState(defaultDims()[0])
   const [h, setH] = useState(defaultDims()[1])
   const [busy, setBusy] = useState(false)
+  // 道具"带文字"三态：auto=按名字/细节自动判定（牌子·契约·票券类走云端准字通道），
+  // on=强制走 GPT-Image 2.5，off=强制本地底模。
+  const [textMode, setTextMode] = useState('auto')
   const img = id => `${API}/assets/${id}/file`
 
   const save = async () => {
@@ -1523,17 +1526,22 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
         : { name, base_prompt: prompt, gen_mode: role === 'portrait' ? genMode : undefined })
     onClose(true)
   }
-  const rerender = async () => {
+  const rerender = async (tm) => {
     setBusy(true)
     try {
       if (Object.keys(slots).length) await put(`/entities/${asset._etype}/${asset.id}`, { name, slots, portrait_mode: role === 'portrait' ? 'sheet' : undefined, gen_mode: role === 'portrait' ? genMode : undefined })
       else await put(`/entities/${asset._etype}/${asset.id}`, { name, base_prompt: prompt, gen_mode: role === 'portrait' ? genMode : undefined })
+      const mode = tm || textMode
       const r = await post('/regenerate', {
         project_id: asset.project_id, entity_type: asset._etype, entity_id: asset.id,
         model_key: modelKey || null, prefer_tier: tier || null, width: Number(w), height: Number(h),
+        // 只有道具才有文字通道；auto 传 null 让后端按名字/细节判定
+        ...(role === 'prop' ? { text_mode: mode === 'on' ? true : (mode === 'off' ? false : null) } : {}),
       })
       refreshTasks()
-      onClose(true, `重新渲染任务 #${r.task_id} 已入队，完成后回到这里查看新版本`)
+      onClose(true, role === 'prop' && mode !== 'off'
+        ? `重新渲染任务 #${r.task_id} 已入队${mode === 'on' ? '（强制走 GPT-Image 2.5 准字通道）' : '（带文字则自动走 GPT-Image 2.5）'}，完成后回到这里查看新版本`
+        : `重新渲染任务 #${r.task_id} 已入队，完成后回到这里查看新版本`)
     } finally { setBusy(false) }
   }
   const polish = async () => {
@@ -1700,6 +1708,27 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                 <textarea value={prompt} onChange={e => setPrompt(e.target.value)} style={{ minHeight: 110 }} />
               </>
             )}
+            {role === 'prop' && (
+              <>
+                <label style={{ marginTop: 10 }}>文字道具通道（画面主体是文字时）</label>
+                <div className="row" style={{ marginBottom: 4 }}>
+                  <select value={textMode} onChange={e => setTextMode(e.target.value)} style={{ flex: 1 }}>
+                    <option value="auto">自动判定（令牌/符箓/契约/票券/榜文… 命中就走 GPT-Image 2.5）</option>
+                    <option value="on">强制走 GPT-Image 2.5（云端准字，最贵）</option>
+                    <option value="off">强制走本地底模（Qwen-Image，字会是伪文字）</option>
+                  </select>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.6 }}>
+                  本地 Qwen/SDXL 写不出准确中文（只会画形似乱码）；GPT-Image 2.5 是闭源云模型，
+                  没有本地权重、只能 API 调用，需在「⚙️ 配置 → GPT-Image 2.5」填 base_url + key。
+                </div>
+                <div className="ops-row" style={{ marginTop: 6 }}>
+                  <button className="small" disabled={busy || !prompt.trim() && !Object.keys(slots).length}
+                    onClick={() => rerender('on')}
+                    title="跳过自动判定，直接走云端准字通道重渲这张道具">📝 准字重渲（GPT-Image 2.5）</button>
+                </div>
+              </>
+            )}
             <label>生成模型（不选则按显存自动选档）</label>
             <div className="row">
               <select value={modelKey} onChange={e => setModelKey(e.target.value)} style={{ flex: 1 }}>
@@ -1717,7 +1746,7 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
               <input type="number" value={h} onChange={e => setH(e.target.value)} style={{ width: 80 }} title="高" />
             </div>
             <div className="ops-row" style={{ marginTop: 16 }}>
-              <button className="small accent" onClick={rerender} disabled={busy || (!prompt.trim() && !Object.keys(slots).length)} title={!prompt.trim() && !Object.keys(slots).length ? '提示词为空：先「从描述重铸槽位」或手动填写提示词' : ''}>🔁 重新渲染</button>
+              <button className="small accent" onClick={() => rerender()} disabled={busy || (!prompt.trim() && !Object.keys(slots).length)} title={!prompt.trim() && !Object.keys(slots).length ? '提示词为空：先「从描述重铸槽位」或手动填写提示词' : ''}>🔁 重新渲染</button>
               <button className="small ghost" onClick={save} disabled={busy}>保存修改</button>
               <span className="ops-div" />
               <button className="small ghost" onClick={polish} disabled={busy || !versions.length} title="img2img denoise 0.12，构图与身份不变，仅补自然质感">✨ 微调 10%</button>
@@ -2005,6 +2034,22 @@ function CharacterAdjust({ slots, onChange }) {
 }
 
 /* ---------- P2 资产库 ---------- */
+/* 道具"带文字"的前端预判：与后端 text_image.looks_textual 同一套词表（双字以上，
+   避免"签字笔/数字时钟"这类单字误判）。命中即在卡片上提示走 GPT-Image 2.5 准字通道。 */
+const TEXT_PROP_WORDS = ['铭文', '刻字', '题字', '字迹', '字样', '带字', '有字',
+  '匾额', '牌匾', '令牌', '腰牌', '木牌', '门牌', '招牌', '招贴', '符箓', '符纸', '符咒', '黄符', '灵符',
+  '诏书', '圣旨', '榜文', '告示', '公文', '文书', '度牒', '通关文牒', '路引', '经卷', '经书', '秘籍', '功法卷',
+  '卷轴', '手札', '书信', '密令', '遗嘱', '玉简', '竹简', '简牍', '木牍', '石刻',
+  '契约', '地契', '房契', '契书', '账簿', '账册', '账本', '名录', '花名册', '票据', '兑换券', '银票', '票号',
+  '印章', '官印', '玉玺', '印玺', '封条', '舆图', '地图', '阵图', '图谱', '碑刻', '石碑', '墓志',
+  '牌位', '灵位', '谥册', '册封', '刻着', '刻有', '写着', '写有', '印着', '印有', '题着', '铭刻', '镌刻']
+const TEXT_PROP_EXCLUDE = ['字典', '书桌', '书架', '文具', '签字笔', '标签纸', '印泥盒', '印刷机']
+function looksTextualProp(name, extra) {
+  let text = [name || '', extra || ''].join(' ')
+  TEXT_PROP_EXCLUDE.forEach(w => { text = text.split(w).join('') })
+  return TEXT_PROP_WORDS.some(w => text.includes(w))
+}
+
 function AssetsPage({ project, refreshTasks, setStage }) {
   const [data, setData] = useState(null)
   const [models, setModels] = useState([])
@@ -2014,6 +2059,7 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   const [stashIds, setStashIds] = useState({})
   const [stashBusy, setStashBusy] = useState(false)
   const [styleLib, setStyleLib] = useState(false)
+  const [busyTxt, setBusyTxt] = useState(null)   // 正在提交"准字重渲"的道具 id
 
   const load = () => api(`/projects/${project.id}/assets`).then(setData)
   const loadStash = () => api(`/projects/${project.id}/stash`).then(setStash).catch(() => {})
@@ -2022,6 +2068,19 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   useEffect(() => { api('/system').then(s => setModels(Object.entries(s.models).map(([key, v]) => ({ key, ...v })))) }, [])
   if (!data) return <div className="page-sub">加载中…</div>
   const img = id => `${API}/assets/${id}/file`
+
+  // 卡片上的"📝 准字重渲"：不打开编辑器，直接以 text_mode=true 重渲（追加新版本）
+  const textRerender = async (a) => {
+    setBusyTxt(a.id)
+    try {
+      const r = await post('/regenerate', {
+        project_id: project.id, entity_type: 'prop', entity_id: a.id, text_mode: true,
+      })
+      setNotice(`「${a.name}」准字重渲任务 #${r.task_id} 已入队：走 GPT-Image 2.5 云端通道，文字会逐字画出（约 30-60 秒），完成后自动刷新`)
+      refreshTasks()
+    } catch (e) { setNotice(`「${a.name}」准字重渲发起失败：${e.message}`) }
+    finally { setBusyTxt(null) }
+  }
 
   const stashConfirm = async (ids) => {
     if (!ids.length) return
@@ -2102,10 +2161,17 @@ function AssetsPage({ project, refreshTasks, setStage }) {
                 : <div className="media-empty">未生成 · 点击配置{etype === 'character' && !a.has_prompt ? '（先补全槽位）' : ''}</div>}
               <button className="asset-del" title="删除资产（含全部生成图，不可恢复）"
                 onClick={e => { e.stopPropagation(); deleteAsset(etype, a) }}>删除</button>
+              {etype === 'prop' && looksTextualProp(a.name, a.description) &&
+                <button className="small" title="这张道具的文字是画面主体：走 GPT-Image 2.5 云端准字通道重渲（需先在 ⚙️ 配置填 key）"
+                  style={{ position: 'absolute', bottom: 8, right: 8, background: 'rgba(245,166,35,.92)', borderColor: '#f5a623', color: '#1a1a1a', fontWeight: 600 }}
+                  disabled={busyTxt === a.id}
+                  onClick={e => { e.stopPropagation(); textRerender(a) }}>{busyTxt === a.id ? '提交中…' : '📝 准字重渲'}</button>}
             </div>
             <div className="info">
               <div className="name-row">
                 <span className="name">{a.name}</span>
+                {etype === 'prop' && looksTextualProp(a.name, a.description) &&
+                  <span className="tag" title="文字是画面主体 → 建议走 GPT-Image 2.5 准字通道（本地底模只会画伪文字）">📝 带文字</span>}
                 {a.render_count > 0 && <span className="tag">渲染 {a.render_count} 次</span>}
                 {a.image_ids.length > 1 && <span className="tag" title="含微调/超分等衍生图">{a.image_ids.length} 图</span>}
               </div>
@@ -2266,10 +2332,32 @@ function SettingsModal({ open, onClose }) {
   const [draft, setDraft] = useState(null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState('')
+  const [tist, setTist] = useState(null)      // GPT-Image 通道就绪状态
+  const [tmsg, setTmsg] = useState('')
   const load = () => api('/settings').then(d => {
     setData(d); setDraft(JSON.parse(JSON.stringify(d.config)))
   }).catch(e => setMsg('读取配置失败：' + e.message))
-  useEffect(() => { if (open) { setMsg(''); load() } }, [open])
+  useEffect(() => {
+    if (!open) return
+    setMsg(''); setTmsg(''); load()
+    api('/text_image/status').then(setTist).catch(() => setTist(null))
+  }, [open])
+  // 探测连通性前先落盘：不然探的是旧配置（用户刚填的 key 还没保存）
+  const pingTextImage = async () => {
+    setBusy('ping'); setTmsg('')
+    try {
+      const save2 = async () => {
+        const cur = (draft || {}).text_image
+        if (!cur) return
+        await put('/settings', { text_image: cur })
+        await load()
+      }
+      await save2()
+      const r = await post('/text_image/ping', {})
+      setTmsg((r.ok ? '✓ ' : '✗ ') + r.msg)
+      api('/text_image/status').then(setTist).catch(() => {})
+    } catch (e) { setTmsg('探测失败：' + e.message) } finally { setBusy('') }
+  }
   if (!open) return null
   const set = (g, k, v) => setDraft(d => ({ ...d, [g]: { ...((d || {})[g] || {}), [k]: v } }))
   const cfg = draft || {}
@@ -2391,6 +2479,72 @@ function SettingsModal({ open, onClose }) {
                 </CfgField>
               </div>
               <div className="cfg-tip">WAN 的 fp8 + blockswap 已写在工作流模板里，属于固定加速；面板这里管的是"要不要挂蒸馏 LoRA"和 ComfyUI 的注意力实现。</div>
+            </div>
+
+            <div className="cfg-group">
+              <div className="cfg-group-title">
+                GPT-Image 2.5 · 带文字道具
+                <span className="cfg-badge">即时生效</span>
+                {tist && <span className={'cfg-badge ' + (tist.ok ? 'ok' : 'warn')} style={{ marginLeft: 6 }}>
+                  {tist.ok ? '✓ 已就绪' : '待配置'}
+                </span>}
+              </div>
+              <div className="cfg-tip" style={{ marginTop: 0, marginBottom: 8 }}>
+                令牌铭文、符箓榜文、契约账册这类"画面主体就是文字"的道具走这条云端通道——
+                本地 Qwen/SDXL 只会画伪文字。GPT-Image 2.5 是闭源云模型（无本地权重，只能 HTTP 调用）。
+              </div>
+              <div className="cfg-grid">
+                <CfgField label="接口地址 base_url" hint="官方 https://api.openai.com/v1；或国内中转的 …/v1">
+                  <input className="cfg-input" value={cfg.text_image?.base_url || ''}
+                    placeholder="https://api.openai.com/v1"
+                    onChange={e => set('text_image', 'base_url', e.target.value)} />
+                </CfgField>
+                <CfgField label="API Key" hint="可直接填 key，或写 env:OPENAI_API_KEY 引用环境变量（推荐）">
+                  <input className="cfg-input" type="password" value={cfg.text_image?.api_key || ''}
+                    placeholder="sk-… 或 env:OPENAI_API_KEY"
+                    onChange={e => set('text_image', 'api_key', e.target.value)} />
+                </CfgField>
+                <CfgField label="模型" hint="flare=光影强 / sunburst=色彩艳">
+                  <select className="cfg-select" value={cfg.text_image?.model || 'gpt-image-2.5-flare'}
+                    onChange={e => set('text_image', 'model', e.target.value)}>
+                    <option value="gpt-image-2.5-flare">gpt-image-2.5-flare（光影强）</option>
+                    <option value="gpt-image-2.5-sunburst">gpt-image-2.5-sunburst（色彩艳）</option>
+                    <option value="gpt-image-2">gpt-image-2（上一代·更便宜）</option>
+                  </select>
+                </CfgField>
+                <CfgField label="尺寸" hint="道具横版推荐 1536x1024">
+                  <select className="cfg-select" value={cfg.text_image?.size || '1536x1024'}
+                    onChange={e => set('text_image', 'size', e.target.value)}>
+                    <option value="1536x1024">1536×1024（横版）</option>
+                    <option value="1024x1024">1024×1024（方图）</option>
+                    <option value="1024x1536">1024×1536（竖版）</option>
+                  </select>
+                </CfgField>
+                <CfgField label="质量" hint="high 够用；max 更贵更慢">
+                  <select className="cfg-select" value={cfg.text_image?.quality || 'high'}
+                    onChange={e => set('text_image', 'quality', e.target.value)}>
+                    <option value="low">low（最快最省）</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high（推荐）</option>
+                    <option value="max">max</option>
+                  </select>
+                </CfgField>
+                <CfgField label="启用" hint="关掉后带文字道具会落回本地底模（字画不准）">
+                  <div className="cfg-switch-row">
+                    <label className="cfg-switch">
+                      <input type="checkbox" checked={!!cfg.text_image?.enabled}
+                        onChange={e => set('text_image', 'enabled', e.target.checked)} />
+                      <span>{cfg.text_image?.enabled ? '已启用' : '已关闭'}</span>
+                    </label>
+                  </div>
+                </CfgField>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                <button className="ghost" disabled={!!busy} onClick={pingTextImage}>
+                  {busy === 'ping' ? '探测中…' : '测试连接（不生成图）'}
+                </button>
+                <span className="cfg-msg" style={{ margin: 0 }}>{tmsg || (tist && !tist.ok ? tist.reason : '')}</span>
+              </div>
             </div>
 
             <div className="cfg-group">

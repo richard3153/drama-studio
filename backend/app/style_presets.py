@@ -858,6 +858,16 @@ def assemble_prop_prompt(slots: dict, preset_key: str, lifelike: bool = True,
         v = _take(slots, key)
         if v:
             parts.append(v)
+    # 牌面/券面/铭文上的具体文字：必须把文字本身写进提示词。
+    # 实测（项目2「灵石兑换券」1024×1024，Qwen-Image）：只要提示词明确给出
+    # "四个竖排汉字 灵石兑换券"，五个字全部写对；不给文字内容时只能出伪字。
+    # 这是本地底模/云端通道共用的"准字"关键，所以放在道具组装里而不是某个模型分支。
+    text_content = (_take(slots, "text_content") or _take(slots, "text") or "").strip()
+    if text_content:
+        parts.append(
+            f'Chinese characters "{text_content}" visibly rendered on the surface, '
+            'accurate strokes, handwritten brush calligraphy, correctly spelled, '
+            'no gibberish lettering')
     material = _take(slots, "material")
     if material:
         parts.append(f"material & color: {material}")

@@ -1482,6 +1482,9 @@ class RegenerateIn(BaseModel):
     width: int | None = None
     height: int | None = None
     iso_layout: bool = False        # 场景专用：生成 45° 等距空间布局全景图（场景缩略图/锚点候选）
+    # 道具专用：是否走"准字"云端通道（GPT-Image 2.5）。
+    # None = 自动判定（名字/用途/细节命中牌榜契约类词就走），True/False = 强制
+    text_mode: bool | None = None
 
 
 ROLE_BY_ENTITY = {"character": "portrait", "scene": "scene", "prop": "prop"}
@@ -1566,6 +1569,17 @@ async def regenerate(body: RegenerateIn):
                 width, height = _portrait_dims("sheet")
         # 槽位存在时按当前风格锁+活人感重组装（保证每次渲染词块一致）
         slots = json.loads(getattr(entity, "prompt_json", "{}") or "{}")
+        if body.entity_type == "prop" and slots:
+            # 带文字道具：槽位里没有"牌面文字"时用道具名补上（名字通常就是要写的字：
+            # 灵石兑换券 / 青云宗令牌 / 招魂幡）。落库而不是只塞本次 params，
+            # 这样编辑器里看得见、本地与云端两条通道都读得到同一份文字内容。
+            from .text_image import looks_textual
+            if not str(slots.get("text_content") or "").strip():
+                tname = (getattr(entity, "name", "") or "").strip()
+                if tname and len(tname) <= 12 and looks_textual(tname, slots):
+                    slots["text_content"] = tname
+                    entity.prompt_json = json.dumps(slots, ensure_ascii=False)
+                    db.commit()
         if slots:
             if body.entity_type == "character":
                 prompt = assemble_character_design_prompt(slots, preset)
@@ -1582,6 +1596,15 @@ async def regenerate(body: RegenerateIn):
                 db.commit()
         else:
             prompt = entity.base_prompt
+            # 全新道具（还没重铸槽位）：名字本身是带文字物件时，也把要写的字塞进提示词，
+            # 否则底模只会画一团形似文字的花纹
+            if body.entity_type == "prop":
+                from .text_image import looks_textual
+                if looks_textual(entity.name or "", {}):
+                    tname = (entity.name or "").strip()
+                    if tname and tname not in prompt:
+                        prompt = (f'{prompt}, Chinese characters "{tname}" visibly rendered on the surface, '
+                                  'accurate strokes, handwritten brush calligraphy, correctly spelled')
         if body.iso_layout and body.entity_type == "scene":
             # 场景缩略图法：45° 等距剖面布局全景图，展示完整空间结构（用户参照 iso diorama 风格）
             prompt = (f"isometric cutaway diorama, 45-degree elevated dollhouse view of the complete space, "
@@ -1603,9 +1626,51 @@ async def regenerate(body: RegenerateIn):
                       "model_key": body.model_key, "prefer_tier": body.prefer_tier,
                       "width": width, "height": height, "auto_polish": auto_polish,
                       "style_preset": preset}
+            if body.entity_type == "prop":
+                # 带文字道具分流：text_mode=True 强制云端（缺 key 就报错，不静默降级）；
+                # text_mode=None 自动 = 只在云端已就绪时才走云端，否则走本地 Qwen
+                # （本地也会用 text_content 注入要写的字，实测能把五字券面写对），
+                # 这样没配 key 的机器不会因为"名字里有个牌字"就渲染失败。
+                from .text_image import looks_textual, ready as ti_ready
+                use_text = body.text_mode
+                if use_text is None:
+                    use_text = looks_textual(getattr(entity, "name", "") or "", slots) and ti_ready()["ok"]
+                params["text_mode"] = bool(use_text)
+                params["prop_slots"] = slots
+                params["entity_name"] = getattr(entity, "name", "") or ""
         t = task_queue.create_task(db, type_, params)
     task_queue.spawn_bg(_run_bg(t.id))
     return {"task_id": t.id, "task_type": type_}
+
+
+@router.get("/text_image/status")
+def text_image_status():
+    """带文字道具的云端通道（GPT-Image 2.5）是否就绪：面板据此显示"可直接出图/待填 key"。"""
+    from .text_image import ready
+    return ready()
+
+
+@router.post("/text_image/ping")
+async def text_image_ping():
+    """探一次连通性：只请求 `{base_url}/models`（不生成图、不花钱），
+    用来一眼区分"key 错了(401)"和"地址/网络不通"。"""
+    from .text_image import _cfg, api_key, ready
+    st = ready()
+    if not st["ok"]:
+        return {"ok": False, "msg": st["reason"]}
+    c = _cfg()
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=25) as cli:
+            r = await cli.get(c["base_url"] + "/models",
+                              headers={"Authorization": f"Bearer {api_key()}"})
+        if r.status_code == 200:
+            return {"ok": True, "msg": f"连通正常（HTTP 200，{c['model']} 可用）"}
+        if r.status_code in (401, 403):
+            return {"ok": False, "msg": f"鉴权失败（HTTP {r.status_code}）：Key 无效或无权限"}
+        return {"ok": False, "msg": f"服务返回 HTTP {r.status_code}：{r.text[:120]}"}
+    except Exception as e:
+        return {"ok": False, "msg": f"连不上 {c['base_url']}：{type(e).__name__}"}
 
 
 class RefineIn(BaseModel):
