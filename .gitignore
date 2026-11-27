@@ -4,9 +4,13 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# 运行数据（项目资产/DB/生成产物 —— 本地私有，不入库；示例配置除外）
+# 运行数据（项目资产/DB/生成产物 —— 本地私有，不入库；示例配置与风格缩略图除外）
 backend/data/*
 !backend/data/models.example.yaml
+!backend/data/style_samples/
+backend/data/style_samples/_gen.log
+backend/data/style_samples/_gen*.log
+backend/data/style_samples/_gen*.err
 
 # 前端
 node_modules/

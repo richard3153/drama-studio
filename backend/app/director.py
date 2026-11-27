@@ -11,7 +11,8 @@ RHTV 把"靠提示词碰运气"的地方都做成了按钮/预设：
 value 一律用 script_service 已认的英文/中文 key，避免再起一套编码。
 """
 from .services.script_service import ANGLE_EN, LENS_EN, SHOT_SIZE_EN
-from .style_presets import STYLE_PRESETS, style_family
+from .style_presets import (STYLE_HIDDEN, STYLE_PRESETS, is_style_hidden,
+                            style_family, style_sample_path, visible_presets)
 
 # ---------- 摄像机控制 ----------
 # 景别：取自 SHOT_SIZE_EN（已带"可见构图后果"锚点，前端只做展示与选择）
@@ -122,22 +123,30 @@ SHOT_PRESETS = [
 
 # ---------- 风格库 ----------
 def style_library() -> dict:
-    """STYLE_PRESETS → 前端风格库（分类 + 卡片）。
+    """STYLE_PRESETS → 前端风格库（分类 + 卡片 + 示例缩略图）。
 
-    卡片不配真实样张：各风格样张要 28 张图才能生成（太重），
-    前端用分类渐变 + 风格锁首句做"视觉提示"。category 已内置在预设数据里。
+    只列 AI 短剧 / AI 漫剧用得上的风格（STYLE_HIDDEN 里的暂不显示，数据仍在）；
+    每张卡片的 `thumb` 指向生成的示例图（同一主体同一构图，差异全在风格上），
+    图还没生成时 thumb=None，前端退回分类渐变块。
     """
     groups: dict[str, list] = {}
     for key, s in STYLE_PRESETS.items():
+        if is_style_hidden(key):
+            continue
+        has_thumb = style_sample_path(key) is not None
         groups.setdefault(s.get("category", "其他"), []).append({
             "key": key,
             "label": s.get("label", key),
             "family": style_family(key),
             "sample": (s.get("style_lock") or "")[:96],
             "motion": s.get("motion_hint", ""),
+            "thumb": f"/api/style-samples/{key}.jpg" if has_thumb else None,
         })
     return {"groups": [{"name": k, "items": v} for k, v in groups.items()],
-            "total": len(STYLE_PRESETS)}
+            "total": len(visible_presets()),
+            "hidden_total": len(STYLE_HIDDEN),
+            "hidden_note": "另 " + str(len(STYLE_HIDDEN))
+                           + " 种（像素/体素/纸张肌理/设计示意类）暂不适用短剧漫剧，未在列表显示"}
 
 
 # ---------- 人物调节（RHTV「人物调节」：面部/姿态/形象/妆容，分区微调） ----------

@@ -2,6 +2,7 @@
 词源：方法论第三、四章 + 网络风格词库整理（AI 短剧常用画风全谱）。
 每个预设：style_lock 注入所有提示词头部；motion_hint 供视频提示词参考；category 用于前端分组。"""
 import re
+from pathlib import Path
 
 STYLE_PRESETS = {
     # ---------- 动漫 / 卡通 ----------
@@ -369,6 +370,56 @@ STYLE_PRESETS = {
 }
 
 DEFAULT_PRESET = "anime_2d"
+
+# ---------- 风格可见范围（2026-11-28）：风格库只列 AI 短剧 / AI 漫剧用得上的 ----------
+# 判断口径：这个风格能不能直接当"一集几分钟、连拍十几镜、角色要复用"的片子底色。
+# 用不上的照样保留文字说明 + 示例缩略图（backend/data/style_samples/<key>.jpg 全 57 张都出），
+# 只是不在列表里显示；哪天要放出来，从这个集合里删掉 key 即可，前端不用改。
+STYLE_HIDDEN = frozenset({
+    # 插画数字里偏"单张作品"的：纸张/笔触肌理太强，同一角色多镜之间纹理与手绘线条
+    # 每镜都重画一遍，接戏时脸和衣服细节对不上
+    "flat_vector", "charcoal", "marker_sketch", "riso_print", "linocut", "paper_cut",
+    # 复古未来里偏"平面设计/游戏画面"的：像素、低多边形、Y2K 光面、蒸汽波都是
+    # 一张海报/一个封面成立，连成戏就散架
+    "synthwave", "pixel_art", "low_poly", "y2k_gloss", "vaporwave",
+    # 潮玩 3D 里的"物件/机甲"类：主体是手办、玩偶、体素、机甲，不承接人物表演
+    # （clay_stopmotion / iso_25d 留着：黏土定格与等距小景漫剧能用）
+    "blind_box", "plush_toy", "voxel", "mecha_hard",
+    # 设计工程：蓝图、线框、玻璃拟态是工程示意图的语汇，不适合叙事画面
+    "blueprint", "tech_wire", "glass_neon",
+})
+
+# 隐性风格的"为什么不显示"（前端 hover 提示用，按分类给一句话）
+STYLE_HIDDEN_NOTE = {
+    "插画数字": "纸张/笔触肌理每镜重画，角色接戏对不上，暂不适用",
+    "复古未来": "像素/低多边形/Y2K 是封面语汇，连成戏会散架，暂不适用",
+    "潮玩3D": "主体是手办/玩偶/机甲，不承接人物表演，暂不适用",
+    "设计工程": "工程示意语汇，不适合叙事画面，暂不适用",
+}
+
+
+def is_style_hidden(preset_key: str) -> bool:
+    """该风格当前是否不进风格库列表（数据与缩略图仍保留）。"""
+    return preset_key in STYLE_HIDDEN
+
+
+def visible_presets() -> dict:
+    """风格库列表该显示的预设（保持 STYLE_PRESETS 原有顺序）。"""
+    return {k: v for k, v in STYLE_PRESETS.items() if k not in STYLE_HIDDEN}
+
+
+# ---------- 风格示例缩略图（tools/gen_style_samples.py 生成） ----------
+STYLE_SAMPLES_DIR = Path(__file__).resolve().parent.parent / "data" / "style_samples"
+
+
+def style_sample_path(preset_key: str) -> Path | None:
+    """示例缩略图本地路径；没生成过/非法 key 返回 None（前端退回渐变色块）。"""
+    if preset_key in STYLE_PRESETS:          # 白名单挡 ../ 穿越
+        p = STYLE_SAMPLES_DIR / f"{preset_key}.jpg"
+        if p.exists():
+            return p
+    return None
+
 
 # ---------- 画面规格（第二章/第四章 + 参考图角色板） ----------
 

@@ -25,7 +25,9 @@ from .services import asset_service, pipeline_service, script_service, shot_serv
 from .services.script_service import MOVING_CAMERA, build_candidate_prompts
 from .style_presets import (STYLE_PRESETS, assemble_character_design_prompt,
                             assemble_character_prompt,
-                            assemble_prop_prompt, assemble_scene_prompt)
+                            is_style_hidden, style_sample_path,
+                            assemble_prop_prompt, assemble_scene_prompt,
+                            visible_presets)
 
 router = APIRouter(prefix="/api")
 
@@ -344,10 +346,30 @@ def create_project(body: ProjectIn):
 
 
 @router.get("/style-presets")
-def style_presets():
+def style_presets(include_hidden: bool = False):
+    """风格预设列表。
+
+    默认只给 AI 短剧 / AI 漫剧用得上的（STYLE_HIDDEN 里的暂不显示），
+    前端下拉用这个口径；带 `?include_hidden=true` 可拿全量 57 种。
+    """
+    src = visible_presets() if not include_hidden else STYLE_PRESETS
     return {k: {"label": v["label"], "category": v["category"],
-                "style_lock": v["style_lock"], "motion_hint": v["motion_hint"]}
-            for k, v in STYLE_PRESETS.items()}
+                "style_lock": v["style_lock"], "motion_hint": v["motion_hint"],
+                "hidden": is_style_hidden(k),
+                "thumb": f"/api/style-samples/{k}.jpg"
+                         if style_sample_path(k) else None}
+            for k, v in src.items()}
+
+
+@router.get("/style-samples/{filename}")
+def style_sample(filename: str):
+    """风格示例缩略图（tools/gen_style_samples.py 生成，384×512 jpg）。"""
+    key = filename[:-4] if filename.endswith(".jpg") else filename
+    p = style_sample_path(key)
+    if not p:
+        raise HTTPException(404, "该风格还没有示例图")
+    return FileResponse(p, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/style-genres")

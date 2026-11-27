@@ -983,11 +983,16 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const [genres, setGenres] = useState({})
   const [styleLibOpen, setStyleLibOpen] = useState(false)
 
-  useEffect(() => { api('/style-presets').then(setPresets).catch(() => {}) }, [])
+  // 风格预设：拿全量并带 hidden 标记，下拉只列可见的；当前项目若正用着"暂不适用"的风格，
+  // 仍把它显示出来（带后缀），不然下拉会空白、看不出当前是什么
+  useEffect(() => { api('/style-presets?include_hidden=true').then(setPresets).catch(() => {}) }, [])
   useEffect(() => { api('/style-genres').then(setGenres).catch(() => {}) }, [])
 
   const savePreset = async (key) => { await put(`/projects/${project.id}`, { style_preset: key }); project.style_preset = key }
   const currentPreset = project.style_preset || 'anime_2d'
+  const presetEntries = Object.entries(presets)
+  const visiblePresetEntries = presetEntries.filter(([, v]) => !v.hidden)
+  const curPresetHidden = !!presets[currentPreset]?.hidden
   // 全片光影 / 色彩预设（对齐 RHTV 节点底部滤镜条）：只写提示词词块，
   // 后端零 LLM 重算全项目所有镜头，不调云端、不耗 token。
   const [lgMeta, setLgMeta] = useState(null)
@@ -1286,22 +1291,23 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
       <div className="page-sub">大纲 → 分集 → 剧本 → 结构化拆解 → 候选确认（每一步都可重跑、可手动编辑）</div>
 
       <div className="card">
-        <label>全局风格锁（{Object.keys(presets).length} 种预设，注入所有剧本拆解与生图提示词，保证全片画风统一）</label>
+        <label>全局风格锁（{visiblePresetEntries.length} 种预设，注入所有剧本拆解与生图提示词，保证全片画风统一）</label>
         <div className="row" style={{ marginBottom: 4 }}>
           <button className="small ghost" onClick={() => setStyleLibOpen(true)}
-            title="按分类 + 缩略卡片的风格库（对齐 RunningHub RHTV），点卡片即整体切换风格锁">🎨 打开风格库（{Object.keys(presets).length} 种）</button>
+            title="按分类 + 缩略卡片的风格库（对齐 RunningHub RHTV），点卡片即整体切换风格锁">🎨 打开风格库（{visiblePresetEntries.length} 种）</button>
           <span className="page-sub" style={{ fontSize: 11, marginLeft: 6 }}>卡片式浏览 + 搜索，比下拉框快</span>
         </div>
         <div className="row">
           <select value={currentPreset} onChange={e => savePreset(e.target.value)} style={{ flex: 1 }}>
             {Object.entries(
-              Object.entries(presets).reduce((acc, [k, v]) => {
-                (acc[v.category] = acc[v.category] || []).push([k, v])
-                return acc
-              }, {})
+              (curPresetHidden ? [...visiblePresetEntries, [currentPreset, presets[currentPreset]]] : visiblePresetEntries)
+                .reduce((acc, [k, v]) => {
+                  (acc[v.category] = acc[v.category] || []).push([k, v])
+                  return acc
+                }, {})
             ).map(([cat, items]) => (
               <optgroup key={cat} label={`── ${cat} ──`}>
-                {items.map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                {items.map(([k, v]) => <option key={k} value={k}>{v.label}{v.hidden ? '（暂不适用）' : ''}</option>)}
               </optgroup>
             ))}
           </select>
@@ -1812,7 +1818,7 @@ async function loadDirectorMeta() {
   return __directorMeta
 }
 
-// 风格卡片缩略占位：按 key 生成稳定渐变（没有 28 张样张，用色相区分即可扫视）
+// 风格卡片兜底底色：示例缩略图没生成/加载失败时，按 key 生成稳定渐变（不至于开天窗）
 const styleTint = key => {
   let h = 0
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 360
@@ -1995,7 +2001,14 @@ function StyleLibraryModal({ project, onClose, onApplied }) {
       <div className="modal" onClick={e => e.stopPropagation()}
         style={{ width: 'min(1000px, 95vw)', height: '84vh', display: 'flex', flexDirection: 'column' }}>
         <div className="modal-head">
-          <div className="page-title">🎨 风格库 · {lib.total} 种</div>
+          <div className="page-title">🎨 风格库 · {lib.total} 种
+            {!!lib.hidden_total && (
+              <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--dim)', marginLeft: 10 }}
+                title={lib.hidden_note}>
+                另有 {lib.hidden_total} 种暂不适用（像素/体素/设计示意类）
+              </span>
+            )}
+          </div>
           <button className="modal-x" onClick={onClose}>✕</button>
         </div>
         <div className="row" style={{ marginBottom: 8 }}>
@@ -2018,7 +2031,11 @@ function StyleLibraryModal({ project, onClose, onApplied }) {
             {items.map(it => (
               <div key={it.key} className={`style-card ${cur === it.key ? 'on' : ''}`}
                 title={it.sample} onClick={() => !busy && use(it.key, it.label)}>
-                <div className="style-thumb" style={{ background: styleTint(it.key) }}>{it.label}</div>
+                <div className="style-thumb" style={{ background: styleTint(it.key) }}>
+                  <span>{it.label}</span>
+                  {it.thumb && <img src={it.thumb} alt="" loading="lazy"
+                    onError={e => { e.currentTarget.style.display = 'none' }} />}
+                </div>
                 <div style={{ padding: '6px 8px' }}>
                   <div style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
                     {it.label}
