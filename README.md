@@ -80,6 +80,7 @@
 | 任务系统 | 串行队列 + SSE 实时进度 + 页面重开任务回放（重连全量对账 + 15s 兜底轮询，防断线旧快照）+ 暂停/取消/继续；三态区分 `failed`（真实报错）与 `interrupted`（服务重启/离线/ComfyUI 不可达，参数保留可继续）；显存感知选档（8GB 友好） | FastAPI + SSE |
 | 可视化 | 分镜时间轴（镜头卡：参考图/提示词/参数全溯源）、参考溯源窗口（可换角色/场景参考）、提示词模板编辑器、全局画幅设置（16:9/21:9/4:3/9:16/3:4/1:1）；生成设置区为两列自适应网格（标题→控件→说明三段式，开关做状态卡片，开启高亮） | React + Vite |
 | 图片增强 | 单张超分放大（upscale 工作流）、初图 10% 自动微调 | ComfyUI |
+| 后台配置 | 左侧导航「⚙️ 配置」一个入口管全部参数：6 个模型档（生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / 参考生视频 / 口型）、LoRA 根目录与 4 步蒸馏 LoRA、注意力后端（PyTorch / SageAttention）、WAN 采样步数、ComfyUI 与 Ollama 服务地址。模型档即时生效，服务地址改完重启后端，注意力改完重启 ComfyUI（面板内置一键重启） | settings.py + `/api/settings` |
 
 ## 方法论（内建于代码，非文档）
 
@@ -195,11 +196,18 @@ Register-ScheduledTask -TaskName "ComfyUI-Watchdog" -Action $a -Trigger $t2 -Set
 
 ### 配置
 
-1. **模型注册表**：复制 `backend/data/models.example.yaml` 为 `backend/data/models.yaml`，把 `weight` 改成你 ComfyUI `models` 目录里实际存在的权重文件名。
-2. **本机路径**（可选）：`backend/app/config.py` 支持环境变量覆盖——
+1. **后台配置面板（推荐）**：左侧导航底部的「⚙️ 配置」。模型档、参考链路的底模、LoRA 根目录、加速方法、服务地址都在这里改，写入 `backend/data/settings.yaml`（运行时生成，不进 git）。生效粒度三种：
+   - **模型档即时生效**——下一个任务就按新档跑（单镜显式指定模型或显存不足降档时仍以任务参数优先）；
+   - **服务地址 / 路径**——重启后端生效；
+   - **注意力后端（`--use-sage-attention`）**——重启 ComfyUI 生效，面板底部有「重启 ComfyUI」按钮（队列忙时会拒绝）。
+   
+   加速项还可关闭 WAN 的 4 步蒸馏 LoRA 并把采样步数抬到 16-24，画质更实、耗时更久。
+2. **模型注册表**：复制 `backend/data/models.example.yaml` 为 `backend/data/models.yaml`，把 `weight` 改成你 ComfyUI `models` 目录里实际存在的权重文件名（面板里的下拉项就从这份注册表来）。
+3. **本机路径**（可选）：`backend/app/config.py` 支持环境变量覆盖——
    - `DRAMA_COMFYUI_INPUT_DIR`：ComfyUI input 共享目录
+   - `DRAMA_COMFYUI_URL` / `DRAMA_OLLAMA_URL`：服务地址（面板保存时自动写入）
    - `DRAMA_FFMPEG`：ffmpeg 路径（默认自动探测 PATH，回退 ComfyUI Desktop 自带版）
-3. **工作流**：`backend/workflows/*.json` 均为 ComfyUI **API 格式**模板，节点名与你的 custom_node 版本不一致时可在 ComfyUI 里「导出(API)」后同名替换。
+4. **工作流**：`backend/workflows/*.json` 均为 ComfyUI **API 格式**模板，节点名与你的 custom_node 版本不一致时可在 ComfyUI 里「导出(API)」后同名替换。
 
 ### 生产流程（UI 引导式）
 
@@ -217,6 +225,7 @@ backend/
     api.py               # FastAPI 全部路由
     db.py                # SQLAlchemy 模型 + 轻量迁移
     style_presets.py     # 30+ 风格预设 / 方法论提示词组装 / 活人感词库
+    settings.py          # 后台配置：运行时读写 settings.yaml + 进程早期注入环境变量（选档覆盖 / 加速开关）
     style_vocab.py       # 双层词库：26 风格包 × 14 红果爆款题材包（风格/题材/负面词）
     aspect.py            # 全局画幅桶（SDXL 分辨率桶 + IPA 压长边策略）
     adapters/            # ComfyUI（D 范式结构化覆盖）/ Ollama 适配器
@@ -265,6 +274,7 @@ frontend/
 | 资产工坊（角色三视图 / 音色锁定） | ![资产](docs/screenshots/03_assets.png) |
 | 分镜时间轴（17 镜镜头卡 / 批量编排 / 说话镜） | ![分镜](docs/screenshots/04_storyboard.png) |
 | 成片导出（配音 / 混音 / 剪映 & FCPXML） | ![成片](docs/screenshots/05_export.png) |
+| 后台配置（模型档 / LoRA 与加速 / 服务与路径） | ![配置](docs/screenshots/06_settings.png) |
 
 ## License
 
