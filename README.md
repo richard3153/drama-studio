@@ -83,6 +83,7 @@
 | 图片增强 | 单张超分放大（upscale 工作流）、初图 10% 自动微调 | ComfyUI |
 | RHTV 可视化控件 | 对齐 RunningHub 无限画布，把"靠提示词碰运气"的地方做成按钮：**导演台**（镜头卡 🎥 → 13 条运镜预设 + 7 组按钮：景别 / 机位 / 运镜 / 速度 / 焦段 / 焦点 / 转场，每个按钮带一行"画面后果"副行；点一下即写字段并**零 LLM 整集重算提示词**，机位词（low-angle / over-the-shoulder / dutch angle…）进首帧与关键帧，位移型运镜或人物轨迹自动挂尾帧）；**风格库**（33 种风格按 5 分类 + 搜索 + 缩略卡片网格，点卡片整体切换项目风格锁并重组装全部资产提示词）；**人物调节**（面部 / 表情基调 / 发型 / 妆容 / 体型 / 姿态 / 服装质感 / 随身饰物 8 组 47 chips，点选替换槽位、再点取消，直接进设计图提示词） | `app/director.py` · `GET /api/director/meta` · `POST /api/shots/{id}/director-apply` |
 | 带文字道具（准字通道） | 令牌铭文 / 符箓榜文 / 契约账册 / 票券告示这类"画面主体就是文字"的道具，两件事保证字写对：① **牌面文字槽位**（`text_content`）——拆解/渲染时自动用道具名补上（如「灵石兑换券」），组装时把"要写的中文"整句塞进提示词（实测 Qwen-Image 1024×1024 五字全对）；② **GPT-Image 2.5 云端通道**（`gpt-image-2.5-flare`/`sunburst`，闭源模型无本地权重，只能 HTTP）+「📝 准字重渲」按钮强制走云端。自动判定：云端配了 key 才走云端，否则落本地 Qwen（不会因为名字里有"牌"字就渲染失败） | `app/text_image.py` · `GET /api/text_image/status` · `POST /api/text_image/ping` · `POST /api/regenerate {text_mode}` |
+| 光影 / 色彩滤镜预设 | 对齐 RHTV 图片/视频节点底部的"滤镜条"：18 条预设（**光线 12**：黄金时刻 / 蓝调时刻 / 阴天柔光 / 烛火暖光 / 月光冷调 / 霓虹夜 / 正午硬光 / 柔光棚拍 / 逆光剪影 / 底光诡异 / 窗棂光柱 / 薄雾漫射；**色彩 6**：青橙电影调 / 漂白高对比 / 胶片低饱和 / 国潮高饱和 / 黑白水墨 / 奶油柔粉），点选即把成套光影词塞进首帧提示词，一串镜头观感自动统一。**三级作用域**：单镜（导演台）> 全片（剧本页「全片光影 / 色彩」下拉）> 空（各镜自己的光位描述）。**纯提示词层，零 token、零云端调用**：写入即本地重算全项目提示词（不重跑 LLM），无后期 LUT、无额外模型；只进图片侧（首帧 / 尾帧 / 关键帧），不进 I2V 视频提示词（避免逐帧重新想象颜色导致闪烁）。分镜短模板只给 4 词短版词组，防止挤掉内容项 | `app/light_grades.py` · `GET /api/director/meta` · `POST /api/shots/{id}/director-apply` · `POST /api/projects/{pid}/light-grade` |
 | 后台配置 | 左侧导航「⚙️ 配置」一个入口管全部参数：6 个模型档（生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / 参考生视频 / 口型）、LoRA 根目录与 4 步蒸馏 LoRA、注意力后端（PyTorch / SageAttention）、WAN 采样步数、ComfyUI 与 Ollama 服务地址、**GPT-Image 2.5（base_url / key / 模型 / 尺寸 / 质量 + 一键探测）**。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝 | settings.py + `/api/settings` |
 
 ## 方法论（内建于代码，非文档）
@@ -287,6 +288,7 @@ frontend/
 | 分镜时间轴（17 镜镜头卡 / 批量编排 / 说话镜） | ![分镜](docs/screenshots/04_storyboard.png) |
 | 成片导出（配音 / 混音 / 剪映 & FCPXML） | ![成片](docs/screenshots/05_export.png) |
 | 后台配置（模型档 / LoRA 与加速 / 服务与路径） | ![配置](docs/screenshots/06_settings.png) |
+| 光影滤镜效果（同镜头只换滤镜词块：左 黄金时刻 / 右 青橙电影调） | ![滤镜](docs/light_grade_compare.png) |
 
 ## License
 

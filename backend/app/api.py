@@ -1940,7 +1940,7 @@ def director_meta():
 _DIRECTOR_FIELDS = {"shot_size", "camera_angle", "camera_move", "camera_speed",
                     "camera_dir", "framing_start", "framing_end", "focal_length",
                     "focus_transition", "transition_in", "character_path",
-                    "atmosphere", "needs_end_frame"}
+                    "atmosphere", "needs_end_frame", "light_grade"}
 
 
 class DirectorApply(BaseModel):
@@ -1961,6 +1961,14 @@ def director_apply(sid: int, body: DirectorApply):
                 continue
             if k == "needs_end_frame":
                 s.needs_end_frame = int(bool(v))
+            elif k == "light_grade":
+                # 光影/色彩预设只认已登记的 key，空串=跟随项目（防止前端拼错变死值）
+                from .light_grades import GRADE_BY_KEY
+                val = str(v or "").strip()
+                if val and val not in GRADE_BY_KEY:
+                    continue
+                s.light_grade = val
+                applied[k] = val
             elif isinstance(v, str):
                 if hasattr(s, k):
                     setattr(s, k, v[:200])
@@ -1982,6 +1990,41 @@ def director_apply(sid: int, body: DirectorApply):
         out["reassembled"] = n
         out["applied"] = applied
         return out
+
+
+class LightGradeIn(BaseModel):
+    grade: str = ""             # 空串=关闭（回到按 tod/light 自动）
+    reassemble: bool = True
+
+
+@router.post("/projects/{pid}/light-grade")
+def set_project_light_grade(pid: int, body: LightGradeIn):
+    """全片光影/色彩预设（对齐 RHTV 节点底部滤镜条）。
+
+    纯提示词实现：写 projects.light_grade → 零 LLM 重算该项目全部集的首帧/尾帧/
+    关键帧提示词。不调云端、不耗 token、不用重新拆解；生成仍走本地底模。
+    """
+    from .light_grades import GRADE_BY_KEY
+    with SessionLocal() as db:
+        p = db.get(Project, pid)
+        if not p:
+            raise HTTPException(404, "项目不存在")
+        g = (body.grade or "").strip()
+        if g and g not in GRADE_BY_KEY:
+            raise HTTPException(400, f"未知的光影预设：{g}")
+        p.light_grade = g
+        db.commit()
+        eps_n = shots_n = 0
+        if body.reassemble:
+            for ep in db.scalars(select(Episode).where(Episode.project_id == pid)).all():
+                n = script_service.reassemble_episode_prompts(
+                    db, ep.id, pid, p.style_preset or "anime_2d",
+                    bool(p.lifelike), bool(p.lifelike_full))
+                if n:
+                    eps_n += 1
+                    shots_n += n
+        return {"project_id": pid, "light_grade": g,
+                "episodes": eps_n, "shots": shots_n}
 
 
 # ---------- 镜头生成（M3：首帧 / 尾帧 / 视频 / 宫格） ----------

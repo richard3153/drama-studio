@@ -369,6 +369,24 @@ def _light_short(light: str) -> str:
     return _clip_words(_clean(light).split(",")[0], 7)
 
 
+def _light_short_grade(light: str, grade_key: str) -> str:
+    """短版光位 + 光影预设短词（分镜首帧/尾帧模板只引用 light_short）。
+
+    为什么不直接复用 _light_short(apply_grade(...))：那个函数只取第一个逗号前的
+    片段（刻意压预算），滤镜词块拼在逗号后面会被整段丢掉（实测 golden_hour 完全
+    不进 image_prompt）。所以这里显式拼"原光位首段 + 预设短词"，预算放宽到 12 词。
+    """
+    from ..light_grades import grade_short
+    gs = grade_short(grade_key)
+    base = _clean(light).split(",")[0].strip()
+    if not gs:
+        return _light_short(light)
+    # 预算分配：光位 6 词 + 预设 5 词。原光位那句常很长（"harsh overhead sunlight
+    # casting deep shadows under nose and chin"），不先裁就会把预设整段挤出窗口
+    # （实测 golden_hour 只活下来一个 "golden hour"）。
+    return ", ".join(x for x in (_clip_words(base, 6), _clip_words(gs, 5)) if x)
+
+
 def _multi_layout_hint(names: list[str], looks: list[str]) -> str:
     """双人/多人同框的分列布局词。
 
@@ -1360,9 +1378,12 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
     from ..style_vocab import combined_shot_vocab
+    from ..light_grades import apply_grade
     from ..db import Project as _Proj
     _proj = db.get(_Proj, project_id)
     _genre = (getattr(_proj, "genre", "") if _proj else "") or ""
+    # 全片光影/色彩预设（RHTV 节点底部那类滤镜层）：只写提示词，不耗 token、不调云端
+    _proj_grade = (getattr(_proj, "light_grade", "") if _proj else "") or ""
 
     chars = {c.name: json.loads(c.prompt_json or "{}")
              for c in db.scalars(select(Character)
@@ -1433,7 +1454,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "char_short": _char_short_join,
             "scene_short": _scene_short(scene_concept),
             "props_short": _props_short(_props),
-            "light_short": _light_short(slots_en.get("light", "")),
+            "light_short": _light_short_grade(slots_en.get("light", ""),
+                                               (shot.get("light_grade") or "") or _proj_grade),
             "framing_short": _framing_angle_short(slots_en.get("shot_size", ""),
                                                  shot.get("camera_angle", "")),
             "framing_end_short": _framing_angle_short(
@@ -1470,13 +1492,16 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "prev": _clean(shot.get("prev_summary", "")),
             "framing": _en_size(slots_en.get("shot_size", "")),
             "angle": _en_angle(shot.get("camera_angle", "")),
-            "light": _clean(slots_en.get("light", "")),
+            "light": _clean(apply_grade(slots_en.get("light", ""),
+                                        (shot.get("light_grade") or "") or _proj_grade)),
             "composition": _clean(", ".join(x for x in [
                 slots_en.get("composition", ""), shot.get("composition_anchor", "")] if x)),
         })
         rendered = render(tpl_ff, vars_ff)
         shot["image_prompt"] = rendered if len(rendered) > 20 else assemble_shot_prompt(
-            slots_en, preset, scene_concept, char_looks, lifelike, lifelike_full)
+            {**slots_en, "light": apply_grade(slots_en.get("light", ""),
+                                              (shot.get("light_grade") or "") or _proj_grade)},
+            preset, scene_concept, char_looks, lifelike, lifelike_full)
         shot["prompt_template_id"] = tid_ff
 
         # 2) 尾帧：动作收束（aftermath）
@@ -1491,7 +1516,9 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             })
             rendered = render(tpl_ef, vars_ef)
             shot["end_frame_prompt"] = rendered if len(rendered) > 20 else assemble_end_frame_prompt(
-                slots_en, preset, scene_concept, char_looks, lifelike, lifelike_full)
+                {**slots_en, "light": apply_grade(slots_en.get("light", ""),
+                                                  (shot.get("light_grade") or "") or _proj_grade)},
+                preset, scene_concept, char_looks, lifelike, lifelike_full)
         else:
             shot["end_frame_prompt"] = ""
 
@@ -1503,7 +1530,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "prev": _clean(shot.get("prev_summary", "")),
             "framing": _en_size(slots_en.get("shot_size", "")),
             "angle": _en_angle(shot.get("camera_angle", "")),
-            "light": _clean(slots_en.get("light", "")),
+            "light": _clean(apply_grade(slots_en.get("light", ""),
+                                        (shot.get("light_grade") or "") or _proj_grade)),
             "composition": _clean(slots_en.get("composition", "")),
         })
         shot["key_frame_prompt"] = render(tpl_ff, vars_kf)
@@ -1629,9 +1657,12 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
     from ..style_vocab import combined_shot_vocab
+    from ..light_grades import apply_grade
     from ..db import Project as _Proj
     _proj = db.get(_Proj, project_id)
     _genre = (getattr(_proj, "genre", "") if _proj else "") or ""
+    # 全片光影/色彩预设（RHTV 节点底部那类滤镜层）：只写提示词，不耗 token、不调云端
+    _proj_grade = (getattr(_proj, "light_grade", "") if _proj else "") or ""
 
     rows = db.scalars(select(Shot).where(Shot.episode_id == episode_id)
                       .order_by(Shot.idx)).all()
@@ -1712,7 +1743,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "char_short": _char_short_join,
             "scene_short": _scene_short(scene_concept),
             "props_short": _props_short(_props),
-            "light_short": _light_short(r.light),
+            "light_short": _light_short_grade(r.light, (r.light_grade or "") or _proj_grade),
             "framing_short": _framing_angle_short(r.shot_size or "", r.camera_angle or ""),
             "framing_end_short": _framing_angle_short(
                 r.framing_end or r.shot_size or "", r.camera_angle or ""),
@@ -1738,7 +1769,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "lens": _en_lens(d.get("focal_length", "")),
             "atmosphere": _clean(r.atmosphere), "framing": _en_size(r.shot_size),
             "prev": _clean(d.get("prev_summary", "")),
-            "angle": _en_angle(r.camera_angle), "light": _clean(r.light),
+            "angle": _en_angle(r.camera_angle), "light": _clean(apply_grade(
+                r.light, (r.light_grade or "") or _proj_grade)),
             "composition": _clean(", ".join(x for x in [
                 r.composition, d.get("composition_anchor", "")] if x)),
         })
@@ -1759,7 +1791,8 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "atmosphere": _clean(r.atmosphere),
             "prev": _clean(d.get("prev_summary", "")),
             "framing": _en_size(r.shot_size), "angle": _en_angle(r.camera_angle),
-            "light": _clean(r.light), "composition": _clean(r.composition),
+            "light": _clean(apply_grade(r.light, (r.light_grade or "") or _proj_grade)),
+            "composition": _clean(r.composition),
         })
         r.key_frame_prompt = render(tpl_ff, v3)
 

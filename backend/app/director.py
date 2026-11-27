@@ -211,6 +211,7 @@ CHARACTER_ADJUST = [
 
 
 def meta() -> dict:
+    from .light_grades import LIGHT_GRADES, GROUPS
     return {
         "camera": {
             "shot_size": SHOT_SIZES, "angle": ANGLES, "move": MOVES,
@@ -223,4 +224,7 @@ def meta() -> dict:
         "presets": SHOT_PRESETS,
         "styles": style_library(),
         "character_adjust": CHARACTER_ADJUST,
+        # 光影/色彩滤镜（RHTV 节点底部预设条）：纯提示词词块，本地模型执行，不耗 token
+        "light_grades": LIGHT_GRADES,
+        "light_grade_groups": GROUPS,
     }

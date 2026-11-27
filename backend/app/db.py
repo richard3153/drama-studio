@@ -35,6 +35,7 @@ class Project(Base):
     grid_storyboard: Mapped[int] = mapped_column(Integer, default=1)  # 宫格故事板（仅动漫风格默认开）
     aspect_ratio: Mapped[str] = mapped_column(String(10), default="9:16")  # 全局画幅 16:9/21:9/4:3/1:1/3:4/9:16
     narrator_voice: Mapped[str] = mapped_column(String(80), default="")  # 旁白/无前缀台词音色（成片页锁定）
+    light_grade: Mapped[str] = mapped_column(String(40), default="")   # 全片光影/色彩预设（RHTV 滤镜层，空=自动）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -175,6 +176,7 @@ class Shot(Base):
     continuity_guidance: Mapped[str] = mapped_column(Text, default="")
     ref_overrides_json: Mapped[str] = mapped_column(Text, default="{}")  # 手动指定参考：{"角色名": path, "__scene__": path}
     motion_json: Mapped[str] = mapped_column(Text, default="{}")  # 运动动作控制：{posture,gesture,expression,gaze,intensity,secondary}
+    light_grade: Mapped[str] = mapped_column(String(40), default="")  # 单镜光影/色彩覆盖（空=跟随项目）
     first_frame_path: Mapped[str] = mapped_column(Text, default="")
     end_frame_path: Mapped[str] = mapped_column(Text, default="")
     video_path: Mapped[str] = mapped_column(Text, default="")
@@ -255,6 +257,7 @@ def _migrate():
             ("grid_storyboard", "INTEGER DEFAULT 1"),
             ("aspect_ratio", "VARCHAR(10) DEFAULT '9:16'"),
             ("narrator_voice", "VARCHAR(80) DEFAULT ''"),
+            ("light_grade", "VARCHAR(40) DEFAULT ''"),
         ],
         "characters": [
             ("prompt_json", "TEXT DEFAULT '{}'"),
@@ -283,6 +286,7 @@ def _migrate():
             ("continuity_guidance", "TEXT DEFAULT ''"),
             ("ref_overrides_json", "TEXT DEFAULT '{}'"),
             ("motion_json", "TEXT DEFAULT '{}'"),
+            ("light_grade", "VARCHAR(40) DEFAULT ''"),
         ],
     }
     with engine.connect() as conn:

@@ -988,6 +988,25 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
 
   const savePreset = async (key) => { await put(`/projects/${project.id}`, { style_preset: key }); project.style_preset = key }
   const currentPreset = project.style_preset || 'anime_2d'
+  // 全片光影 / 色彩预设（对齐 RHTV 节点底部滤镜条）：只写提示词词块，
+  // 后端零 LLM 重算全项目所有镜头，不调云端、不耗 token。
+  const [lgMeta, setLgMeta] = useState(null)
+  const [grade, setGrade] = useState(project.light_grade || '')
+  const [gradeMsg, setGradeMsg] = useState('')
+  useEffect(() => {
+    loadDirectorMeta().then(m => setLgMeta(m)).catch(() => {})
+  }, [])
+  const saveGrade = async (v) => {
+    setGrade(v)
+    const zh = ((lgMeta?.light_grades || []).find(x => x.v === v) || {}).zh || v
+    try {
+      const r = await post(`/projects/${project.id}/light-grade`, { grade: v })
+      project.light_grade = v
+      setGradeMsg(v
+        ? `✔ 全片切到「${zh}」：${r.episodes} 集 / ${r.shots} 镜提示词已重算（本地模型执行，未耗 token）`
+        : `✔ 已关闭全片滤镜：${r.episodes} 集 / ${r.shots} 镜回到各镜头自己的光位描述`)
+    } catch (e) { setGradeMsg('应用失败：' + e.message) }
+  }
   const saveGenre = async (key) => { await put(`/projects/${project.id}`, { genre: key }); project.genre = key }
   const currentGenre = project.genre || ''
   const [bridge, setBridge] = useState(project.transition_bridge === 1)
@@ -1289,6 +1308,25 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
           <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{presets[currentPreset]?.style_lock}</span>
         </div>
         <div className="page-sub" style={{ fontSize: 12, marginTop: 4 }}>视频动态策略：{presets[currentPreset]?.motion_hint}</div>
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+          <label style={{ fontSize: 12 }}>全片光影 / 色彩（滤镜层，纯提示词 · 不耗 token · 不调云端）</label>
+          <div className="row" style={{ marginTop: 4 }}>
+            <select value={grade} onChange={e => saveGrade(e.target.value)} style={{ flex: 1 }}>
+              <option value="">自动（不加滤镜，按每镜自己的光位描述）</option>
+              {(lgMeta?.light_grade_groups || []).map(g => (
+                <optgroup key={g} label={`── ${g} ──`}>
+                  {(lgMeta.light_grades || []).filter(x => x.group === g)
+                    .map(x => <option key={x.v} value={x.v}>{x.zh} — {x.hint}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div className="page-sub" style={{ fontSize: 11, marginTop: 3 }}>
+            {gradeMsg || (grade
+              ? '点一次即全项目重算；单个镜头可在「🎥 摄像」里单独覆盖，覆盖优先于全片'
+              : '不改画面内容，只改打光与调色倾向；改完需重新生成首帧/视频才落到画面上')}
+          </div>
+        </div>
         {/* 生成设置：两列网格，每项「标题 → 控件 → 说明」，不再把 7 个开关挤成一行 */}
         <div className="settings-grid">
           <div className="field full">
@@ -1885,6 +1923,17 @@ function DirectorPanel({ shot, onClose, onApplied }) {
               disabled={busy} onPick={v => apply({ focus_transition: v }, `焦点=${v}`)} />
             <BtnRow title="转场" hint="本镜从上一镜怎么进来" items={c.transition} value={cur.transition_in}
               disabled={busy} onPick={v => apply({ transition_in: v }, `转场=${v || '默认'}`)} />
+            <div style={{ fontSize: 12, color: 'var(--accent-strong)', margin: '16px 0 6px', fontWeight: 600 }}>
+              光影 / 色彩（滤镜层 · 纯提示词，不耗 token、不调云端）
+            </div>
+            {(meta.light_grade_groups || []).map(g => {
+              const items = (meta.light_grades || []).filter(x => x.group === g)
+              if (g === '光线') items.unshift({ v: '', zh: '跟随项目', hint: s.light_grade ? '清除单镜覆盖，回到全片预设' : '当前继承全片预设' })
+              return <BtnRow key={g} title={g}
+                hint={g === '光线' ? '轻一点/重一点、暖/冷、硬/柔' : '整体调色倾向（暗部与肤色的对撞）'}
+                items={items} value={s.light_grade || ''} disabled={busy}
+                onPick={v => apply({ light_grade: v }, `光影=${v ? (items.find(x => x.v === v) || {}).zh : '跟随项目'}`)} />
+            })}
             <label style={{ fontSize: 11 }}>人物轨迹（可手改，位移时首帧/尾帧都会用）</label>
             <input defaultValue={s.character_path || ''}
               placeholder="如 from left edge walks to the counter then turns back to camera"
