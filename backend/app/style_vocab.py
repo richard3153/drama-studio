@@ -485,10 +485,19 @@ def style_genre_negative(genre_key: str) -> str:
 
 
 def combined_shot_vocab(preset_key: str, genre_key: str,
-                        genre_kinds: tuple = ("mood", "hooks")) -> str:
+                        genre_kinds: tuple = ("mood", "hooks"),
+                        preset_kinds: tuple = ("style", "atmosphere", "fx")) -> str:
     """风格词库 + 题材词库合并成镜头层 vocab 串（模板 {{ vocab }} 单变量注入）。
     题材默认只取 mood+hooks——setting/wardrobe 由场景图与角色图承担，
-    镜头里重复写会让提示词臃肿稀释权重。"""
-    parts = [style_vocab_positive(preset_key),
+    镜头里重复写会让提示词臃肿稀释权重。
+
+    preset_kinds 控制风格词库取哪几类（2026-11-27 修复「头冒火」）：
+    事故：室内杂役房特写镜也被无条件注入 fx/atmosphere
+    （spiritual energy ribbons / glowing rune circles / drifting petals /
+     immortal mountain vistas / flowing silk and cloud mist），
+    模型无法在"一个人的脸"里表现这些，就把灵光糊到头顶 → 头发炸开发光像着火，
+    背景也硬塞远山云雾。调用方应按 int_ext / vfx / 打斗强度只传 style，
+    外景才补 atmosphere、特效镜才补 fx。"""
+    parts = [style_vocab_positive(preset_key, kinds=preset_kinds),
              style_genre_positive(genre_key, genre_kinds)]
     return ", ".join(x for x in parts if x)

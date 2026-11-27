@@ -19,7 +19,7 @@ from ..style_presets import (_clean, QUALITY_SUFFIX, QUALITY_SUFFIX_ENV,
                              assemble_character_prompt,
                              assemble_end_frame_prompt, assemble_prop_prompt,
                              assemble_scene_prompt, assemble_shot_prompt, get_style,
-                             style_lock_for, lifelike_tokens)
+                             style_lock_for, lifelike_tokens, shot_style_short)
 from .model_vocab import model_tokens, predict_video_family   # 模型提示词库（组装期按预判的下游模型组词）
 from .action_vocab import detect_action, action_tokens   # 打斗词库（动作镜自动识别+编排词）
 from .vfx_vocab import detect_vfx, vfx_tokens   # 特效词库（特效镜自动识别+编排词）
@@ -245,6 +245,102 @@ def _look_of(slots: dict, base_prompt: str = "") -> str:
             "8k", "highres", "masterpiece", "game cg", "unreal")
     keep = [x for x in parts if x and not any(s in x.lower() for s in skip)]
     return ", ".join(keep[:6])
+
+
+_TAIL_STOP = {"with", "and", "of", "in", "on", "at", "under", "over", "for", "to",
+              "a", "an", "the", "from", "by", "into", "onto", "is", "are"}
+
+
+def _clip_words(text: str, n: int) -> str:
+    """按空格截到 n 个词（短提示词的 token 预算控制），并剃掉截断处的悬空虚词。"""
+    words = (text or "").split()[:n]
+    while words and words[-1].strip(",;:").lower() in _TAIL_STOP:
+        words.pop()
+    return " ".join(words).strip(" ,;:")
+
+
+_GENDER_RE = re.compile(r"\b(male|female|man|woman|boy|girl|adult|teen|elder|youth|child)\b", re.I)
+_SCENE_STOP = ("fantasy cultivation world", "modern system overlay")
+
+
+def _char_short(slots: dict) -> str:
+    """角色短外观（≤22 词）：性别年龄 + 发型 + 服装 + 关键道具体征。
+    角色名（林越）底模不认，一律用外观短语指代；服装必须是带颜色/材质的形制描述，
+    否则模型每次按先验换一身（实测一集 13 镜出 4 套衣服）。"""
+    slots = slots or {}
+    ident = [x.strip() for x in _clean(slots.get("identity")).split(",") if x.strip()]
+    parts = []
+    sex_age = [x for x in ident if _GENDER_RE.search(x)]
+    if sex_age:
+        parts.append(", ".join(sex_age[:2]))
+    elif ident:
+        parts.append(_clip_words(ident[0], 5))
+    hair = _clip_words(_clean(slots.get("hair")).split(",")[0], 6)
+    if hair:
+        parts.append(hair)
+    clothing = _clean(slots.get("clothing"))
+    if clothing:
+        parts.append(_clip_words(clothing, 14))
+    acc = _clip_words(_clean(slots.get("accessories")), 6)
+    if acc:
+        parts.append(acc)
+    return _clip_words(", ".join(x for x in parts if x), 22)
+
+
+def _scene_short(scene_concept: str) -> str:
+    """场景主体（≤12 词）：取第一个空间描述块，世界观修饰词不进短提示词。"""
+    blocks = [c.strip() for c in _clean(scene_concept).split(",") if c.strip()]
+    if not blocks:
+        return ""
+    main = blocks[0]
+    if len(main.split()) < 5 and len(blocks) > 1:
+        main = f"{main}, {blocks[1]}"
+    return _clip_words(main, 12)
+
+
+def _props_short(props: str) -> str:
+    """道具（≤8 词）：只留第一个道具的可见主体，丢掉冗述与互动尾巴。"""
+    p = _clean(props)
+    if not p:
+        return ""
+    p = re.sub(r"^props in scene:\s*", "", p, flags=re.I)
+    p = p.split(", characters naturally")[0]
+    # 每个道具是 "subject, details, material"，多个道具用 ";" 连——只留第一个道具的 subject
+    first = p.split(";")[0].split(",")[0].strip()
+    first = re.sub(r"\bprops? in scene:\s*", "", first, flags=re.I)
+    # "a crumpled piece of paper resembling a currency voucher" → "a currency voucher"
+    first = re.sub(r"\ba [\w\s]{1,40}?resembling (?:an? )?", "a ", first, flags=re.I)
+    return _clip_words(re.sub(r"\s+", " ", first).strip(" ,"), 6)
+
+
+_CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _action_short(text: str, char_names: list[str] | None = None) -> str:
+    """动作短句（≤10 词）：中文角色名换成代词、删残留中文、只留单一时刻。
+    底模不认中文，"林越 grips..." 里的名字只会变成噪声 token。"""
+    t = _clean(single_moment(text or ""))
+    if not t:
+        return ""
+    for n in (char_names or []):
+        if n:
+            t = t.replace(n, "he")
+    t = _CHINESE_RE.sub("", t)
+    t = re.sub(r"[（(]\s*[)）]", "", t)
+    t = re.sub(r"\s+", " ", t).strip(" ,;:")
+    return _clip_words(t, 10)
+
+
+def _framing_short(size_raw: str) -> str:
+    """景别短语（只留第一个形态词，如 "close-up"）。
+    _en_size 会带解释从句（"close-up, face fills the frame, subtle micro-expression visible"），
+    短提示词里只要景别本身。"""
+    return _clip_words(_en_size(size_raw or "").split(",")[0], 4)
+
+
+def _light_short(light: str) -> str:
+    """光位（≤7 词）：只留光源方向与性质，删掉解释性从句。"""
+    return _clip_words(_clean(light).split(",")[0], 7)
 
 
 def _multi_layout_hint(names: list[str], looks: list[str]) -> str:
@@ -690,13 +786,15 @@ RHYTHM_RULES = (
 )
 
 
-# 拍点 → 镜头张力 token：beat 不只标注，还落到提示词——
-# hook/turn/peak/cliffhanger 镜头获得更强的表演张力与氛围压迫词（组进 vocab 串）。
+# 拍点 → 镜头张力 token。2026-11-27 改写：原来的抽象情绪词
+# （"charged opening tension, something visibly wrong in the frame" /
+# "pivot moment energy"）模型无法转译成画面，只会画成怪异表情 + 头顶发光爆炸。
+# 换成"身体/表情能看到的动作"——同样表达张力，但每一条都能落到像素上。
 BEAT_TOKENS: dict[str, str] = {
-    "hook": "charged opening tension, something visibly wrong in the frame",
-    "turn": "pivot moment energy, expression shifting decisively",
-    "peak": "heightened dramatic tension, maximal emotional intensity in performance",
-    "cliffhanger": "suspense withheld at the brink, unresolved tension lingering in frame",
+    "hook": "body caught mid-motion, eyes locked on the trigger object",
+    "turn": "expression shifting from guarded to decisive, chin lifting",
+    "peak": "jaw clenched, brow furrowed, raw emotion breaking through",
+    "cliffhanger": "breath held, eyes wide at the brink, body frozen before the reveal",
 }
 BEAT_SET = set(BEAT_TOKENS) | {"pressure", "escalation", "atmosphere"}
 
@@ -718,6 +816,60 @@ def _vfx_tokens(shot: dict, kind: str) -> str:
                                  shot.get("action", ""), shot.get("blocking", ""),
                                  shot.get("atmosphere", ""), shot.get("sfx", ""),
                                  shot.get("dialogue", "")), kind)
+
+
+_EXT_VALUES = {"外", "外景", "ext", "exterior", "outdoor"}
+_OPEN_SIZES = {"全景", "远景", "大全景", "空镜", "wide", "extreme wide", "long shot"}
+
+
+def _shot_has_vfx(shot: dict) -> bool:
+    vtype = str(shot.get("vfx_type") or "").strip().lower()
+    return vtype not in ("", "none", "无")
+
+
+def _preset_kinds_for(shot: dict) -> tuple:
+    """按镜头上下文决定风格词库取哪几类（2026-11-27）。
+
+    事故：内景特写（杂役房、一个少年脸）也被注入
+    immortal mountain vistas / spiritual energy ribbons / glowing rune circles /
+    drifting petals，模型只能把灵光糊到头顶——头发炸开像着火，背景强塞远山云雾。
+    规则：style 恒定；atmosphere（仙山云海/丝雾）只给外景或大远景；fx（灵光/符阵/花瓣）
+    只给显式特效镜或打斗/追逐镜。"""
+    kinds = ["style"]
+    int_ext = str(shot.get("int_ext") or "").strip().lower()
+    size = str(shot.get("shot_size") or "").strip().lower()
+    if int_ext in _EXT_VALUES or size in _OPEN_SIZES:
+        kinds.append("atmosphere")
+    if _shot_has_vfx(shot) or _act_level(shot):
+        kinds.append("fx")
+    return tuple(kinds)
+
+
+def _dedupe_tokens(texts: list[str]) -> str:
+    """合并多段 token 串并按小写去重（保持首次出现顺序）。
+    修的是画质词重复：soft global illumination / crisp silhouette 等
+    在 lifelike 与 quality 里各出现一次，等于同一句话加了双倍权重。"""
+    seen, out = set(), []
+    for blob in texts:
+        for tok in (blob or "").split(","):
+            t = tok.strip()
+            if not t:
+                continue
+            k = t.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
+    return ", ".join(out)
+
+
+def _dedupe_pair(a: str, b: str) -> tuple[str, str]:
+    """两段 token 串互相去重：b 剔除 a 里已出现的 token，返回 (a, b')。
+    画质词在 lifelike 与 quality 各出现一次时，等于给同一句加了双倍权重。"""
+    seen = {t.strip().lower() for t in (a or "").split(",") if t.strip()}
+    kept = [t.strip() for t in (b or "").split(",")
+            if t.strip() and t.strip().lower() not in seen]
+    return a, ", ".join(kept)
 
 
 # 转场方式（Domer/Versely AI 转场方法论）：transition_in 标注在本镜上，
@@ -1181,7 +1333,7 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
     from ..db import Character, Prop, Scene
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
-    from ..style_vocab import style_vocab_positive, combined_shot_vocab
+    from ..style_vocab import combined_shot_vocab
     from ..db import Project as _Proj
     _proj = db.get(_Proj, project_id)
     _genre = (getattr(_proj, "genre", "") if _proj else "") or ""
@@ -1225,6 +1377,22 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
         slots_en["shot_size"] = _en_size(slots_en.get("shot_size", ""))
         slots_en["framing_end"] = _en_size(slots_en.get("framing_end", ""))
 
+        # 活人感词 + 画质尾互相去重：同一句画质词在两边各出现一次等于加了双倍权重
+        _lf, _q = _dedupe_pair(
+            lifelike_tokens(preset, human=bool(char_looks), pose=False,
+                            consistent=not lifelike_full) if lifelike else "",
+            _dedupe_tokens([quality_suffix(preset, human=bool(char_looks), compact=True),
+                            model_tokens("sdxl", "image")]))
+        _props = single_moment(_prop_tokens_for(
+            shot.get("props") or _match_prop_names(
+                [shot.get("action", ""), shot.get("blocking", "")], props_db),
+            props_db))
+        # 短版变量（分镜走 77-token 一块，见 prompt_templates.shot_first_frame）
+        _cs = [_char_short(chars.get(n, {})) for n in shot["characters"]]
+        _cs = [x for x in _cs if x]
+        _char_short_join = (", ".join(_cs) if len(_cs) <= 1
+                            else ", ".join(_clip_words(x, 12) for x in _cs))
+
         common = {
             # 空镜（无角色入镜）按场景适配风格锁，禁止人像专用词进入无人画面
             "style_lock": s["style_lock"] if char_looks else style_lock_for("scene", preset),
@@ -1233,22 +1401,27 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
                            + _multi_layout_hint(shot.get("characters"), char_looks)),
             # props 互动句常写成"抓着票 before 跌倒掉落"双时刻 → 首帧只保留前一刻，
             # 否则 SDXL 会把两个时刻画成上下两格同样的脸（2026-11-26 s1 现场）
-            "props": single_moment(_prop_tokens_for(
-                shot.get("props") or _match_prop_names(
-                    [shot.get("action", ""), shot.get("blocking", "")], props_db),
-                props_db)),
-            "lifelike": lifelike_tokens(preset, human=bool(char_looks), pose=False,
-                                        consistent=not lifelike_full) if lifelike else "",
+            "props": _props,
+            # 短版槽位：分镜首帧/尾帧的 templates 只引用这几项（内容优先、压进 77 token）
+            "style_short": shot_style_short(preset),
+            "char_short": _char_short_join,
+            "scene_short": _scene_short(scene_concept),
+            "props_short": _props_short(_props),
+            "light_short": _light_short(slots_en.get("light", "")),
+            "framing_short": _framing_short(slots_en.get("shot_size", "")),
+            "framing_end_short": _framing_short(slots_en.get("framing_end", "") or slots_en.get("shot_size", "")),
+            "lifelike": _lf,
             # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词
             # 特效镜识别（特效词库 #81）：金光/慢镜/雨夜等 → 注入特效编排词
-            "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
-                                           _beat_tokens(shot.get("beat")),
-                                           action_tokens(_act_level(shot), "image"),
-                                           _vfx_tokens(shot, "image")) if x),
+            # 风格词库按镜头上下文取类（内景特写不塞仙山云海/灵光/花瓣，2026-11-27）
+            "vocab": ", ".join(x for x in (combined_shot_vocab(
+                preset, _genre, preset_kinds=_preset_kinds_for(shot)),
+                _beat_tokens(shot.get("beat")),
+                action_tokens(_act_level(shot), "image"),
+                _vfx_tokens(shot, "image")) if x),
             # 首帧/尾帧/关键帧恒走 SDXL（scene_sdxl/IPA 链路）→ 组装期就喂 SDXL 方言
-            # 空镜用无皮肤/发丝的画质尾词（#84：pores/flyaway hairs 会把人物拽进无人画面）
-            "quality": ", ".join(x for x in (quality_suffix(preset, human=bool(char_looks)),
-                                             model_tokens("sdxl", "image")) if x),
+            # 分镜用精简画质尾（画质词瘦身，2026-11-27）
+            "quality": _q,
         }
 
         # 运动动作控制（分镜调整项）：静态姿态锚 + 视频运动 token
@@ -1260,7 +1433,8 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
         # 1) 首帧：动作起拍（trigger），构图/景别/光影
         vars_ff = dict(common)
         vars_ff.update({
-            "action": _clean(pick_beat(beats, "trigger") or slots_en.get("subject_action", "")),
+            "action": _action_short(pick_beat(beats, "trigger") or slots_en.get("subject_action", ""),
+                                    shot.get("characters")),
             "motion": motion_img,
             "lens": lens_tok,
             "atmosphere": _clean(shot.get("atmosphere", "")),
@@ -1425,7 +1599,7 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
     from ..db import Character, Prop, Scene, Shot
     from .continuity import apply_continuity, beats_text, pick_beat, split_beats
     from .prompt_templates import render, resolve
-    from ..style_vocab import style_vocab_positive, combined_shot_vocab
+    from ..style_vocab import combined_shot_vocab
     from ..db import Project as _Proj
     _proj = db.get(_Proj, project_id)
     _genre = (getattr(_proj, "genre", "") if _proj else "") or ""
@@ -1483,33 +1657,53 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         scene_concept = _scene_concept_for(d["scene_name"], scenes_db)
         char_looks = [_look_of(chars.get(n, {}), base_looks.get(n, '')) for n in d["characters"]]
         char_looks = [x for x in char_looks if x]
+        _lf, _q = _dedupe_pair(
+            lifelike_tokens(preset, human=bool(char_looks), pose=False,
+                            consistent=not lifelike_full) if lifelike else "",
+            _dedupe_tokens([quality_suffix(preset, human=bool(char_looks), compact=True),
+                            model_tokens("sdxl", "image")]))
+        _props = single_moment(_prop_tokens_for(
+            d.get("props") or _match_prop_names(
+                [d.get("action", ""), d.get("blocking", "")], props_db),
+            props_db))
+        _cs = [_char_short(chars.get(n, {})) for n in d["characters"]]
+        _cs = [x for x in _cs if x]
+        _char_short_join = (", ".join(_cs) if len(_cs) <= 1
+                            else ", ".join(_clip_words(x, 12) for x in _cs))
+
         common = {
             # 空镜（无角色入镜）按场景适配风格锁，禁止人像专用词进入无人画面
             "style_lock": s["style_lock"] if char_looks else style_lock_for("scene", preset),
             "scene": _clean(scene_concept),
             "characters": (", ".join(_clean(x) for x in char_looks)
                            + _multi_layout_hint(d.get("characters"), char_looks)),
-            "props": single_moment(_prop_tokens_for(
-                d.get("props") or _match_prop_names(
-                    [d.get("action", ""), d.get("blocking", "")], props_db),
-                props_db)),
-            "lifelike": lifelike_tokens(preset, human=bool(char_looks), pose=False,
-                                        consistent=not lifelike_full) if lifelike else "",
+            "props": _props,
+            # 短版槽位（与拆解组装同一套规则）：分镜模板只引用这几项
+            "style_short": shot_style_short(preset),
+            "char_short": _char_short_join,
+            "scene_short": _scene_short(scene_concept),
+            "props_short": _props_short(_props),
+            "light_short": _light_short(r.light),
+            "framing_short": _framing_short(r.shot_size or ""),
+            "framing_end_short": _framing_short(r.framing_end or r.shot_size or ""),
+            "lifelike": _lf,
             # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
             # 更强的表演张力词，把留存波形落到提示词层面）
             # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词（与拆解组装一致）
             # 特效镜识别（特效词库 #81）：与拆解组装一致
-            "vocab": ", ".join(x for x in (combined_shot_vocab(preset, _genre),
-                                           _beat_tokens(d.get("beat")),
-                                           action_tokens(_act_level(d), "image"),
-                                           _vfx_tokens(d, "image")) if x),
-            # 同上：重组装也喂 SDXL 方言（与拆解组装保持一致）
-            "quality": ", ".join(x for x in (quality_suffix(preset, human=bool(char_looks)),
-                                             model_tokens("sdxl", "image")) if x),
+            # 风格词库按镜头上下文取类（2026-11-27，与拆解组装同一规则）
+            "vocab": ", ".join(x for x in (combined_shot_vocab(
+                preset, _genre, preset_kinds=_preset_kinds_for(d)),
+                _beat_tokens(d.get("beat")),
+                action_tokens(_act_level(d), "image"),
+                _vfx_tokens(d, "image")) if x),
+            # 同上：重组装也喂 SDXL 方言（与拆解组装保持一致）+ 精简画质尾
+            "quality": _q,
         }
         v = dict(common)
         v.update({
-            "action": _clean(pick_beat(d["action_beats"], "trigger") or d["action"]),
+            "action": _action_short(pick_beat(d["action_beats"], "trigger") or d["action"],
+                                    d.get("characters")),
             "motion": _motion_image_tokens(d.get("motion") or {}),
             "lens": _en_lens(d.get("focal_length", "")),
             "atmosphere": _clean(r.atmosphere), "framing": _en_size(r.shot_size),
@@ -1521,7 +1715,9 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
         r.image_prompt = render(tpl_ff_shot, v)
         r.prompt_template_id = tid_x
         v2 = dict(common)
-        v2.update({"end_action": _clean(pick_beat(d["action_beats"], "aftermath") or d["action"]),
+        v2.update({"end_action": _action_short(
+                     pick_beat(d["action_beats"], "aftermath") or d["action"],
+                     d.get("characters")),
                    "motion": _motion_image_tokens(d.get("motion") or {}),
                    "prev": _clean(d.get("prev_summary", "")),
                    "framing_end": _en_size(r.framing_end or r.shot_size),

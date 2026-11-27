@@ -49,34 +49,24 @@ NEG_BASE = {
 
 SYSTEM_TEMPLATES: dict[str, tuple[str, str]] = {
     "shot_first_frame": (
-        "镜头首帧（默认）",
-        "{{ style_lock }}{% if vocab %}, {{ vocab }}{% endif %}{% if scene %}, {{ scene }}{% endif %}"
-        "{% if characters %}, {{ characters }}{% endif %}"
-        "{% if props %}, {{ props }}{% endif %}"
+        "镜头首帧（短版：内容优先，压进 77 token）",
+        # 顺序即权重：先"这是谁、穿什么、在干什么"，再"在哪、怎么拍、什么光"。
+        # 长模板（style_lock+vocab+quality 全塞）已废弃：实测被切成 5 块平均后内容全失效。
+        "{{ style_short }}{% if char_short %}, {{ char_short }}{% endif %}"
+        "{% if props_short %}, {{ props_short }}{% endif %}"
         "{% if action %}, {{ action }}{% endif %}"
-        "{% if motion %}, {{ motion }}{% endif %}"
-        "{% if atmosphere %}, atmosphere: {{ atmosphere }}{% endif %}"
-        "{% if prev %}, {{ prev }}{% endif %}"
-        "{% if framing %}, {{ framing }}{% endif %}"
-        "{% if angle %}, {{ angle }}{% endif %}"
-        "{% if lens %}, {{ lens }}{% endif %}"
-        "{% if light %}, lighting: {{ light }}{% endif %}"
-        "{% if composition %}, {{ composition }}{% endif %}"
-        "{% if lifelike %}, {{ lifelike }}{% endif %}"
-        "{% if quality %}, {{ quality }}{% endif %}",
+        "{% if scene_short %}, {{ scene_short }}{% endif %}"
+        "{% if framing_short %}, {{ framing_short }}{% endif %}"
+        "{% if light_short %}, {{ light_short }}{% endif %}",
     ),
     "shot_end_frame": (
-        "镜头尾帧（默认）",
-        "{{ style_lock }}{% if vocab %}, {{ vocab }}{% endif %}{% if scene %}, {{ scene }}{% endif %}"
-        "{% if characters %}, {{ characters }}{% endif %}"
-        "{% if props %}, {{ props }}{% endif %}"
-        "{% if end_action %}, final pose after the action: {{ end_action }}{% endif %}"
-        "{% if motion %}, {{ motion }}{% endif %}"
-        "{% if prev %}, {{ prev }}{% endif %}"
-        "{% if framing_end %}, {{ framing_end }}{% endif %}"
-        "{% if composition %}, {{ composition }}{% endif %}"
-        "{% if lifelike %}, {{ lifelike }}{% endif %}"
-        "{% if quality %}, {{ quality }}{% endif %}",
+        "镜头尾帧（短版：动作收束，压进 77 token）",
+        "{{ style_short }}{% if char_short %}, {{ char_short }}{% endif %}"
+        "{% if props_short %}, {{ props_short }}{% endif %}"
+        "{% if end_action %}, {{ end_action }}{% endif %}"
+        "{% if scene_short %}, {{ scene_short }}{% endif %}"
+        "{% if framing_end_short %}, {{ framing_end_short }}{% endif %}"
+        "{% if light_short %}, {{ light_short }}{% endif %}",
     ),
     "shot_video": (
         "镜头视频（默认：I2V 公式——图定义实体，文只管运动）",

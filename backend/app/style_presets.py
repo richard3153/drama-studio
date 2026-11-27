@@ -433,10 +433,23 @@ _ANTI_NEG_BY_FAM = {
 }
 
 
-def quality_suffix(preset_key: str, human: bool = True) -> str:
-    """按风格族取质感尾巴。human=False 用无人版（场景/道具/空镜）。"""
-    fam = style_family(preset_key)
-    return (_QUALITY_BY_FAM if human else _QUALITY_ENV_BY_FAM)[fam]
+# 分镜镜头专用精简版（2026-11-27）：只留"材质/渲染色"锚点。
+# 分镜首帧本来就 1900+ 字，画质尾巴再堆 7-8 段会把服装与动作词挤出注意力；
+# 实测同一角色 13 镜出现 4 套不同衣服，画质词稀释是主因之一。
+_SHOT_QUALITY_BY_FAM = {
+    "photo": "natural texture, authentic detail, natural color grade",
+    "3d": "clean CG surface, physically based shading, crisp silhouette",
+    "anime": "clean line art, flat colors, crisp silhouette",
+    "paint": "layered brushwork, painterly detail",
+}
+
+
+def quality_suffix(preset_key: str, human: bool = True, compact: bool = False) -> str:
+    """按风格族取质感尾巴。human=False 用无人版（场景/道具/空镜）。
+    compact=True 返回分镜镜头用精简版（分镜提示词已很长，画质词只留锚点）。"""
+    if compact:
+        return _SHOT_QUALITY_BY_FAM[style_family(preset_key)]
+    return (_QUALITY_BY_FAM if human else _QUALITY_ENV_BY_FAM)[style_family(preset_key)]
 
 
 def anti_over_render_neg(preset_key: str) -> str:
@@ -517,6 +530,37 @@ def _env_lock(lock_text: str) -> str:
     keep = [c.strip() for c in lock_text.split(",")
             if c.strip() and not _CHAR_WORD_RE.search(c)]
     return ", ".join(keep)
+
+
+# ---------- 分镜短锁（2026-11-27）：SDXL 单块只有 77 token，分镜提示词必须压进一块 ----------
+# 事故：分镜首帧提示词 1867 字（约 380 token）被 ComfyUI 切成 5 个 77-token 块再平均，
+# 每个概念权重只剩 1/5——服装/道具/场景全部失效，模型按底模先验自由编（一集换 4 套衣服）。
+# 修法：分镜走"短模板"，画风只留定调锚点，其余交给角色外观+动作+场景主体。
+SHOT_STYLE_SHORT = {
+    "guofeng_3d": "3D chinese animation, guofeng stylized characters",
+    "pixar_3d": "stylized 3D animation, rounded appealing shapes",
+    "game_cg": "AAA game cinematic CG",
+    "low_poly": "low-poly 3D render",
+    "photoreal": "photorealistic photo",
+    "cinematic_film": "cinematic film still",
+    "film_noir": "black and white film noir",
+    "documentary": "documentary photography",
+    "anime_2d": "modern TV anime, 3-tone cel shading",
+    "anime_soft": "soft anime illustration",
+    "ghibli": "hand-drawn anime",
+    "korean_webtoon": "korean webtoon art",
+    "guofeng_ink": "chinese ink painting",
+    "xianxia": "chinese fantasy illustration",
+}
+
+
+def shot_style_short(preset_key: str) -> str:
+    """分镜短画风（≤3 块）。未登记的 preset 回落 style_lock 前三块。"""
+    v = SHOT_STYLE_SHORT.get(preset_key)
+    if v:
+        return v
+    lock = get_style(preset_key)["style_lock"]
+    return ", ".join(c.strip() for c in lock.split(",")[:3] if c.strip())
 
 
 def style_lock_for(kind: str, preset_key: str) -> str:

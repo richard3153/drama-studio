@@ -73,7 +73,11 @@ def ref_image_key(style_fam: str) -> str:
 GRID_WF = "grid_storyboard.json"
 IPA_WF = "scene_ipadapter.json"      # SDXL IPAdapter 锁脸（easy ipadapterApply，PLUS 预设）
 IPA_WF_DUAL = "scene_ipadapter_dual.json"  # 双人镜链式双 IPA（两张单人参考串接）
-IPA_WEIGHT = 0.75                    # 2026-11-22 调优：0.7 身份偏弱（参考图治理后可承受更高权重）；>0.85 会开始重复主体
+IPA_WEIGHT = 0.5                     # 2026-11-27 三组对照后下调：0.75 + 头肩参考图会把参考图的
+                                     # 旧服装/纯白底一起抄回（一集换 4 套衣服的直接原因），
+                                     # 配合 _face_crop_path 只喂脸后 0.5 足以锁住身份，
+                                     # 服装与背景交回提示词/场景锚图。
+IPA_WEIGHT_LEGACY = 0.75             # 2026-11-22 调优：0.7 身份偏弱（参考图治理后可承受更高权重）；>0.85 会开始重复主体
 
 NEGATIVE = ("nsfw, lowres, bad anatomy, bad hands, text, watermark, "
             "signature, jpeg artifacts, worst quality, blurry, deformed, "
@@ -227,6 +231,33 @@ def _char_ref_path(db, shot: Shot) -> str | None:
     """单人参考（宫格用）：取第一个角色的。"""
     refs = _char_ref_paths(db, shot, limit=1)
     return refs[0] if refs else None
+
+
+def _face_crop_path(ref: str, save_root: Path, size: int = 512) -> str:
+    """把角色参考图裁成「只剩脸」的方形图再喂 IPAdapter。
+
+    2026-11-27 实测（RealVisXL + easy ipadapterApply PLUS high strength）：
+    - 头肩定妆照当参考（weight 0.75）→ 底模把参考图里的旧衣服、刺绣领、纯白背景
+      一起搬回画面，提示词里的服装词基本失效（=用户投诉的"一集换好几件衣服"）；
+    - 只喂脸（裁到上 53% 再居中成方，因为 CLIPImageProcessor 会把非方图中心裁方）
+      + weight 0.5 → 脸仍是本人，服装完全服从提示词，背景交回场景锚图。
+    裁好的图按源文件 mtime+size 缓存在 tmp_ref，避免每次生成重裁。
+    """
+    from PIL import Image as PImage
+    try:
+        src = Path(ref)
+        st = src.stat()
+        key = f"face_{abs(hash((str(src).lower(), st.st_mtime_ns, st.st_size)))[:12]}"
+        out = save_root.parent / "tmp_ref" / f"{key}.png"
+        if out.exists():
+            return str(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        im = PImage.open(src).convert("RGB")
+        w, h = im.size
+        im.crop((0, 0, w, int(h * 0.60))).resize((size, size), PImage.LANCZOS).save(out)
+        return str(out)
+    except Exception:
+        return ref
 
 
 def _dual_ref_composite(ref_paths: list[str], w: int, h: int, save_root: Path, tag: str) -> str:
@@ -577,7 +608,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     refs = [] if params.get("use_ref") is False else _char_ref_paths(db, shot, limit=2)
     ipa_weight = float(params.get("ipa_weight") or IPA_WEIGHT)
     scene_ref = None if params.get("use_scene_ref") is False else _scene_anchor(db, shot)
-    scene_ipa_w = float(params.get("scene_ipa_weight") or 0.4)
+    scene_ipa_w = float(params.get("scene_ipa_weight") or 0.3)
     # 2026-11-26 实测：3D 族把脸权重抬到 0.85 后，IPA 直接连参考图的纯白底都抄了回来
     # （角色资产是白底定妆照）→ 画面背景全白、构图崩。锁脸强度保持 0.75/0.4 不变。
     # real：photo 走全量写实锁脸负面；3d 走"只锁脸型 + 反写实"版（见 _ipa_gen）
@@ -588,6 +619,9 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     #   场景一致性由双 IPA 的场景锚槽位（weight 0.4）承担，两全）。
     if refs:
         multi = len(refs) >= 2
+        # 2026-11-27：喂给 IPA 的参考一律先裁成"只剩脸"（见 _face_crop_path 的实测记录），
+        # 否则参考图的旧衣服/白底会被一起迁移，提示词里的服装描述失效。
+        refs = [_face_crop_path(p, save_root) for p in refs]
         if multi:
             ref = _dual_ref_composite(refs, w, h, save_root, f"p{shot.project_id}_s{shot.idx}")
             update_progress(db, task, 0.2,
