@@ -1535,7 +1535,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
 }
 
 /* ---------- 资产编辑弹窗 ---------- */
-function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
+function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted, onTextEdit }) {
   const role = ROLE_BY_ENTITY[asset._etype]
   const candidates = models.filter(m => m.role.includes(role))
   const [name, setName] = useState(asset.name)
@@ -1552,9 +1552,6 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
   const [w, setW] = useState(defaultDims()[0])
   const [h, setH] = useState(defaultDims()[1])
   const [busy, setBusy] = useState(false)
-  // 道具"带文字"三态：auto=按名字/细节自动判定（牌子·契约·票券类走云端准字通道），
-  // on=强制走 GPT-Image 2.5，off=强制本地底模。
-  const [textMode, setTextMode] = useState('auto')
   const img = id => `${API}/assets/${id}/file`
 
   const save = async () => {
@@ -1564,22 +1561,17 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
         : { name, base_prompt: prompt, gen_mode: role === 'portrait' ? genMode : undefined })
     onClose(true)
   }
-  const rerender = async (tm) => {
+  const rerender = async () => {
     setBusy(true)
     try {
       if (Object.keys(slots).length) await put(`/entities/${asset._etype}/${asset.id}`, { name, slots, portrait_mode: role === 'portrait' ? 'sheet' : undefined, gen_mode: role === 'portrait' ? genMode : undefined })
       else await put(`/entities/${asset._etype}/${asset.id}`, { name, base_prompt: prompt, gen_mode: role === 'portrait' ? genMode : undefined })
-      const mode = tm || textMode
       const r = await post('/regenerate', {
         project_id: asset.project_id, entity_type: asset._etype, entity_id: asset.id,
         model_key: modelKey || null, prefer_tier: tier || null, width: Number(w), height: Number(h),
-        // 只有道具才有文字通道；auto 传 null 让后端按名字/细节判定
-        ...(role === 'prop' ? { text_mode: mode === 'on' ? true : (mode === 'off' ? false : null) } : {}),
       })
       refreshTasks()
-      onClose(true, role === 'prop' && mode !== 'off'
-        ? `重新渲染任务 #${r.task_id} 已入队${mode === 'on' ? '（强制走 GPT-Image 2.5 准字通道）' : '（带文字则自动走 GPT-Image 2.5）'}，完成后回到这里查看新版本`
-        : `重新渲染任务 #${r.task_id} 已入队，完成后回到这里查看新版本`)
+      onClose(true, `重新渲染任务 #${r.task_id} 已入队（本地底模），完成后回到这里查看新版本；字不对就用卡片上的「📝 改字」局部微调`)
     } finally { setBusy(false) }
   }
   const polish = async () => {
@@ -1747,25 +1739,20 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
               </>
             )}
             {role === 'prop' && (
-              <>
-                <label style={{ marginTop: 10 }}>文字道具通道（画面主体是文字时）</label>
-                <div className="row" style={{ marginBottom: 4 }}>
-                  <select value={textMode} onChange={e => setTextMode(e.target.value)} style={{ flex: 1 }}>
-                    <option value="auto">自动判定（令牌/符箓/契约/票券/榜文… 命中就走 GPT-Image 2.5）</option>
-                    <option value="on">强制走 GPT-Image 2.5（云端准字，最贵）</option>
-                    <option value="off">强制走本地底模（Qwen-Image，字会是伪文字）</option>
-                  </select>
+              <div className="card" style={{ borderColor: 'var(--line)', marginTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-strong)', marginBottom: 4 }}>
+                  📝 带文字道具：字不对就在原图上局部改
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.6 }}>
-                  本地 Qwen/SDXL 写不出准确中文（只会画形似乱码）；GPT-Image 2.5 是闭源云模型，
-                  没有本地权重、只能 API 调用，需在「⚙️ 配置 → GPT-Image 2.5」填 base_url + key。
+                <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.65 }}>
+                  生成仍走本地底模（Qwen-Image 实测能把中文大字写准）。字写歪、写错或有伪字时，用「📝 改字」在
+                  <b>同一张图上</b>框住文字区域重画——框外的纸纹、折痕、朱印、边框与光影一点不动，不耗 token、不调云端。
                 </div>
                 <div className="ops-row" style={{ marginTop: 6 }}>
-                  <button className="small" disabled={busy || !prompt.trim() && !Object.keys(slots).length}
-                    onClick={() => rerender('on')}
-                    title="跳过自动判定，直接走云端准字通道重渲这张道具">📝 准字重渲（GPT-Image 2.5）</button>
+                  <button className="small" disabled={!versions.length}
+                    onClick={() => onTextEdit && onTextEdit(asset)}>📝 改字（框选局部重绘）</button>
+                  {!versions.length && <span style={{ fontSize: 11, color: 'var(--dim)' }}>先渲染一张，再来改字</span>}
                 </div>
-              </>
+              </div>
             )}
             <label>生成模型（不选则按显存自动选档）</label>
             <div className="row">
@@ -2084,7 +2071,7 @@ function CharacterAdjust({ slots, onChange }) {
 
 /* ---------- P2 资产库 ---------- */
 /* 道具"带文字"的前端预判：与后端 text_image.looks_textual 同一套词表（双字以上，
-   避免"签字笔/数字时钟"这类单字误判）。命中即在卡片上提示走 GPT-Image 2.5 准字通道。 */
+   避免"签字笔/数字时钟"这类单字误判）。命中即卡片上提示「📝 带文字」，可局部改字。 */
 const TEXT_PROP_WORDS = ['铭文', '刻字', '题字', '字迹', '字样', '带字', '有字',
   '匾额', '牌匾', '令牌', '腰牌', '木牌', '门牌', '招牌', '招贴', '符箓', '符纸', '符咒', '黄符', '灵符',
   '诏书', '圣旨', '榜文', '告示', '公文', '文书', '度牒', '通关文牒', '路引', '经卷', '经书', '秘籍', '功法卷',
@@ -2099,6 +2086,97 @@ function looksTextualProp(name, extra) {
   return TEXT_PROP_WORDS.some(w => text.includes(w))
 }
 
+/* ---------- 图片文字局部微调（框选重绘，只动框内） ---------- */
+// 与"整图重渲"的区别：这里在**同一张已生成的图**上，只把文字框内部重新采样。
+// 框外的纸纹、折痕、朱印、边框、光影全部沿用原图 latent（SetLatentNoiseMask）。
+function TextEditModal({ assetId, name, onClose, onSubmitted }) {
+  const [text, setText] = useState(name || '')
+  const [box, setBox] = useState({ x: 0.335, y: 0.195, w: 0.30, h: 0.545 })
+  const [denoise, setDenoise] = useState(0.88)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const drag = useRef(null)
+  const stage = useRef(null)
+  const pt = (e, r) => ({
+    x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+    y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+  })
+  const down = e => {
+    if (!stage.current) return
+    e.preventDefault()
+    drag.current = { a: pt(e, stage.current.getBoundingClientRect()), r: stage.current.getBoundingClientRect() }
+  }
+  const move = e => {
+    const d = drag.current
+    if (!d) return
+    const b = pt(e, d.r)
+    const x = Math.min(d.a.x, b.x), y = Math.min(d.a.y, b.y)
+    const w = Math.abs(b.x - d.a.x), h = Math.abs(b.y - d.a.y)
+    if (w > 0.02 && h > 0.02) setBox({ x, y, w, h })
+  }
+  const up = () => { drag.current = null }
+  const submit = async () => {
+    if (!text.trim()) { setMsg('先填要写的文字'); return }
+    setBusy(true)
+    try {
+      const r = await post(`/assets/${assetId}/text-edit`, { text: text.trim(), box, denoise })
+      setMsg(`✔ 任务 #${r.task_id} 已入队：只重画琥珀框内，框外一点不动（本地 Qwen-Image，零 token、零云端）。约 1–2 分钟，完成后点资产页「刷新」`)
+      onSubmitted && onSubmitted()
+    } catch (e) { setMsg('提交失败：' + e.message) }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ width: 'min(760px, 94vw)', maxHeight: '92vh', overflow: 'auto' }}>
+        <div className="modal-head">
+          <div className="page-title">📝 局部改字 · {name}</div>
+          <button className="modal-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="page-sub" style={{ marginTop: -4 }}>
+          在图上按住拖动框住文字区域（琥珀框＝会重画的区域）；框外纸纹/折痕/朱印/光影一律保留
+        </div>
+        {msg && <div className="card" style={{ borderColor: 'var(--ok)', margin: '8px 0', fontSize: 12 }}>{msg}</div>}
+        <div ref={stage} onMouseDown={down} onMouseMove={move} onMouseUp={up} onMouseLeave={up}
+          style={{ position: 'relative', userSelect: 'none', cursor: 'crosshair', marginTop: 8, lineHeight: 0 }}>
+          <img src={`${API}/assets/${assetId}/file`} draggable={false}
+            style={{ width: '100%', display: 'block', borderRadius: 6 }} />
+          <div style={{
+            position: 'absolute', left: `${box.x * 100}%`, top: `${box.y * 100}%`,
+            width: `${box.w * 100}%`, height: `${box.h * 100}%`,
+            border: '2px solid #f5a623', boxShadow: '0 0 0 9999px rgba(0,0,0,.22)',
+            pointerEvents: 'none', borderRadius: 2,
+          }} />
+        </div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <label style={{ fontSize: 12, minWidth: 84 }}>要写的字</label>
+          <input value={text} onChange={e => setText(e.target.value)} maxLength={24}
+            placeholder="如 青云宗令牌" style={{ flex: 1 }} />
+          <button className="small ghost" onClick={() => setBox({ x: 0.335, y: 0.195, w: 0.30, h: 0.545 })}
+            title="回到默认的中上竖排文字区">重置框</button>
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label style={{ fontSize: 12, minWidth: 84 }}>重绘强度</label>
+          <input type="range" min={0.6} max={0.98} step={0.02} value={denoise}
+            onChange={e => setDenoise(Number(e.target.value))} style={{ flex: 1 }} />
+          <span style={{ fontSize: 12, color: 'var(--dim)', width: 44 }}>{denoise.toFixed(2)}</span>
+        </div>
+        <div className="page-sub" style={{ fontSize: 11, marginTop: 4 }}>
+          框要贴住字本身：框压到朱印/边框会把它们一起重画变淡；字写糊/笔画不清就把强度往 0.95 拉；
+          字没错只是想更清楚，可以把强度降到 0.7 左右只做重绘锐化
+        </div>
+        <div className="ops-row" style={{ marginTop: 10 }}>
+          <button className="small" disabled={busy} onClick={submit}>{busy ? '提交中…' : '开始局部重绘'}</button>
+          <button className="small ghost" onClick={onClose}>关闭</button>
+          <span style={{ fontSize: 11, color: 'var(--dim)' }}>
+            产物作为新版本追加，原图保留可回退
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AssetsPage({ project, refreshTasks, setStage }) {
   const [data, setData] = useState(null)
   const [models, setModels] = useState([])
@@ -2108,7 +2186,7 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   const [stashIds, setStashIds] = useState({})
   const [stashBusy, setStashBusy] = useState(false)
   const [styleLib, setStyleLib] = useState(false)
-  const [busyTxt, setBusyTxt] = useState(null)   // 正在提交"准字重渲"的道具 id
+  const [textEdit, setTextEdit] = useState(null)   // 正在「📝 改字」的道具（含最新 image_id）
 
   const load = () => api(`/projects/${project.id}/assets`).then(setData)
   const loadStash = () => api(`/projects/${project.id}/stash`).then(setStash).catch(() => {})
@@ -2118,17 +2196,13 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   if (!data) return <div className="page-sub">加载中…</div>
   const img = id => `${API}/assets/${id}/file`
 
-  // 卡片上的"📝 准字重渲"：不打开编辑器，直接以 text_mode=true 重渲（追加新版本）
-  const textRerender = async (a) => {
-    setBusyTxt(a.id)
-    try {
-      const r = await post('/regenerate', {
-        project_id: project.id, entity_type: 'prop', entity_id: a.id, text_mode: true,
-      })
-      setNotice(`「${a.name}」准字重渲任务 #${r.task_id} 已入队：走 GPT-Image 2.5 云端通道，文字会逐字画出（约 30-60 秒），完成后自动刷新`)
-      refreshTasks()
-    } catch (e) { setNotice(`「${a.name}」准字重渲发起失败：${e.message}`) }
-    finally { setBusyTxt(null) }
+  // 卡片上的「📝 改字」：在**最新一张图**上框选文字区局部重绘（不重画整图、不耗 token）
+  const openTextEdit = (a) => {
+    if (!a.image_ids || !a.image_ids.length) {
+      setNotice(`「${a.name}」还没有图：先渲染一张，再来局部改字`)
+      return
+    }
+    setTextEdit({ asset: a, imageId: a.image_ids[a.image_ids.length - 1] })
   }
 
   const stashConfirm = async (ids) => {
@@ -2210,17 +2284,16 @@ function AssetsPage({ project, refreshTasks, setStage }) {
                 : <div className="media-empty">未生成 · 点击配置{etype === 'character' && !a.has_prompt ? '（先补全槽位）' : ''}</div>}
               <button className="asset-del" title="删除资产（含全部生成图，不可恢复）"
                 onClick={e => { e.stopPropagation(); deleteAsset(etype, a) }}>删除</button>
-              {etype === 'prop' && looksTextualProp(a.name, a.description) &&
-                <button className="small" title="这张道具的文字是画面主体：走 GPT-Image 2.5 云端准字通道重渲（需先在 ⚙️ 配置填 key）"
+              {etype === 'prop' && a.image_ids.length > 0 &&
+                <button className="small" title="在最新一张图上框住文字区域局部重绘：框外纸纹/朱印/光影不动，不耗 token、不调云端"
                   style={{ position: 'absolute', bottom: 8, right: 8, background: 'rgba(245,166,35,.92)', borderColor: '#f5a623', color: '#1a1a1a', fontWeight: 600 }}
-                  disabled={busyTxt === a.id}
-                  onClick={e => { e.stopPropagation(); textRerender(a) }}>{busyTxt === a.id ? '提交中…' : '📝 准字重渲'}</button>}
+                  onClick={e => { e.stopPropagation(); openTextEdit(a) }}>📝 改字</button>}
             </div>
             <div className="info">
               <div className="name-row">
                 <span className="name">{a.name}</span>
                 {etype === 'prop' && looksTextualProp(a.name, a.description) &&
-                  <span className="tag" title="文字是画面主体 → 建议走 GPT-Image 2.5 准字通道（本地底模只会画伪文字）">📝 带文字</span>}
+                  <span className="tag" title="文字是画面主体 → 生成后如有错字，用「📝 改字」局部重绘（别整图重渲）">📝 带文字</span>}
                 {a.render_count > 0 && <span className="tag">渲染 {a.render_count} 次</span>}
                 {a.image_ids.length > 1 && <span className="tag" title="含微调/超分等衍生图">{a.image_ids.length} 图</span>}
               </div>
@@ -2248,7 +2321,11 @@ function AssetsPage({ project, refreshTasks, setStage }) {
       {wall(data.props, 'prop')}
       {editing && <AssetEditor asset={editing} models={models} refreshTasks={refreshTasks}
         onDeleted={load}
+        onTextEdit={a => { setEditing(null); openTextEdit(a) }}
         onClose={(reload, note) => { setEditing(null); if (reload) load(); if (note) setNotice(note) }} />}
+      {textEdit && <TextEditModal assetId={textEdit.imageId} name={textEdit.asset.name}
+        onClose={() => setTextEdit(null)}
+        onSubmitted={() => { setNotice(`「${textEdit.asset.name}」局部改字任务已入队：只重画框内文字，框外不动。约 1-2 分钟，完成后点「刷新」看新版本`); refreshTasks && refreshTasks() }} />}
       {styleLib && <StyleLibraryModal project={project} onClose={() => setStyleLib(false)}
         onApplied={() => load()} />}
       <WizardBar stage="assets" setStage={setStage || (() => {})} nextLabel="下一步：分镜镜头卡 →" />
@@ -2539,8 +2616,9 @@ function SettingsModal({ open, onClose }) {
                 </span>}
               </div>
               <div className="cfg-tip" style={{ marginTop: 0, marginBottom: 8 }}>
-                令牌铭文、符箓榜文、契约账册这类"画面主体就是文字"的道具走这条云端通道——
-                本地 Qwen/SDXL 只会画伪文字。GPT-Image 2.5 是闭源云模型（无本地权重，只能 HTTP 调用）。
+                <b>默认不参与出图</b>：道具一律走本地底模，字不对用资产页「📝 改字」做局部重绘（零 token）。
+                这里保留的是历史云端整图通道配置，仅在需要"整图换一张"时才用（会改变构图/光影）；
+                GPT-Image 2.5 无本地权重，只能 HTTP 调用。
               </div>
               <div className="cfg-grid">
                 <CfgField label="接口地址 base_url" hint="官方 https://api.openai.com/v1；或国内中转的 …/v1">

@@ -21,7 +21,7 @@ from .scheduler import queue as task_queue
 from .scheduler.vram import comfy_free_vram_gb, registry
 from .services.asset_service import (generate_asset, generate_portrait,
                                      generate_portrait_composed, refine_asset)
-from .services import asset_service, pipeline_service, script_service, shot_service, voice_service
+from .services import asset_service, pipeline_service, script_service, shot_service, voice_service, text_edit_service
 from .services.script_service import MOVING_CAMERA, build_candidate_prompts
 from .style_presets import (STYLE_PRESETS, assemble_character_design_prompt,
                             assemble_character_prompt,
@@ -574,6 +574,7 @@ async def _run_task(task_id: int):
             "ref_redraw": lambda: asset_service.generate_from_reference(db, t, params),
             "upscale": lambda: asset_service.upscale_asset(db, t, params),
             "polish": lambda: refine_asset(db, t, params),
+            "text_edit": lambda: text_edit_service.run_text_edit(db, t, params),
             "scene_anchor": lambda: asset_service.auto_scene_anchors(db, t, params),
             "outline": lambda: script_service.generate_outline(db, t, params),
             "continue_outline": lambda: script_service.continue_outline(db, t, params),
@@ -1245,6 +1246,44 @@ def project_assets(pid: int):
         }
 
 
+class TextEditIn(BaseModel):
+    text: str                          # 要写的中文字（如「青云宗令牌」）
+    box: dict | None = None            # 归一化框 {x,y,w,h}，0-1；缺省=画面中部竖排区
+    denoise: float | None = None       # 重绘强度（0.55-0.98，默认 0.88）
+    seed: int | None = None
+    extra_prompt: str | None = None
+
+
+@router.post("/assets/{aid}/text-edit")
+async def asset_text_edit(aid: int, body: TextEditIn):
+    """图片文字**局部**微调：在已生成的图上只重画框内文字，框外媒质/光影一字不动。
+
+    纯本地通道（Qwen-Image 2.1 + mask 局部重绘），不产生任何 token 与云端调用。
+    与旧「GPT-Image 云端整图重渲」的区别：整图重渲会把构图、纸纹、光影全换掉，
+    等于换一张图；这里只有文字框内部被重新采样。
+    """
+    with SessionLocal() as db:
+        a = db.get(AssetImage, aid)
+        if not a:
+            raise HTTPException(404, "图片不存在")
+        if not Path(a.file_path).exists():
+            raise HTTPException(400, "源图文件已丢失，无法局部微调")
+        meta = json.loads(a.meta_json or "{}")
+        box = text_edit_service._clamp_box(body.box)
+        params = {"asset_id": aid, "project_id": a.project_id,
+                  "source_path": str(a.file_path), "kind": a.kind,
+                  "character_id": a.character_id,
+                  "entity_type": meta.get("entity_type", ""),
+                  "entity_id": meta.get("entity_id"),
+                  "text": body.text, "box": box,
+                  "denoise": body.denoise, "seed": body.seed,
+                  "extra_prompt": body.extra_prompt}
+        t = task_queue.create_task(db, "text_edit", params)
+    task_queue.spawn_bg(_run_bg(t.id))
+    return {"task_id": t.id, "task_type": "text_edit", "box": box,
+            "local_only": True}
+
+
 @router.delete("/entities/{etype}/{eid}")
 def delete_entity(etype: str, eid: int):
     """删除资产（角色/场景/道具）：级联删除其全部生成图（文件+记录）、角色造型变体，
@@ -1482,8 +1521,9 @@ class RegenerateIn(BaseModel):
     width: int | None = None
     height: int | None = None
     iso_layout: bool = False        # 场景专用：生成 45° 等距空间布局全景图（场景缩略图/锚点候选）
-    # 道具专用：是否走"准字"云端通道（GPT-Image 2.5）。
-    # None = 自动判定（名字/用途/细节命中牌榜契约类词就走），True/False = 强制
+    # 道具专用：历史字段（旧版=是否走 GPT-Image 2.5 云端整图）。
+    # 现已回退：道具一律本地生成，"改字"改走 POST /assets/{aid}/text-edit 局部重绘。
+    # 保留该字段只为兼容老前端请求体，不再影响生成路径。
     text_mode: bool | None = None
 
 
@@ -1627,15 +1667,10 @@ async def regenerate(body: RegenerateIn):
                       "width": width, "height": height, "auto_polish": auto_polish,
                       "style_preset": preset}
             if body.entity_type == "prop":
-                # 带文字道具分流：text_mode=True 强制云端（缺 key 就报错，不静默降级）；
-                # text_mode=None 自动 = 只在云端已就绪时才走云端，否则走本地 Qwen
-                # （本地也会用 text_content 注入要写的字，实测能把五字券面写对），
-                # 这样没配 key 的机器不会因为"名字里有个牌字"就渲染失败。
-                from .text_image import looks_textual, ready as ti_ready
-                use_text = body.text_mode
-                if use_text is None:
-                    use_text = looks_textual(getattr(entity, "name", "") or "", slots) and ti_ready()["ok"]
-                params["text_mode"] = bool(use_text)
+                # 【已回退】不再按名字自动分流到云端整图：云端会把整张图重画。
+                # 现在道具始终走本地底模（text_content 槽位已能写准中文），
+                # 字不对时用资产卡「📝 改字」做局部重绘（POST /assets/{aid}/text-edit）。
+                # text_mode 字段保留兼容旧前端，但不再影响生成路径。
                 params["prop_slots"] = slots
                 params["entity_name"] = getattr(entity, "name", "") or ""
         t = task_queue.create_task(db, type_, params)
