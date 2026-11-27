@@ -214,11 +214,14 @@ def restart() -> bool:
 
 
 def snapshot() -> dict:
+    # 只探 1.5s：/api/health 被前端 15s 轮询一次，ComfyUI 挂掉时若用默认 8s
+    # 超时，健康请求会一直压在 8 秒上、和标看护的 socket 抢线程池。
+    up = port_open(timeout=1.5)
     return {
         "state": _state["comfy"],
         "checked_at": _state["checked_at"],
         "restarts": _state["restarts"],
-        "boot_age_s": round(_boot_age(), 1) if port_open() is False else 0,
+        "boot_age_s": 0 if up else round(_boot_age(), 1),
     }
 
 

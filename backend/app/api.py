@@ -2,6 +2,7 @@
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -45,6 +46,10 @@ async def models_list():
             roles = [roles]
         if "video" not in roles or "talk" in key:
             continue
+        # 只列"真有工作流模板"的档：vid_wan_i2v_aio 这类没有映射的档，
+        # 选了会回退到 wan21 模板换权重（结构不匹配，跑到 ComfyUI 才报错）。
+        if key not in shot_service.VIDEO_WF_BY_MODEL:
+            continue
         out.append({"key": key, "label": m.get("label") or key,
                     "family": m.get("family"), "vram_gb": m.get("vram_gb"),
                     "tier": m.get("tier"), "default": key == default_video})
@@ -52,10 +57,25 @@ async def models_list():
 
 # ---------- 后台配置面板 ----------
 
-def _scan_loras() -> list[dict]:
-    """扫描 LoRA 目录（面板里给"可用 LoRA"下拉用；不依赖 ComfyUI 是否在线）。"""
+# 实为 SD1.5 却标称 sdxl 的档：注册表里没写 `ref_image: false` 时也不能进参考生图，
+# 否则 SD1.5 权重配 SDXL IPAdapter（plus.sdxl.vit.h）必然报权重维度错。
+_REF_IMAGE_BLOCK = {"img_anythingxl"}
+
+
+def _ref_image_ok(key: str, info: dict) -> bool:
+    if info.get("ref_image", True) is False:
+        return False
+    return key not in _REF_IMAGE_BLOCK
+
+
+def _scan_loras(dir_override: str | None = None) -> list[dict]:
+    """扫描 LoRA 目录（面板里给"可用 LoRA"下拉用；不依赖 ComfyUI 是否在线）。
+
+    dir_override：保存时若同时改了 lora.dir，要按"新目录"校验选中的文件名，
+    否则校验的是旧目录、存进去的是新目录，等于没校验。
+    """
     from . import settings as S
-    d = Path(S.get("lora", "dir") or "")
+    d = Path(dir_override or S.get("lora", "dir") or "")
     out: list[dict] = []
     if not d or not d.is_dir():
         return out
@@ -85,13 +105,19 @@ def _model_options() -> dict:
         if "video" in roles:
             if "talk" in key:
                 groups["talk"].append(item)
-            else:
+            elif key in shot_service.VIDEO_WF_BY_MODEL:
+                # 没模板映射的视频档不进下拉：选了必崩（模板回退后节点/权重对不上）
                 groups["video"].append(item)
-                groups["ref_video"].append(item)
+                # 转场双帧链路的 overrides 绑死 MiniMaxH3ImageToVideo 节点，
+                # 只有 video_h3_turbo.json 能对上，其余档列出来就是误导
+                if shot_service.VIDEO_WF_BY_MODEL[key] == "video_h3_turbo.json":
+                    groups["ref_video"].append(item)
         else:
             groups["image"].append(item)
             # 参考生图（首帧锁脸通道）只吃 SDXL 族：IPAdapter 模板按 family 选 plus.sdxl.vit.h
-            if m.get("family") == "sdxl":
+            # AnythingXL 这类"标称 sdxl 实为 SD1.5"的档在 models.yaml 里标了 ref_image: false，
+            # 列进去等于给用户一个必崩选项（SD1.5 权重配 SDXL IPAdapter）。
+            if m.get("family") == "sdxl" and _ref_image_ok(key, m):
                 groups["ref_image"].append(item)
     return groups
 
@@ -133,13 +159,60 @@ async def settings_get():
 def settings_put(body: dict):
     from . import settings as S
     patch = body or {}
-    # ① 值校验：面板可写任意字符串，写错不该等到任务跑起来才炸。
+    errs: list[str] = []
+
+    # ① 结构校验：每个组必须是对象。正常前端只传变化键，但脚本/旧前端传
+    #    "models": "abc" 时下面的 .items() 会直接 500（日志只剩一片 traceback，
+    #    前端只看到 "Internal Server Error"）。
+    for grp in S._ALLOWED:
+        if grp in patch and patch[grp] is not None and not isinstance(patch[grp], dict):
+            errs.append(f"{grp} 必须传对象（{{键: 值}}），收到 {type(patch[grp]).__name__}")
+    if errs:
+        raise HTTPException(400, "；".join(errs))
+
+    srv = patch.get("server") or {}
+    lora = patch.get("lora") or {}
+    accel = patch.get("accel") or {}
+    models = patch.get("models") or {}
+
+    # ② 服务地址格式：传数字/乱写会被 save() str() 成 "123" 存进去，之后所有
+    #    ComfyUI/Ollama 请求全挂，而且要"重启后端"才看得出来。
+    for k in ("comfyui_url", "ollama_url"):
+        if k in srv:
+            u = srv[k]
+            parsed = urlparse(u.strip()) if isinstance(u, str) else None
+            if not (parsed and parsed.scheme in ("http", "https") and parsed.hostname):
+                errs.append(f"server.{k} = {u!r}：必须是 http://主机:端口 形式")
+
+    # ③ 路径存在性：存进去不存在的路径 = 面板显示正常、真跑起来找不到
+    #    python / 权重 / LoRA，报错还指向别处。
+    for k, what in (("comfyui_dir", "目录"), ("extra_model_paths", "文件")):
+        v = srv.get(k)
+        if isinstance(v, str) and v.strip() and not Path(v.strip()).exists():
+            errs.append(f"server.{k} = {v}：{what}不存在")
+    lora_dir_new = (lora.get("dir") or "").strip()
+    if lora_dir_new and not Path(lora_dir_new).is_dir():
+        errs.append(f"lora.dir = {lora_dir_new}：LoRA 目录不存在")
+
+    # ④ 数值/枚举：传 "abc" 时 save() 是静默跳过，前端却提示"已保存"，
+    #    用户以为改了、其实原值没动。
+    if "video_steps" in accel:
+        try:
+            int(str(accel["video_steps"]).strip())
+        except Exception:
+            errs.append(f"accel.video_steps = {accel['video_steps']!r}：必须是整数")
+    if "attention" in accel and str(accel["attention"]).strip().lower() not in ("pytorch", "sage"):
+        errs.append(f"accel.attention = {accel['attention']!r}：只支持 pytorch / sage")
+
+    # ⑤ 档位校验：面板可写任意字符串，写错不该等到任务跑起来才炸。
     #    参考生图必须落 SDXL 族（首帧走 scene_ipadapter、九宫格走 grid_storyboard，
     #    换成 Qwen/Flux 权重工作流里 CheckpointLoader 直接 400）。
     reg = registry().get("models", {})
-    errs: list[str] = []
-    for k, v in (patch.get("models") or {}).items():
+    for k, v in models.items():
+        if k not in S._ALLOWED["models"]:
+            continue
         if not isinstance(v, str) or not v.strip():
+            errs.append(f"models.{k} 必须是档位名字符串，收到 {type(v).__name__}")
             continue
         key = v.strip()
         info = reg.get(key)
@@ -151,13 +224,29 @@ def settings_put(body: dict):
         if k in ("ref_image_photo", "ref_image_anime"):
             if fam != "sdxl" or not (roles & {"scene", "portrait"}):
                 errs.append(f"{k} = {key}：参考生图只能用 SDXL 族（首帧/九宫格模板绑死 SDXL）")
+            elif info.get("ref_image", True) is False or key in _REF_IMAGE_BLOCK:
+                errs.append(f"{k} = {key}：该档实为 SD1.5（models.yaml 标了 ref_image: false），首帧 IPAdapter 绑死 SDXL，选了必崩")
         elif k == "default_image":
             if not (roles & {"portrait", "scene", "prop", "image_edit"}):
                 errs.append(f"{k} = {key}：不是图像档")
         elif "video" not in roles:
             errs.append(f"{k} = {key}：不是视频档")
-    lora_pick = ((patch.get("lora") or {}).get("video_step_lora") or "").strip()
-    if lora_pick and lora_pick not in {x["name"] for x in _scan_loras()}:
+
+    # ⑥ 视频档必须有工作流模板：shot_service 里 default_video 走
+    #    VIDEO_WF_BY_MODEL.get(key, wan21)，没有映射的档会"拿 wan21 模板套别的权重"，
+    #    结构对不上，跑到 ComfyUI 才报节点/权重错；转场双帧更硬——overrides 绑死
+    #    MiniMaxH3ImageToVideo 节点，只有 h3_turbo 模板能用。
+    wf_map = shot_service.VIDEO_WF_BY_MODEL
+    for k in ("default_video", "ref_video", "talk_video"):
+        v = models.get(k)
+        if isinstance(v, str) and v.strip() and k != "talk_video" and v.strip() not in wf_map:
+            errs.append(f"models.{k} = {v.strip()}：没有对应工作流模板（可选："
+                        + "、".join(sorted(wf_map)) + "）")
+    rv = (models.get("ref_video") or "").strip()
+    if rv and wf_map.get(rv) != "video_h3_turbo.json":
+        errs.append(f"models.ref_video = {rv}：转场双帧只认 H3 turbo 模板（节点名绑死），只能选 vid_h3_turbo")
+    lora_pick = (lora.get("video_step_lora") or "").strip()
+    if lora_pick and lora_pick not in {x["name"] for x in _scan_loras(lora_dir_new or None)}:
         errs.append(f"lora.video_step_lora = {lora_pick}：LoRA 目录里找不到这个文件")
     if errs:
         raise HTTPException(400, "；".join(errs))
@@ -193,14 +282,20 @@ async def settings_restart_comfy():
 
     队列非空时拒绝：正在采样时重启会把任务打断成 interrupted。
     """
+    from .adapters import comfy_supervisor as sv
     try:
         q = await ComfyUIAdapter().queue_state()
         busy = bool(q.get("queue_running") or q.get("queue_pending"))
     except Exception:
+        # 连不上 8188 不能当"队列空闲"：8G 冷启动 7-14 分钟全程端口不开，
+        # 这时点重启会把正在加载权重的进程 taskkill 掉，启动进度清零重来。
+        starting = await asyncio.to_thread(sv.proc_count) > 0 \
+            or await asyncio.to_thread(sv.listen_present)
+        if starting:
+            raise HTTPException(409, "ComfyUI 正在启动中（进程已起、8188 还没就绪），等它就绪后再重启")
         busy = False
     if busy:
         raise HTTPException(409, "ComfyUI 队列非空（正在推理/排队），等跑完再重启")
-    from .adapters import comfy_supervisor as sv
     ok = await asyncio.to_thread(sv.restart)
     return {"ok": ok, "comfy": sv.snapshot()}
 
@@ -682,6 +777,11 @@ async def task_stream():
                     yield f"data: {msg}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
+        except (ConnectionResetError, BrokenPipeError):
+            # 前端刷新/切页把 SSE 连接断掉时，下一次写 data 会撞 WinError 10054。
+            # 这是正常断连、不是服务端故障；不吞掉的话 uvicorn 每次记 40 行 traceback，
+            # 历史上已累积 500+ 条，真正的报错全被这个噪声埋了。
+            return
         finally:
             task_queue.unsubscribe(q)
 

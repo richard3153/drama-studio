@@ -1091,12 +1091,25 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
 
     # 转场镜走 H3 turbo 双帧：模板双 LoadImage 默认连接 first/last frame（首=A末帧 尾=B首帧），
     # turbo LoRA 4 步采样——转场镜是 1-2s 的过渡件，速度优先；底模与主视频同款，缓存可复用。
-    model_key, model = await pick_model("video", None, ref_video_model())
+    # 下面的 overrides 写的是 MiniMaxH3ImageToVideo.* / CreateVideo.* 节点，只有
+    # video_h3_turbo.json 能对上：面板「参考生视频」若被设成 wan2.1/wan2.2 档，
+    # 换模板后节点不存在会直接抛 ComfyUIError。保存时 api 已拦，这里再兜一道。
+    rv = ref_video_model()
+    if VIDEO_WF_BY_MODEL.get(rv) != "video_h3_turbo.json":
+        rv = "vid_h3_turbo"
+    model_key, model = await pick_model("video", None, rv)
+    wf_name = VIDEO_WF_BY_MODEL.get(model_key)
+    if wf_name != "video_h3_turbo.json":
+        # pick_model 可能因档位不可用回退到别的视频档：模板/节点名只认 H3 turbo，
+        # 回退档的方言、帧数网格、画幅也全都不一样，必须整条按 H3 走。
+        model_key = "vid_h3_turbo"
+        model = (registry().get("models") or {}).get(model_key) or model
+        wf_name = "video_h3_turbo.json"
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
-    family = model.get("family", "wan22")
+    family = "minimax_h3"        # 模板固定 H3：方言/帧数/画幅都按它算
     comfy = ComfyUIAdapter()
-    wf = comfy.load_template(VIDEO_WF_BY_MODEL[model_key])   # video_h3_turbo.json（双帧约束）
+    wf = comfy.load_template(wf_name)
 
     fps = 24
     duration = clamp_duration(max(1, min(2, int(params.get("duration") or 1))), family)

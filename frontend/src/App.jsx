@@ -162,7 +162,15 @@ function BatchBar({ episodeId, onDone }) {
   const [vkey, setVkey] = useState(getVideoKey())
   useEffect(() => {
     (async () => {
-      try { const d = await get('/models'); setVmodels(d.models || []) } catch { /* 老后端无此端点时保持空 */ }
+      try {
+        const d = await get('/models')
+        const list = d.models || []
+        setVmodels(list)
+        // 后端下架的档位（如没有工作流模板的 vid_wan_i2v_aio）不能留在 localStorage：
+        // 否则下拉显示空白、请求还把旧 key 发上去，视频跑到 ComfyUI 才报模板/节点错。
+        const k = getVideoKey()
+        if (k && !list.some(x => x.key === k)) { setVideoKey(''); setVkey('') }
+      } catch { /* 老后端无此端点时保持空 */ }
     })()
   }, [])
   const pickVideo = (k) => {

@@ -114,6 +114,10 @@ def save(patch: dict) -> dict:
                     v = int(v.strip())
                 except Exception:
                     continue
+            elif grp == "models" and not isinstance(v, str):
+                # 模型档必须是"档位名"字符串：传 dict/list 时 str() 会存成
+                # "{'x': 1}" 这种垃圾键，pick_model 直接找不到档、整条链路崩。
+                continue
             elif not isinstance(v, str):
                 v = str(v)
             if grp == "accel" and k == "video_steps":

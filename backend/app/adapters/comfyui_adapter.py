@@ -341,67 +341,74 @@ class ComfyUIAdapter:
             if on_stage:
                 on_stage(f"已提交 ComfyUI 任务 {prompt_id[:8]}，等待执行")
 
-            deadline = asyncio.get_event_loop().time() + timeout
-            history = None
-            poll_fail = 0
-            while asyncio.get_event_loop().time() < deadline:
-                await asyncio.sleep(poll_interval)
-                try:
-                    async with httpx.AsyncClient(timeout=poll_to) as pc:
-                        r = await pc.get(f"{self.base}/history/{prompt_id}")
-                    poll_fail = 0
-                except httpx.HTTPError:
-                    # ComfyUI 重推理时偶发慢响应/瞬断，跳过本次轮询
-                    poll_fail += 1
-                    if poll_fail >= 60:
-                        await self._abort_prompt(prompt_id)
-                        raise ComfyUIError("轮询连续失败（约 60 次），疑似 ComfyUI 无响应")
-                    continue
-                data = r.json()
-                if prompt_id in data:
-                    entry = data[prompt_id]
-                    status = entry.get("status", {})
-                    if status.get("completed") or status.get("status_str") == "success":
-                        history = entry
-                        break
-                    if status.get("status_str") == "error":
-                        await self._abort_prompt(prompt_id)
-                        raise ComfyUIError("ComfyUI 执行出错：" + _brief_exec_error(status))
-                elif not data:
-                    # [drama-studio patch] 看守进程重拉 ComfyUI 后其 history 会被截断，
-                    # 按 prompt_id 查询会一直落空：任务永远停在"推理中"，产物其实已落盘。
-                    # 队列已空时按产物认领——取最近一条 completed 且文件名对得上本前缀的记录。
+            try:
+                deadline = asyncio.get_event_loop().time() + timeout
+                history = None
+                poll_fail = 0
+                while asyncio.get_event_loop().time() < deadline:
+                    await asyncio.sleep(poll_interval)
                     try:
-                        if await self._queue_idle():
-                            full = await self._history_all(4)
-                            tag = filename_prefix.split("/")[-1]
-                            for pid, entry in list(full.items())[::-1]:
-                                st = entry.get("status", {})
-                                if not (st.get("completed") or st.get("status_str") == "success"):
-                                    continue
-                                outs = [it for node in entry.get("outputs", {}).values()
-                                        for key in ("images", "audio", "gifs", "videos")
-                                        for it in (node.get(key) or [])]
-                                if outs and any(tag in (it.get("filename") or "") for it in outs):
-                                    history = entry
-                                    if on_stage:
-                                        on_stage(f"按产物认领任务 {pid[:8]}（history 按 id 落空，队列已空）")
-                                    break
+                        async with httpx.AsyncClient(timeout=poll_to) as pc:
+                            r = await pc.get(f"{self.base}/history/{prompt_id}")
+                        poll_fail = 0
                     except httpx.HTTPError:
-                        pass
-                    if history is not None:
-                        break
-            if history is None:
-                await self._abort_prompt(prompt_id)
-                raise ComfyUIError(f"执行超时（{timeout}s）")
+                        # ComfyUI 重推理时偶发慢响应/瞬断，跳过本次轮询
+                        poll_fail += 1
+                        if poll_fail >= 60:
+                            await self._abort_prompt(prompt_id)
+                            raise ComfyUIError("轮询连续失败（约 60 次），疑似 ComfyUI 无响应")
+                        continue
+                    data = r.json()
+                    if prompt_id in data:
+                        entry = data[prompt_id]
+                        status = entry.get("status", {})
+                        if status.get("completed") or status.get("status_str") == "success":
+                            history = entry
+                            break
+                        if status.get("status_str") == "error":
+                            await self._abort_prompt(prompt_id)
+                            raise ComfyUIError("ComfyUI 执行出错：" + _brief_exec_error(status))
+                    elif not data:
+                        # [drama-studio patch] 看守进程重拉 ComfyUI 后其 history 会被截断，
+                        # 按 prompt_id 查询会一直落空：任务永远停在"推理中"，产物其实已落盘。
+                        # 队列已空时按产物认领——取最近一条 completed 且文件名对得上本前缀的记录。
+                        try:
+                            if await self._queue_idle():
+                                full = await self._history_all(4)
+                                tag = filename_prefix.split("/")[-1]
+                                for pid, entry in list(full.items())[::-1]:
+                                    st = entry.get("status", {})
+                                    if not (st.get("completed") or st.get("status_str") == "success"):
+                                        continue
+                                    outs = [it for node in entry.get("outputs", {}).values()
+                                            for key in ("images", "audio", "gifs", "videos")
+                                            for it in (node.get(key) or [])]
+                                    if outs and any(tag in (it.get("filename") or "") for it in outs):
+                                        history = entry
+                                        if on_stage:
+                                            on_stage(f"按产物认领任务 {pid[:8]}（history 按 id 落空，队列已空）")
+                                        break
+                        except httpx.HTTPError:
+                            pass
+                        if history is not None:
+                            break
+                if history is None:
+                    await self._abort_prompt(prompt_id)
+                    raise ComfyUIError(f"执行超时（{timeout}s）")
 
-            return await self._download_outputs(c, history)
+                return await self._download_outputs(c, history)
+            except asyncio.CancelledError:
+                # 界面「取消」或 watchdog 收尸把协程 cancel 掉时，ComfyUI 那边这个 prompt
+                # 没有任何人在等，却仍在占 GPU（8G 上 WAN 一条 108s、H3 15-30 分钟）。
+                # 不收尾它就堆在 ComfyUI 队列里，把后面任务的排队时间算进自己的超时预算。
+                # 必须在释放 _heavy_lock 之前完成（否则下一个任务已提交，interrupt 会误杀它），
+                # 所以用 shield：取消标记已消费，这里要等收尾真正做完。
+                await asyncio.shield(self._abort_prompt(prompt_id))
+                raise
 
     async def _download_outputs(self, client: httpx.AsyncClient,
                                 history_entry: dict) -> list[Path]:
         saved: list[Path] = []
-        out_dir = Path(history_entry.get("prompt", [None, None, {}])[2]
-                       .get("output_dir", ""))
         for node_out in history_entry.get("outputs", {}).values():
             for key in ("images", "audio", "gifs", "videos"):
                 for item in node_out.get(key, []):

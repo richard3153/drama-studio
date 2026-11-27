@@ -18,6 +18,7 @@ models:
     vram_gb: 4.0
     tier: low
     styles: []          # 已退出自动选档（被 img_animaginexl 取代），保留文件作显存兜底
+    ref_image: false    # 实为 SD1.5：不能进「参考生图」（首帧 IPAdapter 绑死 SDXL plus 权重）
   img_realvisxl:
     role: [portrait, scene, prop]
     family: sdxl
