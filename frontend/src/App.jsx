@@ -40,7 +40,7 @@ const getVideoKey = () => { try { return localStorage.getItem(VIDEO_KEY_LS) || '
 const setVideoKey = (k) => { try { k ? localStorage.setItem(VIDEO_KEY_LS, k) : localStorage.removeItem(VIDEO_KEY_LS) } catch { /* 忽略 */ } }
 const getVideoLabel = () => { try { return localStorage.getItem(VIDEO_KEY_LS + '_label') || '' } catch { return '' } }
 
-function StageNav({ stage, setStage, hasProject = false }) {
+function StageNav({ stage, setStage, hasProject = false, openSettings }) {
   return (
     <div className="stage-nav">
       {STAGES.map(s => {
@@ -55,6 +55,11 @@ function StageNav({ stage, setStage, hasProject = false }) {
         </div>
         )
       })}
+      {/* 后台配置：模型 / LoRA / 加速 / 服务地址的统一入口，常驻导航底部 */}
+      <div className="stage-item stage-config" title="模型、LoRA、加速与服务地址"
+        onClick={openSettings}>
+        <span className="ico">⚙️</span><span className="lbl">配置</span>
+      </div>
     </div>
   )
 }
@@ -1935,6 +1940,198 @@ function TaskBar({ tasks, vram, refreshTasks }) {
   )
 }
 
+/* ---------- 后台配置面板（模型 / LoRA / 加速 / 服务地址） ---------- */
+function CfgField({ label, hint, children }) {
+  return (
+    <div className="cfg-field">
+      <div className="cfg-label">{label}{hint && <span className="cfg-hint">{hint}</span>}</div>
+      {children}
+    </div>
+  )
+}
+
+function ModelSelect({ value, onChange, options, emptyText }) {
+  const known = (options || []).some(o => o.key === value)
+  return (
+    <select className="cfg-select" value={value || ''} onChange={e => onChange(e.target.value)}>
+      {!known && <option value={value || ''}>{value ? `${value}（不在注册表）` : (emptyText || '未选择')}</option>}
+      {(options || []).map(o => (
+        <option key={o.key} value={o.key}>{o.label} · {o.family} · {o.vram_gb}G/{o.tier}</option>
+      ))}
+    </select>
+  )
+}
+
+function SettingsModal({ open, onClose }) {
+  const [data, setData] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState('')
+  const load = () => api('/settings').then(d => {
+    setData(d); setDraft(JSON.parse(JSON.stringify(d.config)))
+  }).catch(e => setMsg('读取配置失败：' + e.message))
+  useEffect(() => { if (open) { setMsg(''); load() } }, [open])
+  if (!open) return null
+  const set = (g, k, v) => setDraft(d => ({ ...d, [g]: { ...((d || {})[g] || {}), [k]: v } }))
+  const cfg = draft || {}
+  const opts = (data && data.options) || {}
+  const save = async () => {
+    setBusy('save')
+    try {
+      const r = await put('/settings', draft)
+      setData(d => ({ ...d, config: r.config, effective: { ...(d.effective || {}), models: r.config.models } }))
+      setDraft(JSON.parse(JSON.stringify(r.config)))
+      await load()
+      setMsg(r.need_restart && r.need_restart.length
+        ? `已保存到 data/settings.yaml。需要重启：${r.need_restart.join('、')} 才生效。`
+        : '已保存到 data/settings.yaml，即时生效（下一次生成任务按新配置选模）。')
+    } catch (e) { setMsg('保存失败：' + e.message) } finally { setBusy('') }
+  }
+  const restartComfy = async () => {
+    setBusy('comfy')
+    try {
+      const r = await post('/settings/restart-comfy', {})
+      setMsg(r.ok ? '已按新参数重启 ComfyUI，冷启动约 7-14 分钟（这段时间生成任务会等待）。'
+        : '重启失败，看后端日志。')
+    } catch (e) { setMsg('重启被拒或失败：' + e.message) } finally { setBusy('') }
+  }
+  return (
+    <div className="cfg-overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="cfg-modal">
+        <div className="cfg-head">
+          <div>
+            <div className="cfg-title">后台配置</div>
+            <div className="cfg-sub">模型档位、参考链路、LoRA 与加速、服务地址；写进 backend/data/settings.yaml</div>
+          </div>
+          <button className="cfg-x" onClick={onClose} title="关闭">✕</button>
+        </div>
+
+        {!data && <div className="cfg-note">正在读取配置…</div>}
+
+        {data && <>
+          <div className="cfg-body">
+            <div className="cfg-group">
+              <div className="cfg-group-title">模型选择</div>
+              <div className="cfg-grid">
+                <CfgField label="生图模型" hint="定妆照 / 场景 / 道具 / 修图 主链路">
+                  <ModelSelect value={cfg.models?.default_image} options={opts.image}
+                    onChange={v => set('models', 'default_image', v)} />
+                </CfgField>
+                <CfgField label="生视频模型" hint="分镜主链路默认档（单镜/批量/重链都跟它）">
+                  <ModelSelect value={cfg.models?.default_video} options={opts.video}
+                    onChange={v => set('models', 'default_video', v)} />
+                </CfgField>
+                <CfgField label="参考生图 · 写实/3D 族" hint="首帧 IPAdapter 锁脸底模，只能 SDXL 族">
+                  <ModelSelect value={cfg.models?.ref_image_photo} options={opts.ref_image}
+                    onChange={v => set('models', 'ref_image_photo', v)} />
+                </CfgField>
+                <CfgField label="参考生图 · 动漫/手绘族" hint="动漫族首帧与九宫格底模">
+                  <ModelSelect value={cfg.models?.ref_image_anime} options={opts.ref_image}
+                    onChange={v => set('models', 'ref_image_anime', v)} />
+                </CfgField>
+                <CfgField label="参考生视频 · 转场/首尾帧" hint="双帧约束（转场镜、向后重链）">
+                  <ModelSelect value={cfg.models?.ref_video} options={opts.ref_video}
+                    onChange={v => set('models', 'ref_video', v)} />
+                </CfgField>
+                <CfgField label="口型模型" hint="说话镜音频驱动">
+                  <ModelSelect value={cfg.models?.talk_video} options={opts.talk}
+                    onChange={v => set('models', 'talk_video', v)} />
+                </CfgField>
+              </div>
+              <div className="cfg-tip">选档即时生效；参考链路只接受有对应工作流模板的档，选错会在任务里报错。</div>
+            </div>
+
+            <div className="cfg-group">
+              <div className="cfg-group-title">LoRA 与加速</div>
+              <div className="cfg-grid">
+                <CfgField label="LoRA 根目录" hint={`扫描到 ${(data.loras || []).length} 个文件`}>
+                  <input className="cfg-input" value={cfg.lora?.dir || ''}
+                    onChange={e => set('lora', 'dir', e.target.value)} />
+                </CfgField>
+                <CfgField label="步数蒸馏 LoRA" hint="WAN 4 步加速用哪一个">
+                  <select className="cfg-select" value={cfg.lora?.video_step_lora || ''}
+                    onChange={e => set('lora', 'video_step_lora', e.target.value)}>
+                    {!(data.loras || []).some(l => l.name === cfg.lora?.video_step_lora) &&
+                      <option value={cfg.lora?.video_step_lora || ''}>{cfg.lora?.video_step_lora || '未选择'}</option>}
+                    {(data.loras || []).map(l => (
+                      <option key={l.name} value={l.name}>{l.name}（{l.size_gb}G）</option>
+                    ))}
+                  </select>
+                </CfgField>
+                <CfgField label="启用步数蒸馏" hint="关掉会把采样步数抬到下方值，慢但画质更足">
+                  <div className="cfg-switch-row">
+                    <label className="cfg-switch">
+                      <input type="checkbox" checked={!!cfg.lora?.enable_video_step_lora}
+                        onChange={e => set('lora', 'enable_video_step_lora', e.target.checked)} />
+                      <span>{cfg.lora?.enable_video_step_lora ? '已启用（4 步采样）' : '已关闭（按采样步数走）'}</span>
+                    </label>
+                  </div>
+                </CfgField>
+                <CfgField label="关闭蒸馏后的采样步数" hint="建议 16-24">
+                  <input className="cfg-input" type="number" min="4" max="60"
+                    value={cfg.accel?.video_steps ?? 20}
+                    onChange={e => set('accel', 'video_steps', Number(e.target.value))} />
+                </CfgField>
+                <CfgField label="注意力后端（加速方法）" hint="sage 需已装 sageattention；改完要重启 ComfyUI">
+                  <select className="cfg-select" value={cfg.accel?.attention || 'pytorch'}
+                    onChange={e => set('accel', 'attention', e.target.value)}>
+                    <option value="pytorch">PyTorch SD attentention（默认·最稳）</option>
+                    <option value="sage">SageAttention（更快·8G 卡收益明显）</option>
+                  </select>
+                </CfgField>
+              </div>
+              <div className="cfg-tip">WAN 的 fp8 + blockswap 已写在工作流模板里，属于固定加速；面板这里管的是"要不要挂蒸馏 LoRA"和 ComfyUI 的注意力实现。</div>
+            </div>
+
+            <div className="cfg-group">
+              <div className="cfg-group-title">服务与路径 <span className="cfg-badge">重启后端生效</span></div>
+              <div className="cfg-grid">
+                <CfgField label="ComfyUI 地址">
+                  <input className="cfg-input" value={cfg.server?.comfyui_url || ''}
+                    onChange={e => set('server', 'comfyui_url', e.target.value)} />
+                </CfgField>
+                <CfgField label="ComfyUI 安装目录">
+                  <input className="cfg-input" value={cfg.server?.comfyui_dir || ''}
+                    onChange={e => set('server', 'comfyui_dir', e.target.value)} />
+                </CfgField>
+                <CfgField label="extra_model_paths.yaml">
+                  <input className="cfg-input" value={cfg.server?.extra_model_paths || ''}
+                    onChange={e => set('server', 'extra_model_paths', e.target.value)} />
+                </CfgField>
+                <CfgField label="Ollama 地址">
+                  <input className="cfg-input" value={cfg.server?.ollama_url || ''}
+                    onChange={e => set('server', 'ollama_url', e.target.value)} />
+                </CfgField>
+                <CfgField label="Ollama 模型" hint="剧本 / 拆解 / 续写用的本地 LLM">
+                  {(data.ollama_models || []).length
+                    ? <select className="cfg-select" value={cfg.server?.ollama_model || ''}
+                        onChange={e => set('server', 'ollama_model', e.target.value)}>
+                        {!(data.ollama_models || []).includes(cfg.server?.ollama_model) &&
+                          <option value={cfg.server?.ollama_model || ''}>{cfg.server?.ollama_model || '未选择'}</option>}
+                        {data.ollama_models.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    : <input className="cfg-input" value={cfg.server?.ollama_model || ''}
+                        onChange={e => set('server', 'ollama_model', e.target.value)} />}
+                </CfgField>
+              </div>
+            </div>
+          </div>
+
+          <div className="cfg-actions">
+            <div className="cfg-msg">{msg}</div>
+            <div className="cfg-btns">
+              <button className="ghost" disabled={!!busy} onClick={restartComfy}>
+                {busy === 'comfy' ? '重启中…' : '重启 ComfyUI'}
+              </button>
+              <button disabled={!!busy} onClick={save}>{busy === 'save' ? '保存中…' : '保存配置'}</button>
+            </div>
+          </div>
+        </>}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   // URL deep-link：?stage=script&project=1 直达任意页面（分享/演示/截图用）
   const _q = new URLSearchParams(location.search)
@@ -1945,6 +2142,7 @@ export default function App() {
   const [tasks, setTasks] = useState([])
   const [vram, setVram] = useState(null)
   const [assetsVersion, setAssetsVersion] = useState(0)
+  const [cfgOpen, setCfgOpen] = useState(false)
 
   const reloadProjects = () => api('/projects').then(setProjects)
   useEffect(() => { reloadProjects() }, [])
@@ -1990,7 +2188,8 @@ export default function App() {
   return (
     <>
       <div className="layout">
-        <StageNav stage={stage} setStage={setStage} hasProject={!!project} />
+        <StageNav stage={stage} setStage={setStage} hasProject={!!project}
+          openSettings={() => setCfgOpen(true)} />
         <div className="main">
           {needProject && <div className="empty-hint">
             <div className="page-title" style={{ fontSize: 17, marginBottom: 10 }}>还没有选中的项目</div>
@@ -2006,6 +2205,7 @@ export default function App() {
         </div>
       </div>
       <TaskBar tasks={tasks} vram={vram} refreshTasks={refreshTasks} />
+      <SettingsModal open={cfgOpen} onClose={() => setCfgOpen(false)} />
     </>
   )
 }

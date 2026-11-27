@@ -27,6 +27,10 @@ COMFYUI_LAUNCH_ARGS = [
         "DRAMA_EXTRA_MODEL_PATHS", r"D:\Comfy-Desktop\extra_paths.yaml"),
     "--user-directory", str(COMFYUI_DIR / "ComfyUI" / "user"),
 ]
+# 加速方法（后台配置 accel.attention=sage 时由 settings.bootstrap 置位）：
+# sage attention 需要 ComfyUI 重启才生效，且要装 sageattention 包，没装会启动失败。
+if os.environ.get("DRAMA_USE_SAGE_ATTENTION") == "1":
+    COMFYUI_LAUNCH_ARGS.append("--use-sage-attention")
 # ComfyUI input 共享目录（LoadAudio 音频直写 fallback 用；与启动参数 --input-directory 一致）
 COMFYUI_INPUT_DIR = os.environ.get(
     "DRAMA_COMFYUI_INPUT_DIR",

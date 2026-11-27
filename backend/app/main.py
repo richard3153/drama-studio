@@ -2,13 +2,19 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+# 必须最先执行：把 data/settings.yaml 的服务地址/路径写进环境变量，
+# 之后的 config.py 及各模块 import 到的才是面板里配置的值。
+from . import settings as _app_settings  # noqa: E402
 
-from .api import router
-from .config import BASE_DIR
-from .db import init_db
+_app_settings.bootstrap()
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+from .api import router  # noqa: E402
+from .config import BASE_DIR  # noqa: E402
+from .db import init_db  # noqa: E402
 
 init_db()
 

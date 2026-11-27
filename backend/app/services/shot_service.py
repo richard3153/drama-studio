@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from ..adapters.comfyui_adapter import ComfyUIAdapter, ComfyUIError
 from ..config import BASE_DIR
+from .. import settings as app_settings
 from ..db import AssetImage, Project, SessionLocal, Shot, TaskRecord
 from ..scheduler.queue import update_progress
 from ..scheduler.vram import pick_model, registry
@@ -38,7 +39,31 @@ VIDEO_WF_BY_MODEL = {
     "vid_h3_turbo": "video_h3_turbo.json",
 }
 VIDEO_WF = "i2v_wan21_480p.json"
-DEFAULT_VIDEO_MODEL = "vid_wan21_480p"   # 与 models.yaml defaults.default_models.video 同步
+DEFAULT_VIDEO_MODEL = "vid_wan21_480p"   # 兜底常量；实际以 settings.models.default_video 为准
+
+
+def default_video_model() -> str:
+    """生视频主链路默认档（后台配置可改，改完即时生效）。"""
+    return (app_settings.get("models", "default_video") or "").strip() or DEFAULT_VIDEO_MODEL
+
+
+def ref_video_model() -> str:
+    """参考生视频（首尾帧/转场双帧）档位。"""
+    return (app_settings.get("models", "ref_video") or "").strip() or "vid_h3_turbo"
+
+
+def talk_video_model() -> str:
+    """口型（音频驱动）档位。"""
+    return (app_settings.get("models", "talk_video") or "").strip() or "vid_talk_infinitetalk"
+
+
+def ref_image_key(style_fam: str) -> str:
+    """参考生图（首帧锁脸通道）底模：动漫/手绘族与写实/3D 族分开配。"""
+    if style_fam in ("anime", "paint"):
+        return (app_settings.get("models", "ref_image_anime") or "").strip() \
+            or "img_animaginexl"
+    return (app_settings.get("models", "ref_image_photo") or "").strip() \
+        or "img_realvisxl"
 # 2026-11-26 实测账（推翻 11-24 的"H3 一律"拍板，按显存分层）：
 #   H3 int8/turbo 用同一份 20GB int8 底模，8G 卡全靠 comfy_aimdo 分页，
 #   冷启动后首条 >40 分钟（#365 直接撞 2400s 超时）、热态也要 2-4 分钟起，
@@ -489,7 +514,7 @@ async def _gen_frame(db, task, shot: Shot, project: Project, *, frame_type: str,
     #    visible pores / unretouched）+ 没锁住脸 → 已在 style_presets 按族分支 + shot_service 修掉。
     #   anime / paint → Animagine XL 3.1（真 SDXL 动漫底模，2026-11-26 由 hf-mirror 接入；
     #    AnythingXL_v50 实测只有 1.99GB / 单 SD1.5 CLIP，实为 SD1.5，不再当 SDXL 用）。
-    frame_key = "img_animaginexl" if fam in ("anime", "paint") else "img_realvisxl"
+    frame_key = ref_image_key(fam)
     model_key, model = await pick_model("scene", "low", model_key=frame_key,
                                         style_family=fam,
                                         allowed_families=frozenset(("sdxl",)))
@@ -661,7 +686,7 @@ async def generate_shot_video(db, task, params: dict) -> dict:
 
     project = db.get(Project, shot.project_id)
     model_key, model = await pick_model("video", params.get("prefer_tier"),
-                                        params.get("model_key") or DEFAULT_VIDEO_MODEL)
+                                        params.get("model_key") or default_video_model())
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
@@ -833,10 +858,10 @@ async def generate_grid_storyboard(db, task, params: dict) -> dict:
     if not shot.image_prompt:
         raise RuntimeError("镜头首帧提示词为空，先点「重组装提示词」")
 
+    _grid_fam = style_family(preset)
     model_key, model = await pick_model("grid9", "low",
-                                        model_key=("img_realvisxl" if style_family(preset) in ("3d", "photo")
-                                                   else "img_anythingxl"),
-                                        style_family=style_family(preset),
+                                        model_key=ref_image_key(_grid_fam),
+                                        style_family=_grid_fam,
                                         allowed_families=frozenset(("sdxl",)))
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
@@ -1060,7 +1085,7 @@ async def generate_transition_clip(db, task, params: dict) -> dict:
 
     # 转场镜走 H3 turbo 双帧：模板双 LoadImage 默认连接 first/last frame（首=A末帧 尾=B首帧），
     # turbo LoRA 4 步采样——转场镜是 1-2s 的过渡件，速度优先；底模与主视频同款，缓存可复用。
-    model_key, model = await pick_model("video", None, "vid_h3_turbo")
+    model_key, model = await pick_model("video", None, ref_video_model())
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
@@ -1126,7 +1151,7 @@ async def extend_shot_video(db, task, params: dict) -> dict:
 
     project = db.get(Project, shot.project_id)
     model_key, model = await pick_model("video", params.get("prefer_tier"),
-                                        params.get("model_key") or DEFAULT_VIDEO_MODEL)
+                                        params.get("model_key") or default_video_model())
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
     family = model.get("family", "wan22")
@@ -1264,7 +1289,7 @@ async def generate_shot_talk(db, task, params: dict) -> dict:
         raise RuntimeError("本镜没有台词，先在镜头卡里填台词（角色名（语气）：台词）")
 
     project = db.get(Project, shot.project_id)
-    model_key, model = await pick_model("video", None, "vid_talk_infinitetalk")
+    model_key, model = await pick_model("video", None, talk_video_model())
     task.model_key = model_key
     task.vram_gb = model["vram_gb"]
 

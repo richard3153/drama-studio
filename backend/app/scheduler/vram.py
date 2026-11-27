@@ -5,6 +5,7 @@ import httpx
 import yaml
 
 from ..config import COMFYUI_URL, MODELS_YAML
+from .. import settings as app_settings
 
 
 def load_registry() -> dict:
@@ -54,6 +55,12 @@ async def pick_model(role: str, prefer_tier: str | None = None,
     # 全局底模（defaults.default_models，2026-11-24 拍板：图片=Qwen-Image / 视频=MiniMax H3）：
     # 未显式指定 model_key 且未指定 prefer_tier 时直取。辅助链路（首帧 IPA/宫格/微调）
     # 显式传 prefer_tier="low" 走 SDXL，不受此表影响；显式 prefer_tier 视为用户点名档位。
+    # 后台配置面板的商品位（data/settings.yaml）：优先级高于 models.yaml 的 defaults，
+    # 但低于显式 model_key / 显式 prefer_tier。改完即时生效（每次选档都重读 yaml）。
+    override = (app_settings.model_overrides() or {}).get(role)
+    if not prefer_tier and override and override in candidates:
+        return override, candidates[override]
+
     default_key = (reg.get("defaults", {}).get("default_models") or {}).get(role)
     if not prefer_tier and default_key and default_key in candidates:
         return default_key, candidates[default_key]

@@ -45,13 +45,31 @@ def _host_port() -> tuple[str, int]:
     return u.hostname or "127.0.0.1", u.port or 8188
 
 
-def port_open(timeout: float = 3.0) -> bool:
+def port_open(timeout: float = 8.0) -> bool:
     host, port = _host_port()
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
         return False
+
+
+def listen_present() -> bool:
+    """8188 是否仍处于 LISTEN（有进程占着端口）。
+
+    意义：WAN 采样时 ComfyUI 主循环被占满，accept/HTTP 会暂时不回包，
+    port_open 就会判"不通"；但只要端口还在 LISTEN，就说明进程活着、
+    只是忙——绝不能当"进程不在"去重复拉起（会把采样打断、history 截断）。
+    """
+    _, port = _host_port()
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=_CREATE_NO_WINDOW)
+    except Exception:
+        return False
+    return any(f":{port} " in line and "LISTENING" in line.upper()
+               for line in (out.stdout or "").splitlines())
 
 
 def proc_count() -> int:
@@ -115,6 +133,10 @@ def ensure(force: bool = False) -> str:
     if port_open():
         _state.update(comfy="up", checked_at=time.time())
         return "up"
+    if listen_present():
+        # 端口还在监听：进程活着，只是在采样/加载中不回包，等它，别再拉一个。
+        _state.update(comfy="starting", checked_at=time.time())
+        return "starting"
     n = proc_count()
     if n > 0:
         _state.update(comfy="starting", checked_at=time.time())
@@ -130,6 +152,36 @@ def ensure(force: bool = False) -> str:
     _state.update(comfy="starting" if ok else "down", checked_at=time.time(),
                   restarts=int(_state.get("restarts", 0)) + (1 if ok else 0))
     return "started" if ok else "start-failed"
+
+
+def _comfy_pids() -> list[int]:
+    cmd = ("@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+           "Where-Object { $_.CommandLine -like '*ComfyUI*main.py*' } | "
+           "Select-Object -ExpandProperty ProcessId) -join ','")
+    try:
+        out = subprocess.run([_PWSH, "-NoProfile", "-NonInteractive", "-Command", cmd],
+                             capture_output=True, text=True, timeout=30,
+                             creationflags=_CREATE_NO_WINDOW)
+        return [int(x) for x in (out.stdout or "").strip().split(",") if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def restart() -> bool:
+    """按最新启动参数重启 ComfyUI（改注意力后端/路径后面板用；调用方负责先判队列空闲）。"""
+    pids = _comfy_pids()
+    for pid in pids:
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=15,
+                           creationflags=_CREATE_NO_WINDOW)
+        except Exception:
+            pass
+    time.sleep(3)
+    _write_state(last_start=0)
+    ok = _start()
+    _state.update(comfy="starting" if ok else "down", checked_at=time.time())
+    return ok
 
 
 def snapshot() -> dict:

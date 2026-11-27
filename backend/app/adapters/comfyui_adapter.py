@@ -262,6 +262,20 @@ class ComfyUIAdapter:
                     announced = True
                 await asyncio.sleep(15)
 
+    async def _history_all(self, limit: int = 5) -> dict:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=120.0)) as c:
+            return (await c.get(f"{self.base}/history?max_items={limit}")).json()
+
+    async def _queue_idle(self) -> bool:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=60.0)) as c:
+            q = (await c.get(f"{self.base}/queue")).json()
+        return not q.get("queue_running") and not q.get("queue_pending")
+
+    async def queue_state(self) -> dict:
+        """当前队列快照（面板重启 ComfyUI 前判断是否忙）。"""
+        async with httpx.AsyncClient(timeout=10) as c:
+            return (await c.get(f"{self.base}/queue")).json()
+
     async def run(self, wf: dict, *, filename_prefix: str = "drama_studio/out",
                   save_root: str | Path = "data/downloads",
                   timeout: float = 900.0, poll_interval: float = 1.0,
@@ -279,6 +293,24 @@ class ComfyUIAdapter:
             for cls in IMAGE_SAVERS | AUDIO_SAVERS | VIDEO_SAVERS:
                 for nid in self.index_by_class(wf).get(cls, []):
                     wf[nid]["inputs"]["filename_prefix"] = filename_prefix
+
+            # 加速方法（后台配置）：关掉步数蒸馏 LoRA 就把它旁路掉，同时把采样步数抬回去，
+            # 否则 4 步采样会出糊图。只对"本身挂了 LoRA 的工作流"生效，不碰首帧 SDXL 模板。
+            from .. import settings as _S
+            _idx = self.index_by_class(wf)
+            _lora_nodes = (_idx.get("LoraLoaderModelOnly") or []) + (_idx.get("LoraLoader") or [])
+            if _lora_nodes and not _S.get("lora", "enable_video_step_lora", True):
+                for nid in _lora_nodes:
+                    ins = wf[nid].get("inputs", {})
+                    ins["strength_model"] = 0.0
+                    if "strength_clip" in ins:
+                        ins["strength_clip"] = 0.0
+                _steps = int(_S.get("accel", "video_steps", 20) or 20)
+                for cls in ("KSampler", "KSamplerAdvanced"):
+                    for nid in _idx.get(cls, []):
+                        wf[nid]["inputs"]["steps"] = _steps
+                        if cls == "KSampler" and "cfg" in wf[nid]["inputs"]:
+                            wf[nid]["inputs"]["cfg"] = max(5.0, float(wf[nid]["inputs"]["cfg"]))
 
             payload = {"prompt": wf, "client_id": self.client_id}
             try:
@@ -318,12 +350,36 @@ class ComfyUIAdapter:
                 if prompt_id in data:
                     entry = data[prompt_id]
                     status = entry.get("status", {})
-                    if status.get("completed"):
+                    if status.get("completed") or status.get("status_str") == "success":
                         history = entry
                         break
                     if status.get("status_str") == "error":
                         await self._abort_prompt(prompt_id)
                         raise ComfyUIError("ComfyUI 执行出错：" + _brief_exec_error(status))
+                elif not data:
+                    # [drama-studio patch] 看守进程重拉 ComfyUI 后其 history 会被截断，
+                    # 按 prompt_id 查询会一直落空：任务永远停在"推理中"，产物其实已落盘。
+                    # 队列已空时按产物认领——取最近一条 completed 且文件名对得上本前缀的记录。
+                    try:
+                        if await self._queue_idle():
+                            full = await self._history_all(4)
+                            tag = filename_prefix.split("/")[-1]
+                            for pid, entry in list(full.items())[::-1]:
+                                st = entry.get("status", {})
+                                if not (st.get("completed") or st.get("status_str") == "success"):
+                                    continue
+                                outs = [it for node in entry.get("outputs", {}).values()
+                                        for key in ("images", "audio", "gifs", "videos")
+                                        for it in (node.get(key) or [])]
+                                if outs and any(tag in (it.get("filename") or "") for it in outs):
+                                    history = entry
+                                    if on_stage:
+                                        on_stage(f"按产物认领任务 {pid[:8]}（history 按 id 落空，队列已空）")
+                                    break
+                    except httpx.HTTPError:
+                        pass
+                    if history is not None:
+                        break
             if history is None:
                 await self._abort_prompt(prompt_id)
                 raise ComfyUIError(f"执行超时（{timeout}s）")

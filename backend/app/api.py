@@ -33,9 +33,11 @@ router = APIRouter(prefix="/api")
 @router.get("/models")
 async def models_list():
     """轻量模型档列表（分镜页「视频档」下拉用）：只返回 role 含 video 的档，排除口型专用档。"""
+    from . import settings as _S
     reg = registry()
     ms = reg.get("models", {})
-    default_video = ((reg.get("defaults", {}) or {}).get("default_models", {}) or {}).get("video")
+    default_video = ((_S.model_overrides() or {}).get("video")
+                     or ((reg.get("defaults", {}) or {}).get("default_models", {}) or {}).get("video"))
     out = []
     for key, m in ms.items():
         roles = m.get("role") or []
@@ -47,6 +49,117 @@ async def models_list():
                     "family": m.get("family"), "vram_gb": m.get("vram_gb"),
                     "tier": m.get("tier"), "default": key == default_video})
     return {"models": out, "default": default_video}
+
+# ---------- 后台配置面板 ----------
+
+def _scan_loras() -> list[dict]:
+    """扫描 LoRA 目录（面板里给"可用 LoRA"下拉用；不依赖 ComfyUI 是否在线）。"""
+    from . import settings as S
+    d = Path(S.get("lora", "dir") or "")
+    out: list[dict] = []
+    if not d or not d.is_dir():
+        return out
+    for p in sorted(d.rglob("*")):
+        if p.suffix.lower() not in (".safetensors", ".pt", ".ckpt", ".bin"):
+            continue
+        try:
+            out.append({"name": p.name, "path": str(p),
+                        "size_gb": round(p.stat().st_size / 1024**3, 2)})
+        except OSError:
+            continue
+    return out
+
+
+def _model_options() -> dict:
+    """按用途给面板分组：生图 / 参考生图（SDXL 族）/ 生视频 / 参考生视频 / 口型。"""
+    ms = registry().get("models", {})
+    groups = {"image": [], "ref_image": [], "video": [], "ref_video": [], "talk": []}
+    for key, m in ms.items():
+        roles = m.get("role") or []
+        if isinstance(roles, str):
+            roles = [roles]
+        item = {"key": key, "label": m.get("label") or key,
+                "family": m.get("family"), "vram_gb": m.get("vram_gb"),
+                "tier": m.get("tier"), "styles": m.get("styles") or [],
+                "weight": m.get("weight")}
+        if "video" in roles:
+            if "talk" in key:
+                groups["talk"].append(item)
+            else:
+                groups["video"].append(item)
+                groups["ref_video"].append(item)
+        else:
+            groups["image"].append(item)
+            # 参考生图（首帧锁脸通道）只吃 SDXL 族：IPAdapter 模板按 family 选 plus.sdxl.vit.h
+            if m.get("family") == "sdxl":
+                groups["ref_image"].append(item)
+    return groups
+
+
+@router.get("/settings")
+async def settings_get():
+    from . import settings as S
+    cfg = S.load()
+    opts = _model_options()
+    try:
+        ollama_models = await OllamaAdapter().list_models()
+    except Exception:
+        ollama_models = []
+    return {
+        "config": cfg,
+        "options": opts,
+        "loras": _scan_loras(),
+        "ollama_models": ollama_models,
+        "effective": {
+            "models": S.model_overrides(),
+            "comfyui_url": COMFYUI_URL,
+        },
+        # 生效方式说明（前端直接展示，避免用户改完不知道为什么没反应）
+        "effect_hint": {
+            "models": "即时生效（下一次生成任务按新档位选模）",
+            "lora": "即时生效（提交工作流时按开关处理）",
+            "accel.video_steps": "即时生效（下次提交采样参数）",
+            "accel.attention": "需重启 ComfyUI 生效（sage 需已安装 sageattention）",
+            "server": "需重启后端生效",
+        },
+    }
+
+
+@router.put("/settings")
+def settings_put(body: dict):
+    from . import settings as S
+    cfg = S.save(body or {})
+    need = []
+    if "server" in (body or {}):
+        need.append("重启后端")
+    if "accel" in (body or {}):
+        need.append("重启 ComfyUI")
+    return {"ok": True, "config": cfg, "need_restart": need}
+
+
+@router.get("/settings/loras")
+def settings_loras():
+    from . import settings as S
+    return {"dir": S.get("lora", "dir"), "loras": _scan_loras()}
+
+
+@router.post("/settings/restart-comfy")
+async def settings_restart_comfy():
+    """按当前启动参数重启 ComfyUI（改注意力后端等需要它）。
+
+    队列非空时拒绝：正在采样时重启会把任务打断成 interrupted。
+    """
+    try:
+        q = await ComfyUIAdapter().queue_state()
+        busy = bool(q.get("queue_running") or q.get("queue_pending"))
+    except Exception:
+        busy = False
+    if busy:
+        raise HTTPException(409, "ComfyUI 队列非空（正在推理/排队），等跑完再重启")
+    from .adapters import comfy_supervisor as sv
+    ok = await asyncio.to_thread(sv.restart)
+    return {"ok": ok, "comfy": sv.snapshot()}
+
 
 @router.get("/system")
 async def system():
