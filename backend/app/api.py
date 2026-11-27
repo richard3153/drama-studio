@@ -1707,6 +1707,7 @@ def list_shots(eid: int):
 
 
 class ShotUpdate(BaseModel):
+    shot_size: str | None = None    # 景别（导演台"景别"按钮写入）
     dialogue: str | None = None    # 台词（「角色名（语气）：台词」，说话镜/配音共用）
     ref_overrides: dict | None = None   # 手动指定参考 {"角色名": path, "__scene__": path}，空值=清除
     motion: dict | None = None     # 运动动作控制 {posture,gesture,expression,gaze,intensity,secondary}
@@ -1858,6 +1859,64 @@ def rebuild_episode_prompts(eid: int):
             db, eid, ep.project_id, p.style_preset or "anime_2d",
             bool(p.lifelike), bool(p.lifelike_full))
         return {"ok": True, "shots": n}
+
+
+# ---------- 导演台（对齐 RunningHub RHTV 的可视化控件，2026-11-27） ----------
+
+@router.get("/director/meta")
+def director_meta():
+    """摄像机控制枚举 + 镜头预设 + 风格库 + 人物调节词条（一次取全，前端本地筛选）。"""
+    from . import director
+    return director.meta()
+
+
+# 允许导演台一键写入的镜头字段白名单：只放开"镜头语言"字段，
+# 提示词/台词/参考图仍走各自通道，避免按钮误伤内容
+_DIRECTOR_FIELDS = {"shot_size", "camera_angle", "camera_move", "camera_speed",
+                    "camera_dir", "framing_start", "framing_end", "focal_length",
+                    "focus_transition", "transition_in", "character_path",
+                    "atmosphere", "needs_end_frame"}
+
+
+class DirectorApply(BaseModel):
+    fields: dict
+    reassemble: bool = True     # 写入后立刻整集重组装提示词（零 LLM，秒级）
+
+
+@router.post("/shots/{sid}/director-apply")
+def director_apply(sid: int, body: DirectorApply):
+    """导演台按钮 → 镜头字段：一次写入并重算本集提示词，让"点一下"真的改变出图。"""
+    with SessionLocal() as db:
+        s = db.get(Shot, sid)
+        if not s:
+            raise HTTPException(404, "镜头不存在")
+        applied = {}
+        for k, v in (body.fields or {}).items():
+            if k not in _DIRECTOR_FIELDS:
+                continue
+            if k == "needs_end_frame":
+                s.needs_end_frame = int(bool(v))
+            elif isinstance(v, str):
+                if hasattr(s, k):
+                    setattr(s, k, v[:200])
+            applied[k] = v
+        # 位移型运镜/人物轨迹自动挂尾帧（i2v 双帧需要终点）
+        if "camera_move" in applied or "character_path" in applied:
+            s.needs_end_frame = 1 if ((s.camera_move or "固定") in MOVING_CAMERA
+                                      or (s.character_path or "").strip()) else 0
+        db.commit()
+        ep = db.get(Episode, s.episode_id)
+        n = 0
+        if body.reassemble and ep:
+            p = db.get(Project, ep.project_id)
+            n = script_service.reassemble_episode_prompts(
+                db, ep.id, ep.project_id, p.style_preset or "anime_2d",
+                bool(p.lifelike), bool(p.lifelike_full))
+        db.refresh(s)
+        out = _shot_dict(s)
+        out["reassembled"] = n
+        out["applied"] = applied
+        return out
 
 
 # ---------- 镜头生成（M3：首帧 / 尾帧 / 视频 / 宫格） ----------

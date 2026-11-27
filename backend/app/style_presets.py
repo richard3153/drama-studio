@@ -698,6 +698,13 @@ def _take(slots: dict, key: str) -> str:
     return _clean(slots.get(key))
 
 
+def _clip_n(v: str, n: int = 6) -> str:
+    """截取前 n 个词：人物调节槽位要挤进短版设计图提示词，只留可执行的描述。"""
+    words = _clean(v).replace(",", " , ").split()
+    out = " ".join(words[:n]).replace(" , ", ", ").strip(" ,")
+    return out
+
+
 def get_style(preset_key: str) -> dict:
     return STYLE_PRESETS.get(preset_key) or STYLE_PRESETS[DEFAULT_PRESET]
 
@@ -724,7 +731,19 @@ def assemble_character_design_prompt(slots: dict, preset_key: str,
             parts.append(eth)
     # palette 不再注入：原设配色（青/绯）与"灰粗布"服装词冲突，
     # 实测会把粗布长衫染成青色/墨绿（2026-11-27）
-    parts.append("ancient chinese peasant outfit, coarse cloth texture")
+    #
+    # 人物调节（RHTV 面部/表情/妆容/体型/姿态/饰物）必须能落到图上：
+    # 六槽各留前 6 词追加在尾部——他们在参考图里本就是"表情头 + 材质 + 随身物件"
+    # 的信息来源，不给它们位置等于按钮点了不出效果。六槽全空时不占 token。
+    for key, label in (("face", ""), ("expression", "expression: "),
+                       ("makeup", "makeup: "), ("appearance", "build: "),
+                       ("pose", "posture: "), ("accessories", "wearing ")):
+        v = _clip_n(_take(slots, key), 6)
+        if v:
+            parts.append((label + v).strip())
+    # 材质尾：原先硬编码"古代中国农夫装"只适配林越一个角色，
+    # 其他角色/现代题材会被强行染成古装，改成通用布料质感
+    parts.append("coarse cloth texture, fabric folds visible")
     return ", ".join(p for p in parts if p)
 
 

@@ -555,6 +555,8 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
   const [motionFor, setMotionFor] = useState(null)
   const [motionDraft, setMotionDraft] = useState({})
   const openMotion = (s) => { setMotionFor(s.id); setMotionDraft({ ...(s.motion || {}) }) }
+  // 导演台（摄像机控制 / 运镜预设）
+  const [directorFor, setDirectorFor] = useState(null)
   const saveMotion = async () => {
     try {
       await patch(`/shots/${motionFor}`, { motion: motionDraft })
@@ -716,6 +718,8 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
                   title="查看本镜生成实际引用的角色/场景资产图，可手动指定换用">🔍 参考{(s.ref_overrides && Object.keys(s.ref_overrides).length) ? ' ✓' : ''}</button>
                 <button className="small ghost" onClick={() => openMotion(s)}
                   title="运动动作控制：身体姿态/手部动作/表情状态/视线/动作幅度/次级联动——把“做什么”钉到“怎么做”，压随机性">🎬 动作{Object.keys(s.motion || {}).length ? ' ✓' : ''}</button>
+                <button className="small ghost" onClick={() => setDirectorFor(s)}
+                  title="导演台：景别/机位/运镜/速度/焦段/焦点/转场按钮 + 运镜预设，点一下即写入并重算提示词">🎥 摄像</button>
                 <span className="ops-div" />
                 <button className="small ghost" disabled={!s.needs_end_frame && !s.video_path}
                   title="用本镜末帧重绘下一镜首帧，构图光影连贯"
@@ -880,6 +884,9 @@ function ShotsBoard({ episodeId, projectId, styleLock }) {
             </div>
           </div>
         </div>)}
+      {directorFor && <DirectorPanel shot={directorFor}
+        onClose={() => setDirectorFor(null)}
+        onApplied={load} />}
     </div>
   )
 }
@@ -974,6 +981,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const [msg, setMsg] = useState('')
   const [presets, setPresets] = useState({})
   const [genres, setGenres] = useState({})
+  const [styleLibOpen, setStyleLibOpen] = useState(false)
 
   useEffect(() => { api('/style-presets').then(setPresets).catch(() => {}) }, [])
   useEffect(() => { api('/style-genres').then(setGenres).catch(() => {}) }, [])
@@ -1149,7 +1157,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
     scenes: [['space', '空间结构'], ['era', '时代风格'], ['elements', '陈设元素'], ['light', '光线时段'], ['mood', '氛围']],
     props: [['category', '分类 core/bond'], ['subject', '本体'], ['purpose', '剧情功能'], ['era', '时代'], ['details', '细节'], ['material', '材质色彩'], ['interaction', '交互方式']],
   }
-  const MODE_LABEL = { sheet: '三视图 16:9', single: '单人立绘竖版', board: '角色板（全要素）' }
+  const MODE_LABEL = { sheet: '人物设计图 768×1024', single: '单人立绘竖版', board: '角色板（全要素）' }
 
   const slotsSummary = (c) => {
     const skip = ['name', 'description']
@@ -1179,9 +1187,9 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
                     <td style={{ color: 'var(--dim)', width: 200 }}>{c.description}</td>
                     {k === 'characters' && (
                       <td style={{ width: 150 }}>
-                        {/* 【硬性要求】角色资产必须三视图，版式选项已锁死 */}
-                        <select value="sheet" disabled style={{ width: '100%' }} title="角色资产硬性要求：必须为三视图">
-                          <option value="sheet">三视图 16:9（硬性要求）</option>
+                        {/* 【硬性要求】角色资产必须"人物设计图"版式，选项已锁死 */}
+                        <select value="sheet" disabled style={{ width: '100%' }} title="角色资产硬性要求：人物设计图（概念设定稿）">
+                          <option value="sheet">人物设计图 768×1024</option>
                         </select>
                       </td>
                     )}
@@ -1260,6 +1268,11 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
 
       <div className="card">
         <label>全局风格锁（{Object.keys(presets).length} 种预设，注入所有剧本拆解与生图提示词，保证全片画风统一）</label>
+        <div className="row" style={{ marginBottom: 4 }}>
+          <button className="small ghost" onClick={() => setStyleLibOpen(true)}
+            title="按分类 + 缩略卡片的风格库（对齐 RunningHub RHTV），点卡片即整体切换风格锁">🎨 打开风格库（{Object.keys(presets).length} 种）</button>
+          <span className="page-sub" style={{ fontSize: 11, marginLeft: 6 }}>卡片式浏览 + 搜索，比下拉框快</span>
+        </div>
         <div className="row">
           <select value={currentPreset} onChange={e => savePreset(e.target.value)} style={{ flex: 1 }}>
             {Object.entries(
@@ -1328,19 +1341,19 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
           </div>
 
           <div className="field">
-            <label className="switch-row" title="连三视图/角色板也加五官不完美；只建议分镜用，会牺牲跨集一致性">
+            <label className="switch-row" title="连角色设计图也加五官不完美；只建议分镜用，会牺牲跨集一致性">
               <input type="checkbox" checked={lifelikeFull} onChange={e => toggleLifelikeFull(e.target.checked)} />
               <span>全量瑕疵</span>
             </label>
-            <div className="field-hint">连三视图 / 角色板也加五官不完美。只建议分镜用，会牺牲跨集一致性。</div>
+            <div className="field-hint">连角色设计图也加五官不完美。只建议分镜用，会牺牲跨集一致性。</div>
           </div>
 
           <div className="field">
-            <label className="switch-row" title="分级：场景/道具/单人立绘 ON；三视图/角色板 OFF，可手动单张微调">
+            <label className="switch-row" title="分级：场景/道具 ON；角色设计图 OFF，可手动单张微调">
               <input type="checkbox" checked={autoPolish} onChange={e => toggleAutoPolish(e.target.checked)} />
               <span>初图 10% 微调</span>
             </label>
-            <div className="field-hint">分级执行：场景 / 道具 / 单人立绘 ON，三视图 / 角色板 OFF；可手动单张微调。</div>
+            <div className="field-hint">分级执行：场景 / 道具 ON，角色设计图 OFF；可手动单张微调。</div>
           </div>
 
           {(presets[currentPreset]?.category || '').includes('动漫') && (
@@ -1475,6 +1488,9 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
         </div>
       )}
       {msg && <div className="card" style={{ borderColor: 'var(--ok)' }}>{msg}</div>}
+      {styleLibOpen && <StyleLibraryModal project={project}
+        onClose={() => setStyleLibOpen(false)}
+        onApplied={() => { setPresets(x => ({ ...x })); }} />}
       <WizardBar stage="script" setStage={setStage} nextLabel="下一步：查看资产 →" />
     </div>
   )
@@ -1493,7 +1509,7 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
   const [versions, setVersions] = useState(asset.image_ids || [])
   const [delMsg, setDelMsg] = useState('')
   const defaultDims = () => (role === 'portrait'
-    ? [1344, 768]   // 【硬性要求】角色必须三视图横幅，竖版通道已废弃
+    ? [768, 1024]   // 【硬性要求】角色走"人物设计图"竖版稿（Qwen-Image 768×1024，约 40 秒）
     : (role === 'scene' ? [1216, 704] : [832, 1216]))
   const [w, setW] = useState(defaultDims()[0])
   const [h, setH] = useState(defaultDims()[1])
@@ -1639,22 +1655,22 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                 <label>结构化提示词槽位（改后自动按公式重组提示词，风格锁保持不变）</label>
                 {role === 'portrait' && (
                   <>
-                    <label>角色生成方式（三视图怎么出）</label>
+                    <label>角色生成方式（人物设计图怎么出）</label>
                     <div className="row" style={{ marginBottom: 6 }}>
                       <select value={genMode} onChange={e => {
                         const gm = e.target.value
                         setGenMode(gm)
                         if (gm === 'layout' || gm === 'compose') { setW(1344); setH(768) }
                       }} style={{ flex: 1 }}>
-                        <option value="auto">自动（Qwen-Image 整张版式：左特写+三视图+信息栏，转向/服装最准，约 8 分钟）</option>
-                        <option value="compose">SDXL 三视角拼版（正/侧/背分3次+PIL拼版，服装锁定）｜ 约 5 分钟</option>
-                        <option value="layout">Qwen-Image 整张版式｜ 8G 显存可跑（offload），单张一次成型</option>
+                        <option value="auto">自动（Qwen-Image 整张设计稿：中心立绘 + 服装分层 + 表情头 + 材质特写｜768×1024，约 40 秒）</option>
+                        <option value="layout">Qwen-Image 整张设计稿（同「自动」，指定走 Qwen 通道）</option>
+                        <option value="compose">SDXL 三视角拼版（旧版式，与设计图冲突·不推荐）</option>
                       </select>
                     </div>
                     <div className="row" style={{ marginBottom: 6 }}>
-                      <span style={{ color: 'var(--dim)', fontSize: 13 }}>构图模式：</span>
-                      <select value="sheet" disabled style={{ flex: 1 }} title="角色资产硬性要求：必须为三视图版式">
-                        <option value="sheet">三视图 16:9（硬性要求 · 不可更改）</option>
+                      <span style={{ color: 'var(--dim)', fontSize: 13 }}>版式：</span>
+                      <select value="sheet" disabled style={{ flex: 1 }} title="角色资产硬性要求：人物设计图（概念设定稿）">
+                        <option value="sheet">人物设计图 768×1024（概念设定稿 · 不可更改）</option>
                       </select>
                     </div>
                   </>
@@ -1676,6 +1692,7 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
                 </div>
                 <label style={{ marginTop: 8 }}>最终提示词（自动组装，可直接查看）</label>
                 <textarea value={prompt} readOnly style={{ minHeight: 70, color: 'var(--dim)' }} />
+                {role === 'portrait' && <CharacterAdjust slots={slots} onChange={setSlots} />}
               </>
             ) : (
               <>
@@ -1721,6 +1738,272 @@ function AssetEditor({ asset, models, onClose, refreshTasks, onDeleted }) {
   )
 }
 
+/* ---------- 导演台（对齐 RunningHub RHTV：按钮代替提示词碰运气） ---------- */
+// 元数据只取一次（摄像机枚举 / 预设 / 风格库 / 人物调节），之后本地筛选
+let __directorMeta = null
+async function loadDirectorMeta() {
+  if (!__directorMeta) __directorMeta = await get('/director/meta')
+  return __directorMeta
+}
+
+// 风格卡片缩略占位：按 key 生成稳定渐变（没有 28 张样张，用色相区分即可扫视）
+const styleTint = key => {
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 360
+  return `linear-gradient(135deg, hsl(${h} 42% 26%), hsl(${(h + 38) % 360} 46% 15%))`
+}
+
+function BtnRow({ title, hint, items, value, onPick, disabled }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+        <span style={{ fontSize: 12, color: 'var(--text-soft)', fontWeight: 600 }}>{title}</span>
+        <span style={{ fontSize: 11, color: 'var(--dim)' }}>{hint}</span>
+      </div>
+      <div className="dir-btns">
+        {items.map(it => (
+          <button key={it.v === '' ? '_empty' : it.v} disabled={disabled}
+            className={`dir-btn ${(value || '') === (it.v || '') ? 'on' : ''}`}
+            title={it.hint || ''} onClick={() => onPick(it.v)}>
+            {it.zh}{it.hint ? <em>{it.hint}</em> : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DirectorPanel({ shot, onClose, onApplied }) {
+  const [meta, setMeta] = useState(null)
+  const [s, setS] = useState(shot)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  useEffect(() => {
+    loadDirectorMeta().then(setMeta).catch(e => setMsg('导演台数据加载失败：' + e.message))
+  }, [])
+  // 每次点按钮：写字段 → 后端立刻重算本集提示词（零 LLM，秒级），
+  // 不然"点了按钮但出图不变"（出图只认 image_prompt）
+  const apply = async (fields, note) => {
+    setBusy(true)
+    try {
+      const r = await post(`/shots/${s.id}/director-apply`, { fields })
+      setS(x => ({ ...x, ...fields }))
+      setMsg(`✔ ${note}已写入（本集 ${r.reassembled} 镜提示词已重算）`)
+      onApplied && onApplied()
+    } catch (e) { setMsg('应用失败：' + e.message) }
+    finally { setBusy(false) }
+  }
+  const usePreset = (p) => {
+    const fields = {}
+    for (const [k, v] of Object.entries(p)) {
+      if (k === 'id' || k === 'zh' || k === 'desc') continue
+      fields[k] = v
+    }
+    apply(fields, `预设「${p.zh}」`)
+  }
+  const cur = {
+    shot_size: s.shot_size || '', camera_angle: s.camera_angle || '',
+    camera_move: s.camera_move || '固定', camera_speed: s.camera_speed || 'normal',
+    focal_length: s.focal_length || '', focus_transition: s.focus_transition || 'none',
+    transition_in: s.transition_in || '',
+  }
+  const c = meta?.camera
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ width: 'min(900px, 94vw)', maxHeight: '88vh', overflow: 'auto' }}>
+        <div className="modal-head">
+          <div className="page-title">🎥 导演台 · 第 {s.idx} 镜</div>
+          <button className="modal-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="page-sub" style={{ marginTop: -4 }}>
+          当前：{cur.shot_size} · {cur.camera_angle || '平视'} · {cur.camera_move}/{cur.camera_speed}
+          {cur.focal_length ? ` · ${cur.focal_length}` : ''}{cur.focus_transition !== 'none' ? ` · ${cur.focus_transition}` : ''}
+          ｜ 点按钮即写入镜头并重算提示词，不用再背运镜术语
+        </div>
+        {msg && <div className="card" style={{ borderColor: 'var(--ok)', margin: '8px 0', fontSize: 12 }}>{msg}</div>}
+        {!c ? <div className="page-sub">加载中…</div> : (
+          <>
+            <div style={{ fontSize: 12, color: 'var(--accent-strong)', margin: '10px 0 6px', fontWeight: 600 }}>
+              运镜预设（一键专业组合）
+            </div>
+            <div className="dir-presets">
+              {(meta.presets || []).map(p => (
+                <button key={p.id} className="dir-preset" disabled={busy} onClick={() => usePreset(p)}>
+                  <b>{p.zh}</b>
+                  <em>{p.desc}</em>
+                  <span style={{ fontSize: 10, color: 'var(--dim)', display: 'block', marginTop: 3 }}>
+                    {p.shot_size} · {p.camera_angle} · {p.camera_move}{p.camera_speed ? `/${p.camera_speed}` : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div style={{ height: 14 }} />
+            <BtnRow title="景别" hint="主体占多大画面" items={c.shot_size} value={cur.shot_size}
+              disabled={busy} onPick={v => apply({ shot_size: v }, `景别=${v}`)} />
+            <BtnRow title="机位" hint="摄影机的高度与方向" items={c.angle} value={cur.camera_angle}
+              disabled={busy} onPick={v => apply({ camera_angle: v }, `机位=${v}`)} />
+            <BtnRow title="运镜" hint="镜头怎么动（位移型自动挂尾帧）" items={c.move} value={cur.camera_move}
+              disabled={busy} onPick={v => {
+                const it = c.move.find(x => x.v === v)
+                apply({ camera_move: v, camera_dir: (it && it.dir) || '' }, `运镜=${v}`)
+              }} />
+            <BtnRow title="速度" hint="动得多快" items={c.speed} value={cur.camera_speed}
+              disabled={busy} onPick={v => apply({ camera_speed: v }, `速度=${v}`)} />
+            <BtnRow title="焦段" hint="决定空间压缩与透视" items={c.lens} value={cur.focal_length}
+              disabled={busy} onPick={v => apply({ focal_length: v }, `焦段=${v || '不限'}`)} />
+            <BtnRow title="焦点" hint="焦点放在谁身上" items={c.focus} value={cur.focus_transition}
+              disabled={busy} onPick={v => apply({ focus_transition: v }, `焦点=${v}`)} />
+            <BtnRow title="转场" hint="本镜从上一镜怎么进来" items={c.transition} value={cur.transition_in}
+              disabled={busy} onPick={v => apply({ transition_in: v }, `转场=${v || '默认'}`)} />
+            <label style={{ fontSize: 11 }}>人物轨迹（可手改，位移时首帧/尾帧都会用）</label>
+            <input defaultValue={s.character_path || ''}
+              placeholder="如 from left edge walks to the counter then turns back to camera"
+              onBlur={e => apply({ character_path: e.target.value }, '人物轨迹')}
+              style={{ width: '100%', fontSize: 12 }} />
+            <div style={{ height: 8 }} />
+            <div className="row">
+              <label style={{ fontSize: 11, color: 'var(--dim)' }}>
+                <input type="checkbox" checked={!!s.needs_end_frame}
+                  onChange={e => apply({ needs_end_frame: e.target.checked }, '尾帧')} /> 出尾帧（双帧 i2v 需要终点）
+              </label>
+            </div>
+            <div style={{ marginTop: 10 }} className="ops-row">
+              <button className="small ghost" onClick={onClose}>关闭</button>
+              <span style={{ fontSize: 11, color: 'var(--dim)' }}>
+                改完可用卡片上的「首帧 / 视频」重新生成，改动才落到画面上
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StyleLibraryModal({ project, onClose, onApplied }) {
+  const [lib, setLib] = useState(null)
+  const [cat, setCat] = useState('全部')
+  const [q, setQ] = useState('')
+  const [cur, setCur] = useState(project.style_preset)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  useEffect(() => { loadDirectorMeta().then(m => setLib(m.styles)).catch(e => setMsg('风格库加载失败：' + e.message)) }, [])
+  const use = async (key, label) => {
+    setBusy(true)
+    try {
+      const r = await put(`/projects/${project.id}`, { style_preset: key })
+      setCur(key)
+      project.style_preset = key
+      setMsg(`✔ 已套用「${label}」，${r.reassembled_prompts || 0} 个资产的提示词按新风格重组装（重新渲染即生效）`)
+      onApplied && onApplied(key)
+    } catch (e) { setMsg('套用失败：' + e.message) }
+    finally { setBusy(false) }
+  }
+  if (!lib) return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-head"><div className="page-title">🎨 风格库</div>
+          <button className="modal-x" onClick={onClose}>✕</button></div>
+        <div className="page-sub">{msg || '加载中…'}</div>
+      </div>
+    </div>
+  )
+  const items = lib.groups.flatMap(g => g.items.map(it => ({ ...it, category: g.name }))
+    // 搜索时跨全部分类（否则停在某一类里搜别的类名永远 0 结果）
+    .filter(it => q ? true : (cat === '全部' || it.category === cat)))
+    .filter(it => !q || (it.label + it.key + it.category).toLowerCase().includes(q.toLowerCase()))
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ width: 'min(1000px, 95vw)', height: '84vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-head">
+          <div className="page-title">🎨 风格库 · {lib.total} 种</div>
+          <button className="modal-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="row" style={{ marginBottom: 8 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="搜索风格（国风 / 赛博 / 电影…）"
+            style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: 'var(--dim)' }}>当前：{[...lib.groups.flatMap(g => g.items)].find(i => i.key === cur)?.label || cur}</span>
+        </div>
+        {msg && <div className="card" style={{ borderColor: 'var(--ok)', fontSize: 12, marginBottom: 8 }}>{msg}</div>}
+        <div className="style-lib" style={{ flex: 1, minHeight: 0 }}>
+          <div className="style-cats">
+            {['全部', ...lib.groups.map(g => g.name)].map(n => (
+              <button key={n} className={`style-cat ${cat === n ? 'on' : ''}`} onClick={() => setCat(n)}>
+                {n}<span style={{ float: 'right', opacity: .6, fontSize: 10 }}>
+                  {n === '全部' ? lib.total : lib.groups.find(g => g.name === n)?.items.length}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="style-grid">
+            {items.map(it => (
+              <div key={it.key} className={`style-card ${cur === it.key ? 'on' : ''}`}
+                title={it.sample} onClick={() => !busy && use(it.key, it.label)}>
+                <div className="style-thumb" style={{ background: styleTint(it.key) }}>{it.label}</div>
+                <div style={{ padding: '6px 8px' }}>
+                  <div style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {it.label}
+                    {cur === it.key && <span className="tag" style={{ fontSize: 10 }}>当前</span>}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--dim)', marginTop: 2 }}>
+                    {it.category} · {it.family}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!items.length && <div className="page-sub">没有匹配的风格</div>}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--dim)', marginTop: 6 }}>
+          套用后项目的风格锁整体切换（角色/场景/道具的提示词会按新锁重组装），已生成的旧图不动；要重新出图请回资产库点「重新渲染」。
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* 人物调节（对齐 RHTV「面部控制 / 姿态调整 / 形象设定 / 妆容调节」）：
+   点 chip 直接替换对应槽位（再点一次取消），不重画整张图，改完重渲才生效 */
+function CharacterAdjust({ slots, onChange }) {
+  const [meta, setMeta] = useState(null)
+  const [open, setOpen] = useState(false)
+  useEffect(() => { loadDirectorMeta().then(m => setMeta(m.character_adjust)).catch(() => {}) }, [])
+  if (!meta) return null
+  return (
+    <div style={{ margin: '4px 0 8px' }}>
+      <div className="row">
+        <button className="small ghost" onClick={() => setOpen(o => !o)}
+          title="按面部/表情/发型/妆容/体型/姿态/服装/饰物分区微调（只改这一项，不用重写整段提示词）">
+          🧑 人物调节{open ? ' ▲' : ' ▼'}
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--dim)' }}>点选即替换对应槽位，再点一次取消；改完点「重新渲染」</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 6, border: '1px solid var(--border)', borderRadius: 10, padding: '8px 10px' }}>
+          {meta.map(g => (
+            <div key={g.slot} style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11.5, color: 'var(--text-soft)', marginBottom: 4 }}>
+                {g.zh}<span style={{ color: 'var(--dim)', marginLeft: 6 }}>{g.hint}</span>
+              </div>
+              <div className="mini-chips">
+                {g.chips.map(c => (
+                  <button key={c.en} className={`mini-chip ${(slots[g.slot] || '') === c.en ? 'on' : ''}`}
+                    title={c.en}
+                    onClick={() => onChange({ ...slots, [g.slot]: (slots[g.slot] || '') === c.en ? '' : c.en })}>
+                    {c.zh}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ---------- P2 资产库 ---------- */
 function AssetsPage({ project, refreshTasks, setStage }) {
   const [data, setData] = useState(null)
@@ -1730,6 +2013,7 @@ function AssetsPage({ project, refreshTasks, setStage }) {
   const [stash, setStash] = useState([])
   const [stashIds, setStashIds] = useState({})
   const [stashBusy, setStashBusy] = useState(false)
+  const [styleLib, setStyleLib] = useState(false)
 
   const load = () => api(`/projects/${project.id}/assets`).then(setData)
   const loadStash = () => api(`/projects/${project.id}/stash`).then(setStash).catch(() => {})
@@ -1837,6 +2121,11 @@ function AssetsPage({ project, refreshTasks, setStage }) {
     <div>
       <div className="page-title">资产库 · {project.name}</div>
       <div className="page-sub">每个资产都可以手动调整：改提示词、选模型档位、重新渲染追加新版本</div>
+      <div className="row" style={{ margin: '8px 0 12px' }}>
+        <button className="small ghost" onClick={() => setStyleLib(true)}
+          title="对齐 RunningHub RHTV 的风格库：分类 + 搜索 + 缩略卡片，点卡片整体切换全片画风">🎨 风格库</button>
+        <span className="page-sub" style={{ fontSize: 11 }}>当前：{project.style_preset}｜切完风格请按方案重渲，旧图不会自己变</span>
+      </div>
       {notice && <div className="card" style={{ borderColor: 'var(--ok)' }}>{notice}</div>}
       {stashCard}
       {wall(data.characters, 'character')}
@@ -1845,6 +2134,8 @@ function AssetsPage({ project, refreshTasks, setStage }) {
       {editing && <AssetEditor asset={editing} models={models} refreshTasks={refreshTasks}
         onDeleted={load}
         onClose={(reload, note) => { setEditing(null); if (reload) load(); if (note) setNotice(note) }} />}
+      {styleLib && <StyleLibraryModal project={project} onClose={() => setStyleLib(false)}
+        onApplied={() => load()} />}
       <WizardBar stage="assets" setStage={setStage || (() => {})} nextLabel="下一步：分镜镜头卡 →" />
     </div>
   )

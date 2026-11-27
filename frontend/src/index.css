@@ -598,3 +598,78 @@ button.small.accent {
 @media (max-width: 760px) {
   .cfg-grid { grid-template-columns: 1fr; }
 }
+
+/* ============================================================
+   导演台 / 风格库 / 人物调节（对齐 RunningHub RHTV 的可视化控件）
+   原则：按钮=可点即生效，选中态琥珀描边+辉光，未选态低对比不抢戏
+   ============================================================ */
+
+/* 摄像机控制按钮组：两行内可扫完，按钮带一行"后果"小字 */
+.dir-btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.dir-btn {
+  position: relative; padding: 6px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--panel2); color: var(--text-soft);
+  font-size: 12px; line-height: 1.25; text-align: left; cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.dir-btn em { display: block; font-style: normal; font-size: 10px; color: var(--dim); margin-top: 1px; }
+.dir-btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--panel3); }
+.dir-btn.on {
+  border-color: var(--accent); background: rgba(245, 166, 35, .14);
+  color: var(--accent-strong); box-shadow: var(--ring);
+}
+.dir-btn.on em { color: rgba(245, 166, 35, .72); }
+.dir-btn:disabled { opacity: .5; cursor: default; }
+
+/* 运镜预设卡：标题 + 一句话效果 + 参数摘要 */
+.dir-presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+.dir-preset {
+  display: block; width: 100%; padding: 9px 11px; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel2);
+  color: var(--text); font-size: 12px; transition: border-color .12s, background .12s, transform .12s;
+}
+.dir-preset b { font-size: 12.5px; font-weight: 600; }
+.dir-preset em { display: block; font-style: normal; font-size: 11px; color: var(--dim); margin-top: 2px; }
+.dir-preset:hover:not(:disabled) { border-color: var(--accent); background: var(--panel3); }
+.dir-preset:active { transform: scale(.985); }
+.dir-preset:disabled { opacity: .55; cursor: default; }
+
+/* 风格库：左分类栏 + 右卡片网格（滚动区独立，头尾固定） */
+.style-lib { display: flex; gap: 12px; min-height: 0; }
+.style-cats { width: 128px; flex: 0 0 128px; display: flex; flex-direction: column; gap: 3px; overflow: auto; }
+.style-cat {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 7px 10px; border-radius: var(--radius-sm); border: 1px solid transparent;
+  background: transparent; color: var(--dim); font-size: 12px; cursor: pointer; text-align: left;
+}
+.style-cat:hover { background: var(--panel2); color: var(--text-soft); }
+.style-cat.on { background: var(--panel3); color: var(--accent-strong); border-color: var(--border-strong); }
+.style-cat span { font-size: 10px; opacity: .55; }
+.style-grid {
+  flex: 1; min-width: 0; display: grid; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 10px;
+  overflow: auto; padding-right: 4px;
+}
+.style-card {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--panel2); cursor: pointer; transition: border-color .12s, transform .12s;
+}
+.style-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.style-card.on { border-color: var(--accent); box-shadow: var(--ring); }
+/* 缩略：没有真实样张，用稳定色相渐变 + 风格名做"可扫视"的视觉编码 */
+.style-thumb {
+  height: 66px; display: flex; align-items: center; justify-content: center;
+  padding: 6px 8px; font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  color: rgba(255, 255, 255, .93); text-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+}
+
+/* 人物调节：分区 chips（点选替换该槽位，再点取消） */
+.mini-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mini-chip {
+  padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel2); color: var(--text-soft); font-size: 11.5px; cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.mini-chip:hover { border-color: var(--border-strong); background: var(--panel3); }
+.mini-chip.on { border-color: var(--accent); background: rgba(245, 166, 35, .16); color: var(--accent-strong); }
+

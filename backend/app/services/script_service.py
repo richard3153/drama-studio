@@ -118,6 +118,18 @@ ANGLE_EN = {
     "POV": "first-person POV shot, immediate surroundings at frame edge",
     "主观": "first-person POV shot, immediate surroundings at frame edge",
 }
+# 机位短词（导演台按钮专用）：首帧短模板只有 77 token 预算，
+# 机位只留"能被模型直接执行"的构图词，不带心理释义从句
+ANGLE_SHORT = {
+    "平视": "",
+    "俯拍": "high-angle shot",
+    "仰拍": "low-angle shot",
+    "过肩": "over-the-shoulder shot",
+    "斜角": "dutch angle",
+    "航拍": "aerial view from directly above",
+    "POV": "POV shot",
+    "主观": "POV shot",
+}
 # 焦段词典（BFA/Domer 镜头语言）：焦距决定空间关系与透视，不是装饰词
 LENS_EN = {
     "24mm": "24mm wide-angle lens, expanded space, slight edge distortion",
@@ -336,6 +348,20 @@ def _framing_short(size_raw: str) -> str:
     _en_size 会带解释从句（"close-up, face fills the frame, subtle micro-expression visible"），
     短提示词里只要景别本身。"""
     return _clip_words(_en_size(size_raw or "").split(",")[0], 4)
+
+
+def _framing_angle_short(size_raw: str, angle_raw: str = "") -> str:
+    """景别 + 机位短语（导演台"机位"按钮的画面后果）。
+
+    机位决定心理关系（仰拍=主角强势 / 俯拍=被观察 / 斜角=不安 / 过肩=站在身后），
+    但平视是默认基准不写（省 token，也给 77 token 预算留位置）。
+    """
+    size = _framing_short(size_raw)
+    a = (angle_raw or "").strip()
+    if not a or a == "平视":
+        return size
+    ang = ANGLE_SHORT.get(a) or _clip_words(_en_angle(a).split(",")[0], 3)
+    return f"{size}, {ang}" if size else ang
 
 
 def _light_short(light: str) -> str:
@@ -1408,8 +1434,11 @@ def _assemble_shot_prompts(db, project_id: int, preset: str, shots: list[dict],
             "scene_short": _scene_short(scene_concept),
             "props_short": _props_short(_props),
             "light_short": _light_short(slots_en.get("light", "")),
-            "framing_short": _framing_short(slots_en.get("shot_size", "")),
-            "framing_end_short": _framing_short(slots_en.get("framing_end", "") or slots_en.get("shot_size", "")),
+            "framing_short": _framing_angle_short(slots_en.get("shot_size", ""),
+                                                 shot.get("camera_angle", "")),
+            "framing_end_short": _framing_angle_short(
+                slots_en.get("framing_end", "") or slots_en.get("shot_size", ""),
+                shot.get("camera_angle", "")),
             "lifelike": _lf,
             # 动作镜识别（打斗词库）：命中打击/追逐词 → 注入动态姿态词
             # 特效镜识别（特效词库 #81）：金光/慢镜/雨夜等 → 注入特效编排词
@@ -1684,8 +1713,9 @@ def reassemble_episode_prompts(db, episode_id: int, project_id: int, preset: str
             "scene_short": _scene_short(scene_concept),
             "props_short": _props_short(_props),
             "light_short": _light_short(r.light),
-            "framing_short": _framing_short(r.shot_size or ""),
-            "framing_end_short": _framing_short(r.framing_end or r.shot_size or ""),
+            "framing_short": _framing_angle_short(r.shot_size or "", r.camera_angle or ""),
+            "framing_end_short": _framing_angle_short(
+                r.framing_end or r.shot_size or "", r.camera_angle or ""),
             "lifelike": _lf,
             # 风格词库+题材词库 + 拍点张力 token（hook/peak/cliffhanger 镜头获得
             # 更强的表演张力词，把留存波形落到提示词层面）
