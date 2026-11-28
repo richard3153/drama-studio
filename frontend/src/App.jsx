@@ -982,14 +982,15 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
   const [presets, setPresets] = useState({})
   const [genres, setGenres] = useState({})
   const [styleLibOpen, setStyleLibOpen] = useState(false)
+  // 风格锁当前值：弹窗套用后要立刻反映到信息条，不能只 mutate project 对象（React 不会重渲染）
+  const [curPresetKey, setCurPresetKey] = useState(project.style_preset || '')
 
-  // 风格预设：拿全量并带 hidden 标记，下拉只列可见的；当前项目若正用着"暂不适用"的风格，
-  // 仍把它显示出来（带后缀），不然下拉会空白、看不出当前是什么
+  // 全量预设（含 hidden 标记）：信息条要能显示"当前用的正好是暂不适用风格"这种情况
   useEffect(() => { api('/style-presets?include_hidden=true').then(setPresets).catch(() => {}) }, [])
   useEffect(() => { api('/style-genres').then(setGenres).catch(() => {}) }, [])
 
-  const savePreset = async (key) => { await put(`/projects/${project.id}`, { style_preset: key }); project.style_preset = key }
-  const currentPreset = project.style_preset || 'anime_2d'
+  // 风格锁：下拉已降级为只读信息条，切换统一走风格库弹窗（弹窗内 apply 有失败反馈）
+  const currentPreset = curPresetKey || project.style_preset || 'anime_2d'
   const presetEntries = Object.entries(presets)
   const visiblePresetEntries = presetEntries.filter(([, v]) => !v.hidden)
   const curPresetHidden = !!presets[currentPreset]?.hidden
@@ -1292,28 +1293,19 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
 
       <div className="card">
         <label>全局风格锁（{visiblePresetEntries.length} 种预设，注入所有剧本拆解与生图提示词，保证全片画风统一）</label>
-        <div className="row" style={{ marginBottom: 4 }}>
-          <button className="small ghost" onClick={() => setStyleLibOpen(true)}
-            title="按分类 + 缩略卡片的风格库（对齐 RunningHub RHTV），点卡片即整体切换风格锁">🎨 打开风格库（{visiblePresetEntries.length} 种）</button>
-          <span className="page-sub" style={{ fontSize: 11, marginLeft: 6 }}>卡片式浏览 + 搜索，比下拉框快</span>
+        <div className="style-lock-bar" role="button" tabIndex={0}
+          onClick={() => setStyleLibOpen(true)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setStyleLibOpen(true) } }}
+          title="只读展示当前风格锁；点「打开风格库」或本条即可切换">
+          <span className="style-lock-name">{presets[currentPreset]?.label || currentPreset}</span>
+          {curPresetHidden && <span className="tag" style={{ fontSize: 10 }}>暂不适用</span>}
+          <span className="style-lock-meta">
+            {[presets[currentPreset]?.category, presets[currentPreset]?.family].filter(Boolean).join(' · ')}
+          </span>
+          <button className="small ghost" onClick={e => { e.stopPropagation(); setStyleLibOpen(true) }}>🎨 打开风格库</button>
         </div>
-        <div className="row">
-          <select value={currentPreset} onChange={e => savePreset(e.target.value)} style={{ flex: 1 }}>
-            {Object.entries(
-              (curPresetHidden ? [...visiblePresetEntries, [currentPreset, presets[currentPreset]]] : visiblePresetEntries)
-                .reduce((acc, [k, v]) => {
-                  (acc[v.category] = acc[v.category] || []).push([k, v])
-                  return acc
-                }, {})
-            ).map(([cat, items]) => (
-              <optgroup key={cat} label={`── ${cat} ──`}>
-                {items.map(([k, v]) => <option key={k} value={k}>{v.label}{v.hidden ? '（暂不适用）' : ''}</option>)}
-              </optgroup>
-            ))}
-          </select>
-          <span className="page-sub" style={{ fontSize: 12, flex: 2 }}>{presets[currentPreset]?.style_lock}</span>
-        </div>
-        <div className="page-sub" style={{ fontSize: 12, marginTop: 4 }}>视频动态策略：{presets[currentPreset]?.motion_hint}</div>
+        <div className="page-sub" style={{ fontSize: 12, marginTop: 6 }}>锁词：{presets[currentPreset]?.style_lock}</div>
+        <div className="page-sub" style={{ fontSize: 12, marginTop: 2 }}>视频动态策略：{presets[currentPreset]?.motion_hint}</div>
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
           <label style={{ fontSize: 12 }}>全片光影 / 色彩（滤镜层，纯提示词 · 不耗 token · 不调云端）</label>
           <div className="row" style={{ marginTop: 4 }}>
@@ -1534,7 +1526,7 @@ function ScriptPage({ project, refreshTasks, setStage, setAssetsVersion }) {
       {msg && <div className="card" style={{ borderColor: 'var(--ok)' }}>{msg}</div>}
       {styleLibOpen && <StyleLibraryModal project={project}
         onClose={() => setStyleLibOpen(false)}
-        onApplied={() => { setPresets(x => ({ ...x })); }} />}
+        onApplied={k => { setCurPresetKey(k); setPresets(x => ({ ...x })) }} />}
       <WizardBar stage="script" setStage={setStage} nextLabel="下一步：查看资产 →" />
     </div>
   )
@@ -2032,17 +2024,14 @@ function StyleLibraryModal({ project, onClose, onApplied }) {
               <div key={it.key} className={`style-card ${cur === it.key ? 'on' : ''}`}
                 title={it.sample} onClick={() => !busy && use(it.key, it.label)}>
                 <div className="style-thumb" style={{ background: styleTint(it.key) }}>
-                  <span>{it.label}</span>
                   {it.thumb && <img src={it.thumb} alt="" loading="lazy"
                     onError={e => { e.currentTarget.style.display = 'none' }} />}
+                  <span className="style-thumb-name">{it.label}</span>
+                  {cur === it.key && <span className="style-thumb-cur">当前</span>}
                 </div>
                 <div style={{ padding: '6px 8px' }}>
-                  <div style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
-                    {it.label}
-                    {cur === it.key && <span className="tag" style={{ fontSize: 10 }}>当前</span>}
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--dim)', marginTop: 2 }}>
-                    {it.category} · {it.family}
+                  <div style={{ fontSize: 11, color: 'var(--dim)' }}>
+                    {[it.category, it.family].filter(Boolean).join(' · ')}
                   </div>
                 </div>
               </div>

@@ -648,6 +648,9 @@ button.small.accent {
 .style-grid {
   flex: 1; min-width: 0; display: grid; align-content: start;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 10px;
+  /* 关键：auto 行在确定高度的容器里会被压扁（卡片高度塌成行高、底下信息与图上名字条被裁），
+     这里显式按内容撑开行高，超出部分交给 overflow 滚动 */
+  grid-auto-rows: max-content;
   overflow: auto; padding-right: 4px;
 }
 .style-card {
@@ -657,21 +660,42 @@ button.small.accent {
 .style-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
 .style-card.on { border-color: var(--accent); box-shadow: var(--ring); }
 /* 缩略：优先用生成的示例图（384×512，同一主体同一构图，横切保脸），
-   没图时退回稳定色相渐变 + 风格名做"可扫视"的视觉编码 */
+   没图时退回稳定色相渐变 + 风格名做"可扫视"的视觉编码；
+   风格名叠在图底部（渐变条 + 文字），保证有图时也能一眼看到名字 */
 .style-thumb {
-  position: relative; height: 118px; display: flex; align-items: center; justify-content: center;
+  position: relative; height: 124px; display: flex; align-items: center; justify-content: center;
   padding: 0; overflow: hidden; font-size: 12px; font-weight: 600; letter-spacing: .02em;
   color: rgba(255, 255, 255, .93); text-shadow: 0 1px 3px rgba(0, 0, 0, .55);
 }
-.style-thumb span {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  padding: 6px 8px; text-align: center;
-}
 .style-thumb img {
-  position: relative; z-index: 1;
+  position: absolute; inset: 0; z-index: 0;
   width: 100%; height: 100%; display: block; object-fit: cover; object-position: center 26%;
 }
+.style-thumb-name {
+  position: absolute; z-index: 2; left: 0; right: 0; bottom: 0;
+  padding: 18px 8px 6px; text-align: left; font-size: 12px; color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .85), 0 0 8px rgba(0, 0, 0, .55);
+  background: linear-gradient(to top, rgba(0, 0, 0, .80), rgba(0, 0, 0, .35) 58%, transparent);
+  pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.style-thumb-cur {
+  position: absolute; z-index: 3; top: 6px; right: 6px; padding: 1px 7px; border-radius: 999px;
+  background: rgba(245, 166, 35, .94); color: #191106; font-size: 10px; font-weight: 700;
+  letter-spacing: .02em;
+}
 .style-card:hover .style-thumb img { transform: scale(1.03); transition: transform .25s ease; }
+
+/* 剧本页风格锁：下拉降级为只读信息条（切换统一走风格库弹窗） */
+.style-lock-bar {
+  display: flex; align-items: center; gap: 8px; margin-top: 2px; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel2);
+  cursor: pointer; transition: border-color .12s, background .12s;
+}
+.style-lock-bar:hover { border-color: var(--border-strong); background: var(--panel3); }
+.style-lock-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.style-lock-name { font-size: 13px; font-weight: 600; }
+.style-lock-meta { font-size: 11px; color: var(--dim); }
+.style-lock-bar button { margin-left: auto; }
 
 /* 人物调节：分区 chips（点选替换该槽位，再点取消） */
 .mini-chips { display: flex; flex-wrap: wrap; gap: 6px; }
