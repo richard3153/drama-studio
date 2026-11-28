@@ -237,7 +237,8 @@ Register-ScheduledTask -TaskName "ComfyUI-Watchdog" -Action $a -Trigger $t2 -Set
    - `DRAMA_COMFYUI_URL` / `DRAMA_OLLAMA_URL`：服务地址（面板保存时自动写入）
    - `DRAMA_FFMPEG`：ffmpeg 路径（默认自动探测 PATH，回退 ComfyUI Desktop 自带版）
 4. **工作流**：`backend/workflows/*.json` 均为 ComfyUI **API 格式**模板，节点名与你的 custom_node 版本不一致时可在 ComfyUI 里「导出(API)」后同名替换。
-5. **本地音色库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_jimu_library.py` 一次抓取 1248 款参考音频到 `backend/data/voice_library/`（571MB，断点续传，中断后重跑只补缺）；不抓也能用，面板里只会显示一份空库。
+5. **本地音色库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_jimu_library.py` 一次抓取 1248 款参考音频到 `backend/data/voice_library/`（571MB，断点续传，中断后重跑只补缺）；不抓也能用，面板里只会显示一份空库。抓完在「音色源」页签的分类按钮上一键整批写入清单。
+6. **本地音效库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_pixabay_sfx.py --preset core --pages 4 --limit 260` 抓 Pixabay 免版税音效到 `backend/data/sfx_library/`（断点续传，可反复追加）；成片页「音频分轨」里挂 BGM 与逐镜贴片音，合成时自动与台词轨混合。
 
 ### 生产流程（UI 引导式）
 
@@ -277,14 +278,54 @@ backend/
   workflows/             # 16 个 ComfyUI API 工作流模板（含 prop_text_inpaint 局部改字、
                          #   prop_text_moss 中文文字、prop_text_ideogram4 英文文字）
     voice_library.py     # 本地音色库：索引 data/voice_library/index.json（1248 款参考音频）分页/筛选/试听/加入清单
+                         #   + 分类整批写入（add_category：一次 load/一次 write，1248 条约 1.6 秒）
+    sfx_library.py       # 本地音效库：索引 data/sfx_library/index.json + media/，按元数据自动分四轨（BGM/环境/人声/动作）
+    audio_mix.py         # 音频分轨编排：data/projects/<pid>/audio_mix/ep<eid>.json（原子写），BGM + 每镜贴片音
   tools/
     gen_style_samples.py # 风格库示例缩略图批量生成（Qwen-Image，同一主体同一构图，断点续跑）
     fetch_jimu_library.py# 抓取积木音色库 1248 款参考音频到 data/voice_library/（断点续传，571MB/约 1.5 分钟）
+    fetch_pixabay_sfx.py # 抓 Pixabay 免版税音效到 data/sfx_library/（curl_cffi 过 CF + 全局限速 + 断点续传）
   data/
     style_samples/       # 57 张风格示例缩略图（384×512 jpg，GET /api/style-samples/{key}.jpg 供图）
 frontend/
   src/App.jsx            # 单文件 React 应用（项目/剧本/资产/分镜/配音/成片六页面）
 ```
+
+## 本地音效库与四轨混音（BGM / 环境 / 人声 / 动作）
+
+成片的声音不是"台词轨独奏"：`voice_service.export_final` 现在按四轨合成——**台词轨**（逐镜 TTS，原有逻辑不动）+ **BGM 铺底**（整集循环、首尾淡入淡出）+ **每镜贴片音**（动作打击 / 场景环境 / 人声反应，按镜头起点用 `adelay` 贴上）。
+
+音效素材来自 **Pixabay 免版税音效库**（约 13 万条，商用免署名），抓取器 `backend/tools/fetch_pixabay_sfx.py`：
+
+```powershell
+# 1) 骨架：core 词包（rain/thunder/wind/ocean/whoosh/hit/… 等 65 词）
+backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset core --pages 8 --limit 700 --workers 2 --delay 1.2
+
+# 2) 精选扩库：extended 词包（夜间/医院/地铁/电梯/枪械/魔法/钢琴/二胡/情绪 等 132 词）
+backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset extended --pages 20 --limit 2600 --workers 2 --delay 1.2
+
+# 3) 两组叠加（耗时更长）
+backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset all --pages 20 --limit 5000
+```
+
+- 断点续传：索引里已有的 id 跳过、已下载且 >1KB 的文件跳过，随时中断随时重跑（分批串行跑，避免两个进程同时写 index）。
+- 落地：`backend/data/sfx_library/index.json`（id → 名称/描述/时长/作者/标签/mp3 直链）+ `media/<id>.mp3`，不进 git。
+- 抓取靠 `curl_cffi`（impersonate=chrome）+ 线程局部 Session + 预热首页绕过 Cloudflare；突发会触发挑战页，停下来等 1~2 分钟即恢复。
+- **规模口径**：实测 298 条约 793MB（长环境音可达 7~8MB/条）；13 万条全量约 **350GB / 20~50 小时**，不做全量镜像。本项目按**精选建库**跑：core + extended 两批共约 3000~4500 条（≈8~13GB），四轨各覆盖数百到上千条，足够覆盖短剧剪辑的 BGM / 环境 / 人声 / 动作需求；需要更多再按词补跑（断点续传）。
+
+元数据自动分轨（`sfx_library.track_of()`，关键词启发式）：`bgm`（music/loop/theme…）、`amb`（rain/wind/ocean/forest…）、`voice`（crowd/laugh/scream…）、`sfx`（hit/whoosh/explosion…），兜底 `sfx`。
+
+编排与接口：
+
+| 接口 | 作用 |
+|---|---|
+| `GET /api/sfx?q=&track=&page=&size=&max_dur=` | 库浏览（带 stats：条数 / 已下载 / 体积 / 四轨分布） |
+| `GET /api/sfx/{id}/audio` | 原声试听（FileResponse） |
+| `GET /api/audio-mix?project_id=&episode_id=` | 读该集分轨编排（带解析后的 ok/name） |
+| `PUT /api/audio-mix/bgm` | 挂 BGM `{ref, volume, fade_in, fade_out}` |
+| `PUT /api/audio-mix/shot` | 挂某镜贴片音 `{idx, ref, volume, offset}`（`ref=""` 即清除） |
+
+编排存 `data/projects/<pid>/audio_mix/ep<eid>.json`（**原子写**：tmp + fsync + replace，避免重启时留下 0 字节坏文件）。成片页「音频分轨」面板：BGM 下拉 + 音量滑杆、逐镜一行（镜号 / 音效 / 试听 / 音量），空库时提示跑抓取脚本。
 
 ## 已验证的低显存实测数据（RTX 4070 Laptop 8GB）
 
@@ -313,7 +354,7 @@ frontend/
 |---|---|---|
 | 0 | **后台配置**（顶部分四个选项卡：模型档位 / LoRA 与加速 / 服务与路径 / 音色源（本地），前四类写回 `data/settings.yaml`） | ![配置](docs/screenshots/01_settings.png) |
 | 0b | **音色源（本地）**（音色清单从硬编码迁到 `data/voice_sources.yaml`：14 个内置 edge 音色 + 可增删的本地音色；全局切 edge-tts / 本地 HTTP 服务，带连接探测与逐条试听） | ![音色源](docs/screenshots/09_voice_source.png) |
-| 0c | **本地音色库**（1248 款真实录音参考音频（公开音色库 voice.jimu.chat，571MB）落到本机，按名称/编号/分类/标签搜索 + 性别与分类筛选 + 分页；试听直接播原声，"加入"或"批量加入本页"写进配音清单） | ![音色库](docs/screenshots/10_voice_library.png) |
+| 0c | **本地音色库**（1248 款真实录音参考音频（公开音色库 voice.jimu.chat，571MB）落到本机，按名称/编号/分类/标签搜索 + 性别与分类筛选 + 分页；试听直接播原声，"加入"或"批量加入本页"写进配音清单；分页条下方一排**分类整批写入**按钮（7 大分类一次进清单，约 1.6 秒）+「清空积木分组」撤销） | ![音色库](docs/screenshots/10_voice_library.png) |
 | 1 | **项目中心**（新建项目：名称 + 一句话描述；卡片直达工作台） | ![项目](docs/screenshots/02_projects.png) |
 | 2 | **剧本工坊**（全局风格锁只读信息条 + 锁词 / 光影滤镜 / 题材词库 / 画幅与转场开关；大纲、分集列表、本集剧本同屏） | ![剧本](docs/screenshots/03_script.png) |
 | 2b | **风格库**（39 种可见风格 / 8 分类，卡片缩略图底部叠风格名，选中项右上角「当前」；点卡片整体切换风格锁） | ![风格库](docs/screenshots/04_style_library.png) |
@@ -321,6 +362,8 @@ frontend/
 | 4 | **分镜时间轴**（逐镜镜头卡：首帧 / 尾帧 / 视频 / 说话镜、参考·动作·摄像、接力与向后重链、续写；顶部分镜进度条） | ![分镜](docs/screenshots/06_storyboard.png) |
 | 5 | **配音**（按角色锁定音色 + 语气层，逐句 edge-tts，零显存） | ![配音](docs/screenshots/07_voice.png) |
 | 6 | **成片**（时间线粗剪：绿=有视频 / 黄=仅首帧；台词配音 → 混音 → SRT 字幕 → 剪映草稿 & FCPXML） | ![成片](docs/screenshots/08_export.png) |
+| 6b | **音频分轨**（成片页四轨编排：BGM 铺底 + 逐镜贴片音（动作/环境/人声），音效来自本地 Pixabay 音效库，支持跨轨检索；合成时 `amix` 与台词轨混合、BGM 循环铺满并首尾淡入淡出） | ![分轨](docs/screenshots/12_audio_mix_search.png) |
+| 6c | **本地音效库**（设置页第 4 组：条数/体积 badge、逐条用途胶囊（环境·动作·人声·BGM 一键改轨）、试听） | ![音效库](docs/screenshots/12_sfx_library.png) |
 | 附 | **光影滤镜效果**（同镜头只换滤镜词块：左 黄金时刻 / 右 青橙电影调） | ![滤镜](docs/light_grade_compare.png) |
 
 ## License

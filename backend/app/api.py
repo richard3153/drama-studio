@@ -2497,6 +2497,94 @@ def voice_library_add_batch(body: VoiceLibraryBatchIn):
     return voice_library.add_batch(body.codes)
 
 
+class VoiceLibraryCategoryIn(BaseModel):
+    category: str
+    gender: str = ""
+
+
+@router.post("/voice-library/add-category")
+def voice_library_add_category(body: VoiceLibraryCategoryIn):
+    """按分类整批写入（如「定制与克隆」391 条）：返回 {added, skipped, matched, state}。"""
+    from . import voice_library
+    try:
+        return voice_library.add_category(body.category, body.gender)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/voice-library/remove-all")
+def voice_library_remove_all():
+    """清空「积木音色库」分组（撤销整批写入；内置 edge 音色不受影响）。"""
+    from . import voice_library
+    return voice_library.remove_library()
+
+
+# ---------------------------------------------------------------- 音效库（分轨素材）
+@router.get("/sfx")
+def sfx_list(q: str = "", track: str = "", page: int = 1, size: int = 20, max_dur: float = 0):
+    """本地音效库：q 搜名称/描述/标签/作者，track 分类（bgm/amb/voice/sfx），按下载状态与时长排序。"""
+    from . import sfx_library
+    return sfx_library.query(q, track, page, size, max_dur)
+
+
+@router.get("/sfx/{sid}/audio")
+def sfx_audio(sid: str):
+    from . import sfx_library
+    p = sfx_library.audio_path(sid)
+    if not p:
+        raise HTTPException(404, f"音效 {sid} 还没下载完成")
+    mt = "audio/mpeg" if p.suffix.lower() == ".mp3" else "audio/wav"
+    return FileResponse(p, media_type=mt, filename=p.name)
+
+
+@router.put("/sfx/{sid}/track")
+def sfx_set_track(sid: str, payload: dict):
+    """人工纠正分轨：payload {"track": "bgm|amb|voice|sfx"}，传空串恢复自动归类。"""
+    from . import sfx_library
+    return sfx_library.set_track(sid, str(payload.get("track") or ""))
+
+
+@router.get("/audio-mix")
+def audio_mix_get(project_id: int, episode_id: int):
+    """成片分轨编排：BGM + 每镜贴片音（台词轨由配音模块自动排布，不在这里）。"""
+    from . import audio_mix
+    return audio_mix.summary(project_id, episode_id)
+
+
+class AudioMixBgmIn(BaseModel):
+    project_id: int
+    episode_id: int
+    ref: str = ""
+    volume: float | None = None      # None = 沿用已保存值（只改 ref 时不冲掉音量/淡入淡出）
+    fade_in: float | None = None
+    fade_out: float | None = None
+
+
+@router.put("/audio-mix/bgm")
+def audio_mix_bgm(body: AudioMixBgmIn):
+    from . import audio_mix
+    audio_mix.set_bgm(body.project_id, body.episode_id, body.ref, body.volume,
+                      body.fade_in, body.fade_out)
+    return audio_mix.summary(body.project_id, body.episode_id)
+
+
+class AudioMixShotIn(BaseModel):
+    project_id: int
+    episode_id: int
+    idx: int
+    ref: str = ""
+    volume: float | None = None      # None = 沿用（只换音效不动音量）
+    offset: float | None = None
+
+
+@router.put("/audio-mix/shot")
+def audio_mix_shot(body: AudioMixShotIn):
+    from . import audio_mix
+    audio_mix.set_shot(body.project_id, body.episode_id, body.idx, body.ref, body.volume, body.offset)
+    return audio_mix.summary(body.project_id, body.episode_id)
+
+
+
 @router.post("/characters/{cid}/voice")
 async def set_character_voice(cid: int, body: VoiceIn):
     """设置角色配音音色（空 = 未设置）。音色唯一 + 必须与角色性别匹配。"""

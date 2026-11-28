@@ -375,6 +375,66 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
     finally { setBusy('') }
   }
 
+  const [sfmix, setSfmix] = useState(null)
+  const [sfxPick, setSfxPick] = useState({ bgm: [], sfx: [], amb: [], voice: [] })
+  const [sfxFind, setSfxFind] = useState('')
+  const [sfxHint, setSfxHint] = useState('')
+  useEffect(() => {
+    if (!selId) return
+    get(`/audio-mix?project_id=${project.id}&episode_id=${selId}`).then(setSfmix).catch(() => {})
+  }, [selId, project.id])
+  useEffect(() => {
+    ;['bgm', 'sfx', 'amb', 'voice'].forEach(tr => get(`/sfx?track=${tr}&size=100`)
+      .then(d => setSfxPick(v => ({ ...v, [tr]: d.items }))).catch(() => {}))
+  }, [])
+  // 库到数千条后每轨只列前 100 条，够不到后面的素材：用关键字跨轨检索（名称/标签/作者/编号）
+  const searchSfx = async () => {
+    const q = sfxFind.trim()
+    try {
+      const d = await get(`/sfx?q=${encodeURIComponent(q)}&size=100`)
+      const bucket = { bgm: [], sfx: [], amb: [], voice: [] }
+      ;(d.items || []).forEach(it => { (bucket[it.track] || bucket.sfx).push(it) })
+      setSfxPick(v => {
+        const merged = {}
+        ;['bgm', 'sfx', 'amb', 'voice'].forEach(tr => {
+          const base = q ? [] : (v[tr] || [])
+          const extra = bucket[tr] || []
+          const ids = new Set(base.map(x => x.id))
+          merged[tr] = base.concat(extra.filter(x => !ids.has(x.id)))
+        })
+        return merged
+      })
+      setSfxHint(q ? `「${q}」命中 ${d.total || 0} 条（下拉里最多列 100 条）` : `全库 ${d.total || 0} 条，已恢复默认列表`)
+    } catch (e) { setSfxHint('音效检索失败：' + e.message) }
+  }
+  const saveBgm = async (patch = {}) => {
+    if (!selId) return
+    const cur = sfmix?.bgm || {}
+    // 只换 BGM 时不带 volume（后端沿用已保存音量）；拖音量滑杆时也不带 ref（沿用已挂的曲目）
+    const r = await put('/audio-mix/bgm', {
+      project_id: project.id, episode_id: selId,
+      ref: patch.ref !== undefined ? patch.ref : (cur.ref || ''),
+      volume: patch.volume !== undefined ? patch.volume : (patch.ref !== undefined ? undefined : (cur.volume ?? 0.22)),
+    }).catch(e => { setMsg('BGM 保存失败：' + e.message) })
+    if (r) { setSfmix(r); setMsg('音频分轨已保存（下次合成成片时生效）') }
+  }
+  const saveShotSfx = async (idx, patch = {}) => {
+    if (!selId) return
+    const cur = (sfmix?.shots || []).find(x => x.idx === idx) || {}
+    const r = await put('/audio-mix/shot', {
+      project_id: project.id, episode_id: selId, idx,
+      ref: patch.ref !== undefined ? patch.ref : (cur.ref || ''),
+      volume: patch.volume !== undefined ? patch.volume : (patch.ref !== undefined ? undefined : (cur.volume ?? 0.6)),
+    }).catch(e => { setMsg('音效保存失败：' + e.message) })
+    if (r) { setSfmix(r); setMsg('音频分轨已保存（下次合成成片时生效）') }
+  }
+  const previewSfx = (ref) => {
+    if (!ref) return
+    new Audio(`/api/sfx/${encodeURIComponent(ref)}/audio?ts=${Date.now()}`).play()
+      .catch(() => setMsg('试听失败（文件可能未下载完）'))
+  }
+  const fmtDur = d => d ? `${Number(d) >= 60 ? Math.round(Number(d)) + 's' : Number(d).toFixed(1) + 's'}` : '—'
+
   const withVideo = shots.filter(s => s.video_path)
   const totalDur = shots.reduce((a, s) => a + (Number(s.duration) || 5), 0)
   const statusColor = s => s.video_path ? '#3a9d5c' : (s.first_frame_path ? '#d0a030' : '#a04040')
@@ -439,6 +499,83 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
             : <span className="fold-warn">{voiceGaps}</span>}</summary>
           {voicePanel}
         </details>)}
+
+      {selId && !isVoice &&
+        <details className="voice-fold" open>
+          <summary>音频分轨（BGM / 场景音 / 动作音）
+            {sfmix && (sfmix.bgm?.ref || (sfmix.shots || []).length)
+              ? <span className="fold-ok">{sfmix.bgm?.ref ? 'BGM 已挂' : '仅贴片音'} · {(sfmix.shots || []).length} 镜有音效</span>
+              : <span className="fold-warn">未编排（成片只有台词轨）</span>}
+          </summary>
+          <div className="mix-panel">
+            <div className="lib-bar" style={{ marginBottom: 4 }}>
+              <input className="cfg-input" placeholder="跨轨搜音效（名称 / 标签 / 作者 / 编号），回车检索"
+                value={sfxFind} onChange={e => setSfxFind(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') searchSfx() }} />
+              <button className="small ghost" onClick={searchSfx}>检索</button>
+              {sfxHint && <span className="lib-state" style={{ textAlign: 'left' }}>{sfxHint}</span>}
+            </div>
+            <div className="mix-row">
+              <span className="mix-label">BGM 铺底</span>
+              <select className="cfg-select" value={sfmix?.bgm?.ref || ''}
+                onChange={e => saveBgm({ ref: e.target.value })}>
+                <option value="">— 不加 BGM（只有台词） —</option>
+                {!!(sfmix?.bgm?.ref) && !(sfxPick.bgm || []).some(it => it.id === sfmix.bgm.ref) && (
+                  <option value={sfmix.bgm.ref}>{sfmix.bgm.name || sfmix.bgm.ref}（已挂载）</option>
+                )}
+                {(sfxPick.bgm || []).map(it => (
+                  <option key={it.id} value={it.id}>{it.name}（{fmtDur(it.duration)}）</option>
+                ))}
+                {(sfxPick.amb || []).map(it => (
+                  <option key={'b' + it.id} value={it.id}>环境 · {it.name}（{fmtDur(it.duration)}）</option>
+                ))}
+              </select>
+              <button className="small ghost" disabled={!sfmix?.bgm?.ref} title="试听原声"
+                onClick={() => previewSfx(sfmix?.bgm?.ref)}>🔊</button>
+              <span className="mix-label">音量</span>
+              <input type="range" min="0.05" max="1" step="0.01"
+                value={String(sfmix?.bgm?.volume ?? 0.22)}
+                onChange={e => setSfmix(m => ({ ...(m || {}), bgm: { ...((m || {}).bgm || {}), volume: Number(e.target.value) } }))}
+                onMouseUp={e => saveBgm({ volume: Number(e.target.value) })}
+                onTouchEnd={e => saveBgm({ volume: Number(e.target.value) })} />
+              <span className="lib-state">{Math.round((sfmix?.bgm?.volume ?? 0.22) * 100)}%</span>
+            </div>
+            <div className="cfg-tip">BGM 会循环铺满本集，结尾自动淡出；台词轨不受影响（混音时台词优先清晰度）。</div>
+            {(withVideo.length > 0) && <div className="mix-shots">
+              {withVideo.map(s => {
+                const cur = (sfmix?.shots || []).find(x => x.idx === s.idx) || {}
+                return (
+                  <div className="mix-shot" key={s.id}>
+                    <span className="mix-shot-idx">镜 {s.idx}</span>
+                    <select className="cfg-select" value={cur.ref || ''}
+                      onChange={e => saveShotSfx(s.idx, { ref: e.target.value })}>
+                      <option value="">— 无贴片音 —</option>
+                      {!!cur.ref && ![...(sfxPick.sfx || []), ...(sfxPick.amb || []), ...(sfxPick.voice || [])].some(it => it.id === cur.ref) && (
+                        <option value={cur.ref}>{cur.name || cur.ref}（已挂载）</option>
+                      )}
+                      {(sfxPick.sfx || []).map(it => (
+                        <option key={it.id} value={it.id}>{it.name}（{fmtDur(it.duration)}）</option>
+                      ))}
+                      {(sfxPick.amb || []).map(it => (
+                        <option key={'a' + it.id} value={it.id}>环境 · {it.name}（{fmtDur(it.duration)}）</option>
+                      ))}
+                      {(sfxPick.voice || []).map(it => (
+                        <option key={'v' + it.id} value={it.id}>人声 · {it.name}（{fmtDur(it.duration)}）</option>
+                      ))}
+                    </select>
+                    <button className="small ghost" disabled={!cur.ref} onClick={() => previewSfx(cur.ref)}>🔊</button>
+                    <input type="range" min="0.05" max="1" step="0.01" value={String(cur.volume ?? 0.6)}
+                      onChange={e => setSfmix(m => ({ ...(m || {}), shots: ((m || {}).shots || []).map(x => x.idx === s.idx ? { ...x, volume: Number(e.target.value) } : x) }))}
+                      onMouseUp={e => saveShotSfx(s.idx, { volume: Number(e.target.value) })}
+                      onTouchEnd={e => saveShotSfx(s.idx, { volume: Number(e.target.value) })} />
+                    <span className="lib-state">{Math.round((cur.volume ?? 0.6) * 100)}%</span>
+                  </div>
+                )
+              })}
+            </div>}
+            {(sfxPick.sfx || []).length === 0 && <div className="cfg-note">音效库为空：先跑 backend/tools/fetch_pixabay_sfx.py 抓一批音效。</div>}
+          </div>
+        </details>}
 
       {selId &&
         <div className="export-card">
@@ -2538,6 +2675,12 @@ function SettingsModal({ open, onClose }) {
   const [libCat, setLibCat] = useState('')
   const [libBusy, setLibBusy] = useState('')
   const [libMsg, setLibMsg] = useState('')
+  // 本地音效库（Pixabay 免版税音效）：BGM / 场景音 / 人声 / 动作音分轨素材
+  const [sfx, setSfx] = useState(null)
+  const [sfxQ, setSfxQ] = useState('')
+  const [sfxTrack, setSfxTrack] = useState('')
+  const [sfxBusy, setSfxBusy] = useState('')
+  const [sfxMsg, setSfxMsg] = useState('')
   const load = () => api('/settings').then(d => {
     setData(d); setDraft(JSON.parse(JSON.stringify(d.config)))
   }).catch(e => setMsg('读取配置失败：' + e.message))
@@ -2553,8 +2696,26 @@ function SettingsModal({ open, onClose }) {
   useEffect(() => {
     if (!open) return
     setMsg(''); setVsMsg(''); setProbe(null); setLib(null); setLibMsg('')
-    load(); loadVs(); loadLib(1, '', '', '')
+    setSfx(null); setSfxMsg('')
+    load(); loadVs(); loadLib(1, '', '', ''); loadSfx(1, '', '')
   }, [open])
+  const loadSfx = (page = 1, q = sfxQ, tr = sfxTrack) => {
+    setSfxBusy('load')
+    api(`/sfx?q=${encodeURIComponent(q)}&track=${encodeURIComponent(tr)}&page=${page}&size=20`)
+      .then(d => setSfx(d))
+      .catch(e => setSfxMsg('读取音效库失败：' + e.message))
+      .finally(() => setSfxBusy(''))
+  }
+  // 点「用途」循环纠正分轨：BGM → 环境 → 人声 → 动作 → 自动（写回 index，混音即时生效）
+  const SFX_TRACK_CYCLE = ['bgm', 'amb', 'voice', 'sfx', '']
+  const cycleSfxTrack = async it => {
+    const next = SFX_TRACK_CYCLE[(SFX_TRACK_CYCLE.indexOf(it.track) + 1) % SFX_TRACK_CYCLE.length]
+    try {
+      await put(`/sfx/${it.id}/track`, { track: next })
+      setSfxMsg(next ? `「${it.name}」已改为 ${({ bgm: 'BGM', amb: '环境', voice: '人声', sfx: '动作' })[next]}` : `「${it.name}」已恢复自动归类`)
+      loadSfx(sfx?.page || 1, sfxQ, sfxTrack)
+    } catch (e) { setSfxMsg('改用途失败：' + e.message) }
+  }
   if (!open) return null
   const saveVsSource = async () => {
     if (!vsDraft) return
@@ -2625,8 +2786,28 @@ function SettingsModal({ open, onClose }) {
         (r.failed && r.failed.length ? `，失败 ${r.failed.length} 条（${r.failed[0]}）` : '') + '。')
     } catch (e) { setLibMsg('批量加入失败：' + e.message) } finally { setLibBusy('') }
   }
+  const addLibCategory = async (catKey, catName) => {
+    setLibBusy('cat:' + catKey)
+    try {
+      const r = await post('/voice-library/add-category', { category: catKey })
+      if (r.state) setVs(r.state)
+      setLibMsg(`整批写入「${catName}」：新增 ${r.added} 条，已有 ${r.skipped} 条` +
+        (r.failed && r.failed.length ? `，失败 ${r.failed.length} 条（${r.failed[0]}）` : '') + '。')
+    } catch (e) { setLibMsg('整批写入失败：' + e.message) } finally { setLibBusy('') }
+  }
+  const removeLibAll = async () => {
+    setLibBusy('clear')
+    try {
+      const r = await post('/voice-library/remove-all', {})
+      if (r.state) setVs(r.state)
+      setLibMsg(`已清空积木音色库分组，移除 ${r.removed} 条本地音色；内置 edge 音色未动。`)
+    } catch (e) { setLibMsg('清空失败：' + e.message) } finally { setLibBusy('') }
+  }
   const previewVoice = (voice) => {
-    new Audio(`/api/voice-preview-file?voice=${encodeURIComponent(voice)}&pid=1&ts=${Date.now()}`).play()
+    // 样音缓存按项目目录落盘；用 URL 上当前项目，别硬编码 1（否则样音写进别的项目数据库目录）
+    const pid = Number(new URLSearchParams(location.search).get('project')) || 1
+    new Audio(`/api/voice-preview-file?voice=${encodeURIComponent(voice)}&pid=${pid}&ts=${Date.now()}`).play()
+      .catch(() => setLibMsg('试听播放失败（首次生成需几秒，再点一次）'))
   }
   const set = (g, k, v) => setDraft(d => ({ ...d, [g]: { ...((d || {})[g] || {}), [k]: v } }))
   const cfg = draft || {}
@@ -2951,9 +3132,82 @@ function SettingsModal({ open, onClose }) {
                       {libBusy === 'batch' ? '加入中…' : `批量加入本页（${lib.items.length}）`}
                     </button>
                   </div>
+                  <div className="lib-bulk">
+                    <span className="lib-bulk-label">分类整批写入：</span>
+                    {(lib.stats.categories || []).map(c => (
+                      <button key={c.key} className="small ghost lib-chip" disabled={!!libBusy}
+                        title={`把「${c.name}」分类下全部 ${c.downloaded} 条本地音色写进配音清单`}
+                        onClick={() => addLibCategory(c.key, c.name)}>
+                        {libBusy === 'cat:' + c.key ? '写入中…' : `${c.name} ${c.downloaded}`}
+                      </button>
+                    ))}
+                    <button className="small ghost lib-chip danger" disabled={!!libBusy}
+                      title="移除所有「积木音色库 · …」分组里的本地音色，内置 edge 音色不受影响"
+                      onClick={removeLibAll}>
+                      {libBusy === 'clear' ? '清空中…' : '清空积木分组'}
+                    </button>
+                  </div>
                 </>}
                 {libMsg && <div className="vs-probe ok">{libMsg}</div>}
                 {!lib && <div className="cfg-note">正在读取音色库索引…</div>}
+              </div>
+
+              <div className="cfg-group" data-tab="tts">
+                <div className="cfg-group-title">本地音效库
+                  <span className="cfg-badge">
+                    {sfx ? `${sfx.stats.downloaded}/${sfx.stats.total} 条 · ${Math.round(sfx.stats.bytes / 1024 / 1024)}MB` : '读取中…'}
+                  </span>
+                </div>
+                <div className="lib-bar">
+                  <input className="cfg-input" placeholder="搜名称 / 标签 / 作者 / 编号"
+                    value={sfxQ} onChange={e => setSfxQ(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') loadSfx(1) }} />
+                  <select className="cfg-select" value={sfxTrack}
+                    onChange={e => { setSfxTrack(e.target.value); loadSfx(1, sfxQ, e.target.value) }}>
+                    <option value="">全部用途</option>
+                    {((sfx && sfx.stats.tracks) || []).map(t => (
+                      <option key={t.key} value={t.key}>{t.name}（{t.count}）</option>
+                    ))}
+                  </select>
+                  <button className="small" disabled={sfxBusy === 'load'} onClick={() => loadSfx(1)}>
+                    {sfxBusy === 'load' ? '读取中…' : '搜索'}
+                  </button>
+                </div>
+                <div className="cfg-tip">
+                  Pixabay 免版税音效（家庭/商业可用，无需署名），按元数据自动分四轨：BGM 音乐 / 场景环境音 / 人声反应 / 动作打击音。
+                  落在 backend/data/sfx_library/；抓到成片页「音频分轨」里挂 BGM 与每镜贴片音，合成时按四轨混音。
+                </div>
+                {sfx && <>
+                  <div className="lib-list">
+                    {sfx.items.map(it => (
+                      <div className="lib-row sfx-row" key={it.id}>
+                        <code className="lib-code">{it.id}</code>
+                        <span className="lib-name" title={it.desc || it.name}>{it.name}</span>
+                        <button className="lib-gender as-btn" title="点击切换用途（BGM → 环境 → 人声 → 动作 → 自动），混音按此分轨"
+                          onClick={() => cycleSfxTrack(it)}>
+                          {({ bgm: 'BGM', amb: '环境', voice: '人声', sfx: '动作' })[it.track] || it.track}
+                        </button>
+                        <span className="lib-cat">{it.duration ? `${Number(it.duration).toFixed(1)}s` : '—'} · {it.author || '—'}</span>
+                        <span className={'lib-state' + (it.downloaded ? ' ok' : '')}>
+                          {it.downloaded ? `${Math.round(it.size / 1024)}K` : '未下载'}
+                        </span>
+                        <button className="small ghost" disabled={!it.downloaded}
+                          onClick={() => new Audio(`/api/sfx/${it.id}/audio?ts=${Date.now()}`).play()
+                            .catch(() => setSfxMsg('试听失败：文件未下载完'))}>🔊</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="lib-pager">
+                    <button className="small ghost" disabled={sfx.page <= 1} onClick={() => loadSfx(sfx.page - 1)}>上一页</button>
+                    <span>第 {sfx.page} / {sfx.pages} 页 · 共 {sfx.total} 条{(sfxQ || sfxTrack) ? '（已筛选）' : ''}</span>
+                    <button className="small ghost" disabled={sfx.page >= sfx.pages} onClick={() => loadSfx(sfx.page + 1)}>下一页</button>
+                  </div>
+                </>}
+                {sfxMsg && <div className="vs-probe ok">{sfxMsg}</div>}
+                {sfx && sfx.stats.total === 0 && (
+                  <div className="cfg-note">
+                    音效库为空：跑 <code>backend/.venv/Scripts/python.exe backend/tools/fetch_pixabay_sfx.py --preset core --limit 500</code> 先抓一批（断点续传，可反复追加）。
+                  </div>)}
               </div>
             </>}
             {!vs && <div className="cfg-note">正在读取音色源…</div>}

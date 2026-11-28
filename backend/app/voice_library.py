@@ -61,14 +61,18 @@ def rows() -> list[dict]:
 
 def stats() -> dict:
     rs = rows()
-    cats = {}
+    cats: dict = {}
     for r in rs:
-        cats[r["categoryName"]] = cats.get(r["categoryName"], 0) + 1
+        k = r["category"] or "other"
+        c = cats.setdefault(k, {"key": k, "name": r["categoryName"] or k,
+                                "count": 0, "downloaded": 0})
+        c["count"] += 1
+        c["downloaded"] += 1 if r["downloaded"] else 0
     return {
         "total": len(rs),
         "downloaded": sum(1 for r in rs if r["downloaded"]),
         "bytes": sum(r["size"] for r in rs),
-        "categories": [{"key": k, "name": k, "count": v} for k, v in cats.items()],
+        "categories": list(cats.values()),
         "file": str(INDEX),
     }
 
@@ -124,20 +128,57 @@ def add_to_sources(code: str, group: str | None = None) -> dict:
 
 def add_batch(codes: list[str]) -> dict:
     """批量加入（前端「批量加入本页」用）：逐条加，重复/缺失不阻塞，返回统计与失败原因。"""
-    added, skipped, failed = 0, 0, []
-    for code in [c for c in (codes or []) if c][:200]:
-        try:
-            add_to_sources(code)
-            added += 1
-        except ValueError as e:
-            msg = str(e)
-            if "已存在" in msg:
-                skipped += 1
-            else:
-                failed.append(f"{code}: {msg}")
-        except Exception as e:
-            failed.append(f"{code}: {type(e).__name__} {e}")
-    return {"added": added, "skipped": skipped, "failed": failed[:10], "state": voice_sources_public()}
+    return _add_many([c for c in (codes or []) if c], limit=200)
+
+
+def add_category(category: str, gender: str = "") -> dict:
+    """按分类整批写入：把该分类下已下载的全部条目一次加入配音清单。
+
+    分类可传 key（chinese/popular/...）或中文名（中文真人感/...）。
+    """
+    cat = (category or "").strip()
+    if not cat:
+        raise ValueError("分类不能为空")
+    rs = [r for r in rows()
+          if (r["category"] == cat or r["categoryName"] == cat)
+          and (not gender or r["gender"] == gender)]
+    if not rs:
+        raise ValueError(f"音色库中没有分类 {cat}")
+    ready = [r for r in rs if r["downloaded"]]
+    if not ready:
+        raise ValueError(f"分类 {cat} 的音频还没下载完")
+    out = _add_many([r["code"] for r in ready], limit=len(ready))
+    out.update(category=cat, matched=len(rs), ready=len(ready))
+    return out
+
+
+def remove_library() -> dict:
+    """清空「积木音色库」分组（撤销整批写入用，只动本地音色，不碰内置 edge 音色）。"""
+    from . import voice_sources
+    return voice_sources.remove_groups_by_prefix("积木音色库", provider="local")
+
+
+def _add_many(codes: list[str], limit: int = 200) -> dict:
+    # 批量写入：一次读写 YAML（逐条 add_item 是 O(n^2)，上千条要几分钟）
+    from . import voice_sources
+    entries, failed = [], []
+    for code in codes[:limit]:
+        r = find(code)
+        if not r:
+            failed.append(f"{code}: 音色库中没有该编号")
+            continue
+        if not r["downloaded"]:
+            failed.append(f"{code}: 音频还没下载完（{r['file']}）")
+            continue
+        entries.append({
+            "group": f"积木音色库 · {r['categoryName'] or '未分类'}",
+            "label": f"{r['name'] or code}（{r['code']}）",
+            "voice": str(MEDIA / r["file"]),
+            "gender": r["gender"],
+        })
+    out = voice_sources.add_items_bulk(entries, provider="local")
+    return {"added": out["added"], "skipped": out["skipped"],
+            "failed": failed[:10], "state": out["state"]}
 
 
 def voice_sources_public() -> dict:

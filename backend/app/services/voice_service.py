@@ -550,7 +550,9 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
     if missing_audio:
         raise RuntimeError("缺少配音文件（先点「生成台词配音」）：" + "、".join(missing_audio[:8]))
     filters, mix_inputs, cursor, srt_rows, n = [], [], 0.0, [], 0
+    shot_starts: list[float] = []
     for s in segs:
+        shot_starts.append(cursor)
         shot_end = cursor + s["dur"]
         cur_line = cursor + 0.15     # 台词从镜头起点略延后开始
         for j, (who, tone, text) in enumerate(s["lines"]):
@@ -584,15 +586,67 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
             cur_line = start + adur + 0.35   # 行间 0.35s 呼吸间隔
         cursor += s["dur"]
 
-    if n:
-        fc = ";".join(filters) + ";" + "".join(mix_inputs) + \
-             f"amix=inputs={n}:duration=longest:normalize=0[mixout]"
-        mixed = export_dir / f"final_ep{eid}_vo.mp4"
-        _run_ff([str(FFMPEG), "-y", "-i", str(novoice)] +
-                [x for a in _collect_vo_audio(segs, pid, eid, audio_dir) for x in ("-i", str(a))] +
-                ["-filter_complex", fc, "-map", "0:v", "-map", "[mixout]",
-                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(mixed)],
-                "台词混音")
+    # 分轨：BGM 铺底（整集循环 + 首尾淡入淡出）+ 每镜动作音/环境音（贴镜头起点）。
+    # 台词轨是上面 n 条 adelay 输入；这里追加的输入排在它们之后，索引按顺序算。
+    vo_paths = _collect_vo_audio(segs, pid, eid, audio_dir)
+    inputs: list[dict] = [{"path": p} for p in vo_paths]
+    try:
+        from ..audio_mix import load as _load_mix
+        from .. import sfx_library as _sfx
+        mixcfg = _load_mix(pid, eid)
+    except Exception as e:
+        # 分轨配置读不出来不该让整条成片链路失败，但必须留痕（否则用户以为挂了 BGM 却没混进去）
+        print(f"[export_final] 音频分轨配置读取失败（{e}），本集按纯台词轨合成", flush=True)
+        mixcfg, _sfx = {"bgm": {}, "shots": {}}, None
+
+    bgm = (mixcfg.get("bgm") or {}) if isinstance(mixcfg, dict) else {}
+    bgm_path = _sfx.resolve(bgm.get("ref")) if (_sfx and bgm.get("ref")) else None
+    if bgm_path:
+        idx = len(inputs) + 1
+        inputs.append({"path": bgm_path, "loop": True})
+        vol = float(bgm.get("volume") or 0.22)
+        fi = max(min(float(bgm.get("fade_in") or 0.8), total_dur), 0.0)
+        fo = max(min(float(bgm.get("fade_out") or 2.0), total_dur), 0.0)
+        filters.append(
+            f"[{idx}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol},"
+            f"atrim=0:{total_dur:.3f},asetpts=PTS-STARTPTS,"
+            f"afade=t=in:st=0:d={fi},afade=t=out:st={max(total_dur - fo, 0):.3f}:d={fo}[bgm]")
+        mix_inputs.append("[bgm]")
+
+    if _sfx:
+        for k, (s, st) in enumerate(zip(segs, shot_starts)):
+            item = (mixcfg.get("shots") or {}).get(str(s["idx"])) or {}
+            p = _sfx.resolve(item.get("ref")) if item.get("ref") else None
+            if not p:
+                continue
+            idx = len(inputs) + 1
+            inputs.append({"path": p})
+            vol = float(item.get("volume") or 0.6)
+            off = max(float(item.get("offset") or 0), 0.0)
+            start = st + off
+            name = f"fx{k}"
+            filters.append(
+                f"[{idx}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol},"
+                f"adelay={int(start * 1000)}|{int(start * 1000)},"
+                f"atrim=0:{start + s['dur']:.3f},asetpts=PTS-STARTPTS[{name}]")
+            mix_inputs.append(f"[{name}]")
+
+    if mix_inputs:
+        head = ";".join(filters)
+        fc = (head + ";" if head else "") + "".join(mix_inputs) + \
+             f"amix=inputs={len(mix_inputs)}:duration=longest:normalize=0[mixout]"
+        mixed = export_dir / f"final_ep{eid}_mix.mp4"
+        cmd = [str(FFMPEG), "-y", "-i", str(novoice)]
+        for it in inputs:
+            if it.get("loop"):
+                cmd += ["-stream_loop", "-1"]
+            cmd += ["-i", str(it["path"])]
+        cmd += ["-filter_complex", fc, "-map", "0:v", "-map", "[mixout]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(mixed)]
+        _run_ff(cmd, "音频分轨混音（台词" +
+                (f" + BGM" if bgm_path else "") +
+                (f" + {len(mix_inputs) - n - (1 if bgm_path else 0)} 条贴片音" if len(mix_inputs) > n + (1 if bgm_path else 0) else "") +
+                "）")
     else:
         mixed = novoice
 

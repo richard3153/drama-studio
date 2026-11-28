@@ -663,9 +663,16 @@ button.small.accent {
   border-bottom: 1px solid rgba(255, 255, 255, .04);
 }
 .lib-row:last-child { border-bottom: none; }
+.lib-row.sfx-row { grid-template-columns: 68px minmax(140px, 1.6fr) 82px minmax(120px, 1fr) 62px 38px; }
 .lib-code { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; color: var(--dim); }
 .lib-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-gender { text-align: center; color: var(--text-soft); }
+.lib-gender.as-btn {
+  justify-self: start; font: inherit; font-size: 11px; padding: 1px 7px; cursor: pointer;
+  background: transparent; border: 1px solid rgba(245, 166, 35, .35); border-radius: 5px;
+  color: var(--text-soft); transition: .15s;
+}
+.lib-gender.as-btn:hover { border-color: var(--accent); color: var(--accent); }
 .lib-cat { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-state { font-size: 10.5px; color: var(--dim); text-align: right; }
 .lib-state.ok { color: #7ed6a5; }
@@ -673,6 +680,38 @@ button.small.accent {
   display: flex; align-items: center; justify-content: center; gap: 10px;
   margin-top: 10px; font-size: 11.5px; color: var(--dim);
 }
+
+.lib-bulk {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--line);
+  font-size: 11.5px;
+}
+.lib-bulk-label { color: var(--dim); }
+.lib-chip { font-size: 11.5px !important; padding: 3px 8px !important; }
+.lib-chip.danger { color: #ff8a80; border-color: rgba(255, 90, 90, .35); }
+
+/* 成片音频分轨面板 */
+.mix-panel { padding: 6px 2px 2px; }
+.mix-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; font-size: 12px;
+}
+.mix-row .cfg-select { max-width: 380px; }
+.mix-row input[type=range] { width: 110px; accent-color: #f5a623; }
+.mix-label { color: var(--dim); white-space: nowrap; }
+.mix-shots {
+  margin-top: 4px; display: grid; gap: 4px;
+  grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+  max-height: 320px; overflow-y: auto; padding-right: 4px;
+}
+.mix-shot {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 11.5px;
+}
+.mix-shot .cfg-select { flex: 1 1 0%; min-width: 130px; font-size: 11.5px; }
+.mix-shot input[type=range] { width: 74px; accent-color: #f5a623; }
+.mix-shot-idx { color: var(--dim); min-width: 38px; }
 
 @media (max-width: 760px) {
   .cfg-grid { grid-template-columns: 1fr; }

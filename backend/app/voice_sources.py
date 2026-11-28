@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,10 @@ import yaml
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FILE = DATA_DIR / "voice_sources.yaml"
+
+# 读改写并发锁：两个请求同时「load → 改 → write」会互相覆盖（后者拿到旧快照），
+# 整批写入上千条时窗口更大，用一把模块级锁串行化所有写路径。
+_WLOCK = threading.RLock()
 
 # 内置清单（2026-11-21 用 edge_tts.list_voices() 实测的中文音色全集 14 个；
 # edge-tts 免费接口里 Xiaojian/Xiaoxuan/Yunfeng/Yunye 等并不存在，已剔除）
@@ -74,12 +80,34 @@ def _ensure() -> None:
 
 
 def _write(data: dict) -> None:
-    FILE.write_text(
+    """原子写：整份 YAML 先落到同目录 .tmp（fsync）再 os.replace。
+
+    直接 write_text 在「截断 → 写入」之间被强杀（重启后端 / Ctrl+C / 断电）会留下半截或
+    0 字节文件，下一次 load() 静默回落成内置 14 条 —— 1248 条本地音色会整批消失。
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    text = (
         "# Drama Studio 音色源本地配置（后台配置「音色源」选项卡读写；不进 git）\n"
         "# provider: edge = edge-tts 在线免费接口；local_http = 本机/自建 TTS 服务\n"
         "# 条目 provider: edge | local（内置 edge 音色固定走 edge，不受全局切换影响）\n"
-        + yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8")
+        + yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    )
+    tmp = FILE.with_name(f".{FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, FILE)
+
+
+def _locked(fn):
+    """写路径串行化：包住整个「load → 改 → _write」，避免并发请求丢更新。"""
+    def wrapper(*args, **kwargs):
+        with _WLOCK:
+            return fn(*args, **kwargs)
+    wrapper.__name__ = getattr(fn, "__name__", "wrapper")
+    wrapper.__doc__ = getattr(fn, "__doc__", None)
+    return wrapper
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -156,6 +184,7 @@ def public() -> dict:
     }
 
 
+@_locked
 def set_source(provider: str | None = None, local: dict | None = None) -> dict:
     cfg = load()
     if provider is not None:
@@ -184,6 +213,7 @@ def set_source(provider: str | None = None, local: dict | None = None) -> dict:
     return public()
 
 
+@_locked
 def add_item(group: str, label: str, voice: str, gender: str,
              provider: str = "local") -> dict:
     cfg = load()
@@ -222,6 +252,71 @@ def add_item(group: str, label: str, voice: str, gender: str,
     return public()
 
 
+@_locked
+def add_items_bulk(entries: list[dict], provider: str = "local") -> dict:
+    """批量加入音色：一次 load + 一次 write。
+
+    逐条 add_item 会每条都全量读写 YAML，上千条时是 O(n²)（分类整批写入实测 5 分钟以上），
+    这里按「加载一次 → 内存里全部 append → 写回一次」处理。
+    entries: [{group, label, voice, gender}]，重复 voice / label 冲突的条目跳过。
+    """
+    cfg = load()
+    voices = {i["voice"] for g in cfg.get("groups") or [] for i in g.get("items") or []}
+    keys = {i.get("key") for g in cfg.get("groups") or [] for i in g.get("items") or []}
+    import hashlib
+    added, skipped = 0, 0
+    for e in entries or []:
+        voice = (e.get("voice") or "").strip()
+        label = (e.get("label") or "").strip()
+        if not voice or not label or voice in voices:
+            skipped += 1
+            continue
+        gender = (e.get("gender") or "").strip().lower()
+        if gender not in ("f", "m"):
+            gender = ""
+        raw = Path(voice).stem if ("/" in voice or "\\" in voice) else voice
+        slug = "".join(ch if ch.isalnum() else "_" for ch in raw.lower())[:26]
+        key = f"local_{slug}_{hashlib.md5(voice.encode('utf-8')).hexdigest()[:6]}"
+        base, n = key, 2
+        while key in keys:
+            key, n = f"{base}_{n}", n + 1
+        keys.add(key)
+        voices.add(voice)
+        group = (e.get("group") or "本地音色").strip() or "本地音色"
+        grp = next((g for g in cfg.get("groups") or [] if g.get("group") == group), None)
+        if grp is None:
+            grp = {"group": group, "items": []}
+            cfg.setdefault("groups", []).append(grp)
+        grp.setdefault("items", []).append(
+            {"key": key, "label": label, "voice": voice, "gender": gender, "provider": provider})
+        added += 1
+    _write(cfg)
+    return {"added": added, "skipped": skipped, "state": public()}
+
+
+@_locked
+def remove_groups_by_prefix(prefix: str, provider: str = "local") -> dict:
+    """按分组名前缀整组删除（一次读写 YAML；批量撤销整批写入用）。"""
+    cfg = load()
+    removed = 0
+    keep = []
+    for g in cfg.get("groups") or []:
+        if not str(g.get("group") or "").startswith(prefix):
+            keep.append(g)
+            continue
+        items = g.get("items") or []
+        kept = [i for i in items if (provider and i.get("provider") != provider)]
+        removed += len(items) - len(kept)
+        if kept:
+            g["items"] = kept
+            keep.append(g)
+    cfg["groups"] = keep
+    if removed:
+        _write(cfg)
+    return {"removed": removed, "state": public()}
+
+
+@_locked
 def remove_item(key: str) -> dict:
     builtin_keys = {i["key"] for g in BUILTIN_GROUPS for i in g["items"]}
     if key in builtin_keys:
