@@ -4,7 +4,7 @@
 > 为 **8GB 显存笔记本 GPU（RTX 4070 Laptop）** 量身调优：显存感知选档 + 串行调度 + 显存卸载，高端模型也能跑。
 > 所有底模档位、参考链路模型、LoRA 目录、加速方法与服务地址都能在界面左侧 **「⚙️ 配置」后台面板**里改，不用动代码。
 
-![Drama Studio](docs/screenshots/01_projects.png)
+![Drama Studio](docs/screenshots/03_script.png)
 
 ## 标签 / Tags
 
@@ -296,17 +296,19 @@ frontend/
 
 ## 演示截图
 
-> 以下截图来自真实生产会话（演示项目：《游戏入侵》，电影写实风格，20 集 / 第 1 集 17 镜完整生产链）。
+> 截图均来自本机真实生产会话（演示项目《高武》：3D 国风风格锁、60 集、第 1 集已出 13 镜成片），按后台配置 → 项目 → 剧本 → 资产 → 分镜 → 配音 → 成片的实际使用顺序排列，全部为当前版本界面（含 #104 风格库叠名与风格锁信息条）。
 
-| 模块 | 截图 |
-|---|---|
-| 项目中心（一句话描述 → 全局画幅） | ![项目](docs/screenshots/01_projects.png) |
-| 剧本工坊（多行大纲输入 / 全窗口编辑 / 上传 txt / 两列设置区） | ![剧本](docs/screenshots/02_script.png) |
-| 资产工坊（角色三视图 / 音色锁定） | ![资产](docs/screenshots/03_assets.png) |
-| 分镜时间轴（17 镜镜头卡 / 批量编排 / 说话镜） | ![分镜](docs/screenshots/04_storyboard.png) |
-| 成片导出（配音 / 混音 / 剪映 & FCPXML） | ![成片](docs/screenshots/05_export.png) |
-| 后台配置（模型档 / LoRA 与加速 / 服务与路径） | ![配置](docs/screenshots/06_settings.png) |
-| 光影滤镜效果（同镜头只换滤镜词块：左 黄金时刻 / 右 青橙电影调） | ![滤镜](docs/light_grade_compare.png) |
+| 步骤 | 模块 | 截图 |
+|---|---|---|
+| 0 | **后台配置**（模型档 / 参考链路 / LoRA 与加速 / 服务与路径，写回 `data/settings.yaml`） | ![配置](docs/screenshots/01_settings.png) |
+| 1 | **项目中心**（新建项目：名称 + 一句话描述；卡片直达工作台） | ![项目](docs/screenshots/02_projects.png) |
+| 2 | **剧本工坊**（全局风格锁只读信息条 + 锁词 / 光影滤镜 / 题材词库 / 画幅与转场开关；大纲、分集列表、本集剧本同屏） | ![剧本](docs/screenshots/03_script.png) |
+| 2b | **风格库**（39 种可见风格 / 8 分类，卡片缩略图底部叠风格名，选中项右上角「当前」；点卡片整体切换风格锁） | ![风格库](docs/screenshots/04_style_library.png) |
+| 3 | **资产工坊**（角色设计图（三视图 + 表情 + 服装拆解）/ 场景设计图 / 道具设计图，图上「📝 改字」只重画框内文字） | ![资产](docs/screenshots/05_assets.png) |
+| 4 | **分镜时间轴**（逐镜镜头卡：首帧 / 尾帧 / 视频 / 说话镜、参考·动作·摄像、接力与向后重链、续写；顶部分镜进度条） | ![分镜](docs/screenshots/06_storyboard.png) |
+| 5 | **配音**（按角色锁定音色 + 语气层，逐句 edge-tts，零显存） | ![配音](docs/screenshots/07_voice.png) |
+| 6 | **成片**（时间线粗剪：绿=有视频 / 黄=仅首帧；台词配音 → 混音 → SRT 字幕 → 剪映草稿 & FCPXML） | ![成片](docs/screenshots/08_export.png) |
+| 附 | **光影滤镜效果**（同镜头只换滤镜词块：左 黄金时刻 / 右 青橙电影调） | ![滤镜](docs/light_grade_compare.png) |
 
 ## License
 
