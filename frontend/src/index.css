@@ -595,8 +595,69 @@ button.small.accent {
 .cfg-msg { flex: 1; min-width: 0; font-size: 12px; color: var(--ok); }
 .cfg-btns { display: flex; gap: 10px; flex: 0 0 auto; }
 
+/* ---------- 后台配置选项卡 + 音色源 ---------- */
+.cfg-tabs {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  padding: 0 22px; border-bottom: 1px solid var(--border);
+}
+.cfg-tab {
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--dim); font-size: 12.5px; padding: 10px 12px; cursor: pointer;
+  border-radius: 0; transition: color .15s, border-color .15s;
+}
+.cfg-tab:hover { color: var(--text); }
+.cfg-tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.cfg-badge.warn { color: var(--accent); border-color: rgba(245, 166, 35, .5); }
+
+/* 选项卡显隐：body 上挂 data-tab，只有同名的 group 显示 */
+.cfg-body .cfg-group { display: none; }
+.cfg-body[data-tab="models"] .cfg-group[data-tab="models"],
+.cfg-body[data-tab="lora"] .cfg-group[data-tab="lora"],
+.cfg-body[data-tab="server"] .cfg-group[data-tab="server"],
+.cfg-body[data-tab="tts"] .cfg-group[data-tab="tts"] { display: block; }
+
+.vs-probe {
+  margin-top: 10px; font-size: 11.5px; line-height: 1.55;
+  padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel3);
+  color: var(--text-soft); word-break: break-all;
+}
+.vs-probe.ok { border-color: rgba(76, 175, 120, .38); color: #7ed6a5; }
+.vs-probe.bad { border-color: rgba(217, 83, 79, .4); color: #f08a86; }
+
+.vs-table { display: flex; flex-direction: column; gap: 10px; }
+.vs-grp { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.vs-grp-name {
+  font-size: 11.5px; color: var(--text-soft); font-weight: 600;
+  padding: 6px 10px; background: var(--panel3);
+  border-bottom: 1px solid var(--border);
+}
+.vs-row {
+  display: grid; grid-template-columns: minmax(120px, 1.5fr) minmax(150px, 1.6fr) 34px 92px 44px 62px;
+  align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, .04);
+}
+.vs-row:last-child { border-bottom: none; }
+.vs-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vs-voice {
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.vs-gender { color: var(--text-soft); text-align: center; }
+.vs-src { font-size: 10.5px; color: var(--dim); border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; text-align: center; }
+.vs-src.local { color: var(--accent); border-color: rgba(245, 166, 35, .4); }
+.vs-del { color: #e07b76 !important; border-color: rgba(217, 83, 79, .35) !important; font-size: 11px; padding: 3px 7px; }
+.vs-del.armed { background: rgba(217, 83, 79, .16) !important; border-color: #d9534f !important; color: #fff !important; }
+.vs-del-ph { width: 28px; }
+
+.vs-add { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.vs-add-title { font-size: 12px; color: var(--text-soft); margin-bottom: 7px; }
+.vs-add-row { display: grid; grid-template-columns: 1fr 1.2fr 1.4fr 86px 72px; gap: 8px; align-items: center; }
+
 @media (max-width: 760px) {
   .cfg-grid { grid-template-columns: 1fr; }
+  .vs-row { grid-template-columns: 1fr 1fr 30px 60px 40px 36px; }
+  .vs-add-row { grid-template-columns: 1fr 1fr; }
 }
 
 /* ============================================================

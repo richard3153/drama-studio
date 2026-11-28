@@ -2522,14 +2522,79 @@ function SettingsModal({ open, onClose }) {
   const [draft, setDraft] = useState(null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState('')
+  // 选项卡：模型档 / LoRA 与加速 / 服务与路径 / 音色源（本地）
+  const [tab, setTab] = useState('models')
+  const [vs, setVs] = useState(null)            // GET /voice-sources 快照
+  const [vsDraft, setVsDraft] = useState(null)  // 本地音色源连接参数草稿
+  const [vsMsg, setVsMsg] = useState('')
+  const [vsBusy, setVsBusy] = useState('')
+  const [probe, setProbe] = useState(null)
+  const [newVoice, setNewVoice] = useState({ group: '本地音色', label: '', voice: '', gender: 'f' })
+  const [confirmDel, setConfirmDel] = useState('')   // 两段式删除：第一次点亮，3s 内再点才真删
   const load = () => api('/settings').then(d => {
     setData(d); setDraft(JSON.parse(JSON.stringify(d.config)))
   }).catch(e => setMsg('读取配置失败：' + e.message))
+  const loadVs = () => api('/voice-sources').then(d => {
+    setVs(d)
+    setVsDraft({
+      provider: d.provider || 'edge',
+      url: (d.local && d.local.url) || '',
+      api: (d.local && d.local.api) || 'gpt-sovits',
+      timeout: (d.local && d.local.timeout) || 60,
+    })
+  }).catch(e => setVsMsg('读取音色源失败：' + e.message))
   useEffect(() => {
     if (!open) return
-    setMsg(''); load()
+    setMsg(''); setVsMsg(''); setProbe(null); load(); loadVs()
   }, [open])
   if (!open) return null
+  const saveVsSource = async () => {
+    if (!vsDraft) return
+    setVsBusy('save')
+    try {
+      const r = await put('/voice-sources', {
+        provider: vsDraft.provider, local_url: vsDraft.url,
+        local_api: vsDraft.api, local_timeout: Number(vsDraft.timeout) || 60,
+      })
+      setVs(r)
+      setVsMsg(vsDraft.provider === 'local_http'
+        ? '已写入 data/voice_sources.yaml。本地音色（provider=local）现在走自建服务，内置 edge 音色不受影响。'
+        : '已写入 data/voice_sources.yaml。全局音色源为 edge-tts 在线接口。')
+    } catch (e) { setVsMsg('保存失败：' + e.message) } finally { setVsBusy('') }
+  }
+  const probeVs = async () => {
+    if (!vsDraft) return
+    setVsBusy('probe'); setProbe(null)
+    try {
+      const r = await post('/voice-sources/probe', { url: vsDraft.url, api: vsDraft.api })
+      setProbe(r)
+    } catch (e) { setProbe({ ok: false, error: e.message }) } finally { setVsBusy('') }
+  }
+  const addVsItem = async () => {
+    setVsBusy('add')
+    try {
+      const r = await post('/voice-sources/items', newVoice)
+      setVs(r); setVsMsg(`已添加音色「${newVoice.label}」，配音页下拉里会出现（分组：${newVoice.group}）。`)
+      setNewVoice(n => ({ ...n, label: '', voice: '' }))
+    } catch (e) { setVsMsg('添加失败：' + e.message) } finally { setVsBusy('') }
+  }
+  const delVsItem = async (key, label) => {
+    // 两段式：第一次点只点亮确认态（原生 confirm 会阻塞页面，自动化也卡死），3 秒内再点才真删
+    if (confirmDel !== key) {
+      setConfirmDel(key)
+      setTimeout(() => setConfirmDel(c => (c === key ? '' : c)), 3000)
+      return
+    }
+    setConfirmDel('')
+    setVsBusy('del')
+    try {
+      const r = await del('/voice-sources/items/' + encodeURIComponent(key))
+      setVs(r); setVsMsg(`已删除音色「${label}」。已分配它的角色会回到未分配，去配音页重新选。`)
+    } catch (e) { setVsMsg('删除失败：' + e.message) } finally { setVsBusy('') }
+  }
+  const previewVs = (voice) => {
+    new Audio(`/api/voice-preview-file?voice=${encodeURIComponent(voice)}&pid=1&ts=${Date.now()}`).play()
+  }
   const set = (g, k, v) => setDraft(d => ({ ...d, [g]: { ...((d || {})[g] || {}), [k]: v } }))
   const cfg = draft || {}
   const opts = (data && data.options) || {}
@@ -2570,7 +2635,7 @@ function SettingsModal({ open, onClose }) {
         <div className="cfg-head">
           <div>
             <div className="cfg-title">后台配置</div>
-            <div className="cfg-sub">模型档位、参考链路、LoRA 与加速、服务地址；写进 backend/data/settings.yaml</div>
+            <div className="cfg-sub">模型档位、参考链路、LoRA 与加速、服务地址、音色源；前四项写进 backend/data/settings.yaml，音色源写进 backend/data/voice_sources.yaml</div>
           </div>
           <button className="cfg-x" onClick={onClose} title="关闭">✕</button>
         </div>
@@ -2578,8 +2643,15 @@ function SettingsModal({ open, onClose }) {
         {!data && <div className="cfg-note">正在读取配置…</div>}
 
         {data && <>
-          <div className="cfg-body">
-            <div className="cfg-group">
+          <div className="cfg-tabs">
+            {[['models', '模型档位'], ['lora', 'LoRA 与加速'], ['server', '服务与路径'], ['tts', '音色源（本地）']]
+              .map(([k, l]) => (
+                <button key={k} className={'cfg-tab' + (tab === k ? ' on' : '')}
+                  onClick={() => setTab(k)}>{l}</button>
+              ))}
+          </div>
+          <div className="cfg-body" data-tab={tab}>
+            <div className="cfg-group" data-tab="models">
               <div className="cfg-group-title">模型选择</div>
               <div className="cfg-grid">
                 <CfgField label="生图模型" hint="定妆照 / 场景 / 道具 / 修图 主链路">
@@ -2610,7 +2682,7 @@ function SettingsModal({ open, onClose }) {
               <div className="cfg-tip">选档即时生效；参考链路只接受有对应工作流模板的档，选错会在任务里报错。</div>
             </div>
 
-            <div className="cfg-group">
+            <div className="cfg-group" data-tab="lora">
               <div className="cfg-group-title">LoRA 与加速</div>
               <div className="cfg-grid">
                 <CfgField label="LoRA 根目录" hint={`扫描到 ${(data.loras || []).length} 个文件`}>
@@ -2652,7 +2724,7 @@ function SettingsModal({ open, onClose }) {
               <div className="cfg-tip">WAN 的 fp8 + blockswap 已写在工作流模板里，属于固定加速；面板这里管的是"要不要挂蒸馏 LoRA"和 ComfyUI 的注意力实现。</div>
             </div>
 
-            <div className="cfg-group">
+            <div className="cfg-group" data-tab="server">
               <div className="cfg-group-title">服务与路径 <span className="cfg-badge">重启后端生效</span></div>
               <div className="cfg-grid">
                 <CfgField label="ComfyUI 地址">
@@ -2684,16 +2756,131 @@ function SettingsModal({ open, onClose }) {
                 </CfgField>
               </div>
             </div>
+
+            {vs && <>
+              <div className="cfg-group" data-tab="tts">
+                <div className="cfg-group-title">音色源
+                  <span className={'cfg-badge' + (vsDraft?.provider === 'local_http' ? ' warn' : '')}>
+                    当前：{vsDraft?.provider === 'local_http' ? '本地 HTTP 服务' : 'edge-tts 在线'}
+                  </span>
+                </div>
+                <div className="cfg-grid">
+                  <CfgField label="音色源类型" hint="edge = 内置 14 个在线音色；本地 = 自建 TTS 服务">
+                    <select className="cfg-select" value={vsDraft?.provider || 'edge'}
+                      onChange={e => setVsDraft(d => ({ ...d, provider: e.target.value }))}>
+                      <option value="edge">edge-tts 在线（零显存·免费）</option>
+                      <option value="local_http">本地 HTTP 服务（自建引擎）</option>
+                    </select>
+                  </CfgField>
+                  <CfgField label="本地服务地址" hint="如 http://127.0.0.1:9880">
+                    <input className="cfg-input" value={vsDraft?.url || ''}
+                      onChange={e => setVsDraft(d => ({ ...d, url: e.target.value }))} />
+                  </CfgField>
+                  <CfgField label="服务协议" hint="决定请求路径与入参形状">
+                    <select className="cfg-select" value={vsDraft?.api || 'gpt-sovits'}
+                      onChange={e => setVsDraft(d => ({ ...d, api: e.target.value }))}>
+                      <option value="gpt-sovits">GPT-SoVITS（POST /tts）</option>
+                      <option value="openai">OpenAI 兼容（POST /v1/audio/speech）</option>
+                    </select>
+                  </CfgField>
+                  <CfgField label="请求超时（秒）" hint="本地首条合成慢时可调到 120">
+                    <input className="cfg-input" type="number" min="5" max="600"
+                      value={vsDraft?.timeout ?? 60}
+                      onChange={e => setVsDraft(d => ({ ...d, timeout: Number(e.target.value) }))} />
+                  </CfgField>
+                </div>
+                <div className="cfg-tip">
+                  内置 14 个 edge 音色固定走 edge-tts（不受这里切换影响），只有「来源=本地」的音色走本地服务。
+                  本地音色的 voice id 由服务端决定：GPT-SoVITS 填参考音频名/角色名，OpenAI 兼容填 voice 名。
+                </div>
+                {probe && (
+                  <div className={'vs-probe ' + (probe.ok && probe.reachable ? 'ok' : 'bad')}>
+                    {probe.ok && probe.reachable
+                      ? `✅ 服务可达（HTTP ${probe.status}，${probe.ms}ms）${probe.voices && probe.voices.length ? `，列出 ${probe.voices.length} 个音色` : '，未提供音色列表接口'}`
+                      : `❌ 连不上 ${probe.url || ''}：${probe.error || '服务无响应'}`}
+                  </div>
+                )}
+                {probe && probe.voices && probe.voices.length > 0 && (
+                  <div className="vs-probe ok">服务音色：{probe.voices.join(' / ')}</div>
+                )}
+              </div>
+
+              <div className="cfg-group" data-tab="tts">
+                <div className="cfg-group-title">音色清单
+                  <span className="cfg-badge">{vs.count} 个 · {vs.groups.length} 组</span>
+                </div>
+                <div className="vs-table">
+                  {vs.groups.map(g => (
+                    <div className="vs-grp" key={g.group}>
+                      <div className="vs-grp-name">{g.group}</div>
+                      {(g.items || []).map(it => (
+                        <div className="vs-row" key={it.key}>
+                          <span className="vs-label">{it.label}</span>
+                          <code className="vs-voice">{it.voice}</code>
+                          <span className="vs-gender">{it.gender === 'f' ? '女' : it.gender === 'm' ? '男' : '—'}</span>
+                          <span className={'vs-src' + (it.provider === 'local' ? ' local' : '')}>
+                            {it.provider === 'local'
+                              ? (vsDraft?.provider === 'local_http' ? '本地·启用' : '本地·未启用')
+                              : '在线'}
+                          </span>
+                          <button className="small ghost" onClick={() => previewVs(it.voice)} title="试听">🔊</button>
+                          {vs.builtin_keys.indexOf(it.key) < 0
+                            ? <button className={'small ghost vs-del' + (confirmDel === it.key ? ' armed' : '')}
+                                disabled={!!vsBusy}
+                                onClick={() => delVsItem(it.key, it.label)}>
+                                {confirmDel === it.key ? '确认删' : '删'}
+                              </button>
+                            : <span className="vs-del-ph" title="内置音色不可删" />}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                <div className="vs-add">
+                  <div className="vs-add-title">添加本地音色</div>
+                  <div className="vs-add-row">
+                    <input className="cfg-input" placeholder="分组（如 本地音色）" value={newVoice.group}
+                      onChange={e => setNewVoice(n => ({ ...n, group: e.target.value }))} />
+                    <input className="cfg-input" placeholder="显示名（如 林越·低沉）" value={newVoice.label}
+                      onChange={e => setNewVoice(n => ({ ...n, label: e.target.value }))} />
+                    <input className="cfg-input" placeholder="voice id（服务里的音色/参考音频名）" value={newVoice.voice}
+                      onChange={e => setNewVoice(n => ({ ...n, voice: e.target.value }))} />
+                    <select className="cfg-select" value={newVoice.gender}
+                      onChange={e => setNewVoice(n => ({ ...n, gender: e.target.value }))}>
+                      <option value="f">女声</option>
+                      <option value="m">男声</option>
+                    </select>
+                    <button className="small" disabled={!!vsBusy} onClick={addVsItem}>
+                      {vsBusy === 'add' ? '添加中…' : '添加'}
+                    </button>
+                  </div>
+                  <div className="cfg-tip">新音色写进 data/voice_sources.yaml，配音页下拉立即出现；本地音色只有「音色源类型=本地 HTTP 服务」时才真正调服务。</div>
+                </div>
+              </div>
+            </>}
+            {!vs && <div className="cfg-note">正在读取音色源…</div>}
           </div>
 
           <div className="cfg-actions">
-            <div className="cfg-msg">{msg}</div>
-            <div className="cfg-btns">
-              <button className="ghost" disabled={!!busy} onClick={restartComfy}>
-                {busy === 'comfy' ? '重启中…' : '重启 ComfyUI'}
-              </button>
-              <button disabled={!!busy} onClick={save}>{busy === 'save' ? '保存中…' : '保存配置'}</button>
-            </div>
+            {tab === 'tts' ? <>
+              <div className="cfg-msg">{vsMsg}</div>
+              <div className="cfg-btns">
+                <button className="ghost" disabled={!!vsBusy} onClick={probeVs}>
+                  {vsBusy === 'probe' ? '探测中…' : '测试连接'}
+                </button>
+                <button disabled={!!vsBusy} onClick={saveVsSource}>
+                  {vsBusy === 'save' ? '保存中…' : '保存音色源'}
+                </button>
+              </div>
+            </> : <>
+              <div className="cfg-msg">{msg}</div>
+              <div className="cfg-btns">
+                <button className="ghost" disabled={!!busy} onClick={restartComfy}>
+                  {busy === 'comfy' ? '重启中…' : '重启 ComfyUI'}
+                </button>
+                <button disabled={!!busy} onClick={save}>{busy === 'save' ? '保存中…' : '保存配置'}</button>
+              </div>
+            </>}
           </div>
         </>}
       </div>

@@ -14,12 +14,14 @@ import json
 import re
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
 import edge_tts
 from sqlalchemy import select
 
+from .. import voice_sources
 from ..config import FFMPEG
 from ..db import Character, Episode, Project, Shot, TaskRecord
 from ..scheduler.queue import update_progress
@@ -27,37 +29,24 @@ from ..scheduler.queue import update_progress
 FFPROBE = FFMPEG.with_name("ffprobe.exe")
 ASSETS_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "projects"
 
-# 音色全量库（2026-11-21 用 edge_tts.list_voices() 实测的中文音色全集，14 个——
-# 旧菜单里 Xiaojian/Xiaoxuan/Yunfeng/Yunye 等在 edge-tts 免费接口中不存在，选了会 TTS 失败，
-# 已全部剔除。gender 标注 f/m：角色音色必须与角色性别匹配（拆解描述猜性别 + 设置时强校验）。
-VOICE_MENU = [
-    {"group": "普通话女声", "items": [
-        {"key": "xiaoxiao", "label": "晓晓 · 温暖通用（女）", "voice": "zh-CN-XiaoxiaoNeural", "gender": "f"},
-        {"key": "xiaoyi",   "label": "晓伊 · 年轻少女感（女）", "voice": "zh-CN-XiaoyiNeural", "gender": "f"},
-    ]},
-    {"group": "普通话男声", "items": [
-        {"key": "yunjian",  "label": "云健 · 沉稳磁性（成熟男性）", "voice": "zh-CN-YunjianNeural", "gender": "m"},
-        {"key": "yunxi",    "label": "云希 · 阳光青年（男主常用）", "voice": "zh-CN-YunxiNeural", "gender": "m"},
-        {"key": "yunyang",  "label": "云扬 · 专业旁白/新闻（男）", "voice": "zh-CN-YunyangNeural", "gender": "m"},
-        {"key": "yunxia",   "label": "云夏 · 少年音（男）", "voice": "zh-CN-YunxiaNeural", "gender": "m"},
-    ]},
-    {"group": "方言与地区 · 女", "items": [
-        {"key": "shaanxi",  "label": "晓妮 · 陕西话女声", "voice": "zh-CN-shaanxi-XiaoniNeural", "gender": "f"},
-        {"key": "dongbei",  "label": "晓北 · 东北话女声", "voice": "zh-CN-liaoning-XiaobeiNeural", "gender": "f"},
-        {"key": "cantonesef", "label": "曉曼 · 粤语女声（香港）", "voice": "zh-HK-HiuMaanNeural", "gender": "f"},
-        {"key": "cantonesef2", "label": "曉佳 · 粤语女声（书卷感）", "voice": "zh-HK-HiuGaaiNeural", "gender": "f"},
-        {"key": "taiwanf",  "label": "曉臻 · 台湾腔女声", "voice": "zh-TW-HsiaoChenNeural", "gender": "f"},
-        {"key": "taiwanf2", "label": "曉瑜 · 台湾腔女声（清新）", "voice": "zh-TW-HsiaoYuNeural", "gender": "f"},
-    ]},
-    {"group": "方言与地区 · 男", "items": [
-        {"key": "cantonesem", "label": "雲龍 · 粤语男声（香港）", "voice": "zh-HK-WanLungNeural", "gender": "m"},
-        {"key": "taiwanm",  "label": "雲哲 · 台湾腔男声", "voice": "zh-TW-YunJheNeural", "gender": "m"},
-    ]},
-]
-VOICE_GENDER = {i["voice"]: i["gender"] for g in VOICE_MENU for i in g["items"]}
+# 音色清单已迁到 data/voice_sources.yaml（后台配置「音色源」选项卡可增删）：
+# 内置 14 个 edge-tts 音色是默认种子（2026-11-21 用 edge_tts.list_voices() 实测，
+# 旧菜单里 Xiaojian/Xiaoxuan/Yunfeng/Yunye 等在免费接口不存在、选了会失败，已剔除）；
+# 自定义本地音色按 provider=local 走自建 HTTP TTS 服务。gender 标注 f/m：
+# 角色音色必须与角色性别匹配（拆解描述猜性别 + 设置时强校验）。
+def voice_menu() -> list[dict]:
+    return voice_sources.menu()
+
+
+def voice_gender(voice: str) -> str:
+    return voice_sources.gender_map().get(voice, "")
+
+
+def voice_key(voice: str) -> str:
+    return voice_sources.key_map().get(voice, "")
+
+
 NARRATOR_DEFAULT = "zh-CN-YunyangNeural"
-# 兼容旧字段：音色名 → 菜单 key
-VOICE_KEYS = {i["voice"]: i["key"] for g in VOICE_MENU for i in g["items"]}
 
 
 def _proj_dir(pid: int) -> Path:
@@ -115,8 +104,9 @@ def pick_free_voice(db, project_id: int, description: str = "") -> str | None:
     """
     taken = set(taken_voices(db, project_id))
     g = guess_gender(description)
-    female_groups = [grp for grp in VOICE_MENU if grp["group"].endswith("女") or "女" in grp["group"]]
-    male_groups = [grp for grp in VOICE_MENU if grp not in female_groups]
+    menu = voice_menu()
+    female_groups = [grp for grp in menu if grp["group"].endswith("女") or "女" in grp["group"]]
+    male_groups = [grp for grp in menu if grp not in female_groups]
     ordered = (female_groups + male_groups) if g == "f" else (male_groups + female_groups)
     for item in [i for grp in ordered for i in grp["items"]]:
         if item["voice"] not in taken:
@@ -176,8 +166,67 @@ def _tone_params(tone: str) -> tuple[str, str]:
 
 async def _tts_one(text: str, voice: str, out_path: Path, rate: str = "+0%",
                    pitch: str = "+0Hz"):
+    """单条 TTS：按音色条目的 provider 分派（edge 在线 / local 自建 HTTP 服务）。
+
+    rate/pitch 只有 edge-tts 认；本地服务不传（不同引擎参数不通用，强传会被拒）。
+    """
+    if voice_sources.provider_for(voice) == "local":
+        await _tts_local(text, voice, out_path)
+        return
     c = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
     await c.save(str(out_path))
+
+
+async def _tts_local(text: str, voice: str, out_path: Path):
+    """本地 TTS 服务出音频。支持两种协议：
+
+    - gpt-sovits：POST {base}/tts，{text, text_lang, ref_audio_path=voice, media_type: mp3}
+      （GPT-SoVITS api_v2 `api_v2.py` 的标准入参；voice 填参考音频文件名或 speaker）
+    - openai：POST {base}/v1/audio/speech，{model, input, voice, response_format: mp3}
+      （Kokoro-FastAPI / openedai-speech 等 OpenAI 兼容服务）
+
+    产物落地仍用上层给定的 .mp3 路径（文件名是成片混音的约定，不可变）。
+    """
+    import httpx
+    conf = voice_sources.local_conf()
+    base, api, timeout = conf["url"].rstrip("/"), conf["api"], conf["timeout"]
+    if not base:
+        raise RuntimeError("本地音色源未配置服务地址（后台配置 → 音色源）")
+    if not voice:
+        raise RuntimeError("音色 id 为空")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            if api == "openai":
+                r = await c.post(f"{base}/v1/audio/speech", json={
+                    "model": "tts-1", "input": text, "voice": voice,
+                    "response_format": "mp3", "speed": 1.0})
+            else:
+                r = await c.post(f"{base}/tts", json={
+                    "text": text, "text_lang": "zh", "ref_audio_path": voice,
+                    "prompt_text": "", "prompt_lang": "zh",
+                    "media_type": "mp3", "streaming_mode": False})
+    except Exception as e:
+        raise RuntimeError(f"本地 TTS 服务连不上 {base}（{api}）：{type(e).__name__}: {e}")
+    body = getattr(r, "content", b"") or b""
+    if r.status_code >= 400:
+        raise RuntimeError(f"本地 TTS 服务返回 {r.status_code}：{body[:200].decode('utf-8', 'ignore')}")
+    if len(body) < 1000:
+        raise RuntimeError(f"本地 TTS 返回音频过短（{len(body)} 字节）——检查服务端是否就绪、"
+                           f"音色「{voice}」是否在服务里登记")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(body)
+
+
+def audio_media_type(path: Path) -> str:
+    """按文件头判音频 MIME（本地服务的 mp3 声明可能不靠谱，试听接口别硬写 audio/mpeg）。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except Exception:
+        return "audio/mpeg"
+    if head[:4] == b"RIFF":
+        return "audio/wav"
+    return "audio/mpeg"
 
 
 async def tts_episode(db, t: TaskRecord, params: dict) -> dict:

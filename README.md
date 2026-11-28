@@ -1,6 +1,6 @@
 # Drama Studio — 纯本地 AI 短剧生产流水线
 
-> **100% 本地生成**：剧本推理走本地 Ollama，画面/视频走本地 ComfyUI，配音走本地可调用的 edge-tts 免费音色引擎 —— **全流程零云端 API、零按次付费、数据不出本机**。
+> **100% 本地生成**：剧本推理走本地 Ollama，画面/视频走本地 ComfyUI，配音默认走 edge-tts 免费音色引擎、可在音色源里一键切到本机自建 TTS 服务 —— **全流程零云端 API、零按次付费、数据不出本机**。
 > 为 **8GB 显存笔记本 GPU（RTX 4070 Laptop）** 量身调优：显存感知选档 + 串行调度 + 显存卸载，高端模型也能跑。
 > 所有底模档位、参考链路模型、LoRA 目录、加速方法与服务地址都能在界面左侧 **「⚙️ 配置」后台面板**里改，不用动代码。
 
@@ -71,7 +71,7 @@
 
 | 模块 | 功能 | 技术 |
 |---|---|---|
-| 配音成片 | 音色跨集锁定 + 角色性别强匹配 + 语气层（11 种情绪映射语速音调）+ 混音 + SRT 烧录（NVENC 硬编） | edge-tts + ffmpeg |
+| 配音成片 | 音色跨集锁定 + 角色性别强匹配 + 语气层（11 种情绪映射语速音调）+ 混音 + SRT 烧录（NVENC 硬编）；音色清单本地可配（`data/voice_sources.yaml`），可按条切本地 TTS 服务 | edge-tts（默认）/ 本地 HTTP TTS（GPT-SoVITS · OpenAI 兼容）+ ffmpeg |
 | 批量编排 | 一键全流程（首帧→视频→配音→成片）/ 断点续跑 / 向后重链 / 断链即停 | FastAPI 编排 |
 | 外部导出 | **剪映草稿 JSON** 与 **FCPXML**（Premiere / DaVinci / FCPX 可导入），AI 生成 + 人工精剪两开花 | pipeline_service |
 
@@ -87,7 +87,7 @@
 | 图上的文字 · **自动迭代判字**（**#101**） | 「📝 改字」默认开自动迭代：每轮画完用**本地 OCR**（RapidOCR / PP-OCRv4 ONNX，CPU 即可跑，零 token、零显存占用，不与 ComfyUI 抢 8G 卡）读一遍框内的字，与目标逐字比对；不达标就按生成情况**重新框选再画**，直到读对或用完轮次（默认 3 轮，可选 1–5）。判定口径：中文短句（≤4 字）要求全对、长句命中 ≥90%，英文单词 ≥85%，另看 OCR 置信度；尺寸标注（300 / 507.68 / 620×840）不算文字内容，判定前剔除。缩框**看情况而不是机械等比缩小**：目标字只占框的一部分（<55%）时收到"目标字最集中"的那一块、面积压到上一轮 85% 以内；目标字本来就占满框（竖排五字顶到框边）时**不缩**——实测缩到 26%×46% 会把第五个字切掉、出「券」+ 叠笔残影。短边到 56px 即停（再小模型写不出清晰字）。每轮换 seed、重绘强度 +0.05（上限 0.95）、第 2 轮起追加"蒙版内原有字形必须完全擦除，不得保留旧笔画或残影"，并且**每轮都回到原始图重画**（不在上一轮产物上再叠一遍，否则错字残笔会一层层堆着，越迭越糊）。能定位到"具体是第几个字写错了"时（整串 ≥3 字、OCR 读数与目标逐位对齐），**把框收窄到那一个字**、提示词也只写这一个字——整段重写经常"改对一个、又写坏另一个"。**落库取最好的一轮而不是最后一轮**（按命中率 + 置信度挑），中间轮文件物理删除；连续两轮读不出字、或命中率不再提升会自动停，不白烧时间。弹窗里可开/关、选轮次，任务进度与结果里能看到每轮命中率、框尺寸与 OCR 读数。**已知盲区**：旧字的下半截若落在框底之外，会以一小块"残笔"留在图上（OCR 不把它算作字，判定看不出来）——拖框时把下缘多留 5% 即可；发光红字 / 极小标注 OCR 读不出，会在两轮后判"读不出字"停止 | `app/services/text_ocr.py` · `app/services/text_judge.py` · `app/services/text_edit_service.py` · `POST /api/assets/{aid}/text-edit` |
 | 带文字道具 · 双本地文字模型（**#99**） | 带文字道具按**要写的字**自动分流，两条都是本地权重、零云端：**中文 → MOSS-Image SFT INT8 + 8 步 DMD 蒸馏**（`img_moss_text`，768×1344 约 36–40 秒；毛笔竖排五字逐字准，皱纸 / 朱印 / 水墨 / 边缘光保真）；**英文 → Ideogram 4 fp8 双模型 + Qwen3-VL 8B 编码器**（`img_ideogram4_text`，`Ideogram4Scheduler` 20 步、`CFGOverride` 3.0（0.7–1.0）、`DualModelGuider` cfg 7、mu 0.0 / std 1.5，约 85 秒；`QING YUN SECT TOKEN` 逐字母准确）。**Ideogram 4 必须吃结构化 JSON caption**：自然语言 prompt 一律回灰底「Image blocked by safety filter」（连 "a red apple on a wooden table" 都被拦，int8 与 bf16 编码器均复现），换成 caption 结构立刻正常 —— 英文档由 `text_caption.build_caption()` 用槽位现拼 caption；两条硬经验：obj 描述里必须剔掉要写的同一串字（否则模型把文字画两遍、重叠错位），文字块要给"宽块 + 每词一行"（窄高块会把 `SECT` 压成 `SEC` 并混入中文伪字）。中文档反向强调"画面中只出现这几个字"，压掉周边装饰小字。分流位置 `asset_service.generate_asset`：`role=prop` + 有 `surface_text` + 未显式指定 `model_key` → `text_prop.detect_lang` 判语言 → 点名 `img_moss_text` / `img_ideogram4_text`（两档 `auto: false`，不会被自动选档误选）；文字档画幅强制 16 倍数（`Ideogram4Scheduler` / `EmptyFlux2LatentImage` 的硬约束）。 | `app/text_prop.py` · `app/text_caption.py` · `app/services/asset_service.py` · `workflows/prop_text_moss.json` · `workflows/prop_text_ideogram4.json` · `data/models.yaml` |
 | 光影 / 色彩滤镜预设 | 对齐 RHTV 图片/视频节点底部的"滤镜条"：18 条预设（**光线 12**：黄金时刻 / 蓝调时刻 / 阴天柔光 / 烛火暖光 / 月光冷调 / 霓虹夜 / 正午硬光 / 柔光棚拍 / 逆光剪影 / 底光诡异 / 窗棂光柱 / 薄雾漫射；**色彩 6**：青橙电影调 / 漂白高对比 / 胶片低饱和 / 国潮高饱和 / 黑白水墨 / 奶油柔粉），点选即把成套光影词塞进首帧提示词，一串镜头观感自动统一。**三级作用域**：单镜（导演台）> 全片（剧本页「全片光影 / 色彩」下拉）> 空（各镜自己的光位描述）。**纯提示词层，零 token、零云端调用**：写入即本地重算全项目提示词（不重跑 LLM），无后期 LUT、无额外模型；只进图片侧（首帧 / 尾帧 / 关键帧），不进 I2V 视频提示词（避免逐帧重新想象颜色导致闪烁）。分镜短模板只给 4 词短版词组，防止挤掉内容项 | `app/light_grades.py` · `GET /api/director/meta` · `POST /api/shots/{id}/director-apply` · `POST /api/projects/{pid}/light-grade` |
-| 后台配置 | 左侧导航「⚙️ 配置」一个入口管全部参数：6 个模型档（生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / **参考生视频（H3 turbo / Wan2.2 首尾帧 Q4 两档可选）** / 口型）、LoRA 根目录与 4 步蒸馏 LoRA、注意力后端（PyTorch / SageAttention）、WAN 采样步数、ComfyUI 与 Ollama 服务地址。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝。**无任何云端出图 key 配置**——图片链路全本地 | settings.py + `/api/settings` |
+| 后台配置 | 顶部四个选项卡管全部参数：**模型档位**（6 个模型档：生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / **参考生视频（H3 turbo / Wan2.2 首尾帧 Q4 两档可选）** / 口型）、**LoRA 与加速**（LoRA 根目录、4 步蒸馏 LoRA 开关、注意力后端 PyTorch / SageAttention、WAN 采样步数）、**服务与路径**（ComfyUI / Ollama 地址与安装目录、extra_model_paths）、**音色源（本地）**（全局切 edge-tts / 本地 HTTP 服务、协议与超时、音色清单增删与逐条试听、连接探测）。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝。**无任何云端出图 key 配置**——图片与语音链路全本地 | settings.py + voice_sources.py + `/api/settings` + `/api/voice-sources` |
 
 ## 方法论（内建于代码，非文档）
 
@@ -126,6 +126,8 @@
 - **全程序审查第二轮（#96）**：从"配置存得下"转到"配置跑得通"，又挖出 6 个真 bug：①`PUT /api/settings` 收到 `{"models":"abc"}` / `{"lora":[1,2]}` 直接 500（`.items()` 打在 str/list 上，日志只剩 traceback）——改为结构预校验、返回 400 中文原因。②服务地址传数字被 `str()` 存成 `"123"`，之后所有 ComfyUI/Ollama 请求全挂、还要重启后端才发现——加 URL 格式校验。③路径字段不校验存在性，`Z:/nope` 也能存进面板，真跑起来找不到 python / 权重 / LoRA——保存时校验目录/文件存在。④面板「参考生视频」列了 5 个视频档，但转场双帧链路的 overrides 写死 `MiniMaxH3ImageToVideo.*` 节点，只有 `video_h3_turbo.json` 能对上（原代码还是 `VIDEO_WF_BY_MODEL[model_key]` 直接索引，非 H3 档直接 KeyError）——下拉收成 H3 turbo 一项、保存时拒绝其他档、任务侧再兜一道回退。⑤`vid_wan_i2v_aio` 没有工作流模板却留在视频下拉里，选了会"拿 wan21 模板套 aio 权重"，跑到 ComfyUI 才报节点/权重错——`/api/models` 与面板只列真有模板的 4 个档。⑥点「取消」只 cancel 了后端协程，ComfyUI 侧那个 prompt 没人收尾、继续占 GPU（8G 上 WAN 一条 108s、H3 15-30 分钟）还堵住后面任务——`run()` 捕获 CancelledError 后用 shield 先删 pending + interrupt 收尾，再释放重锁。另修：ComfyUI 冷启动期（进程已起、8188 未开）点面板「重启 ComfyUI」会把正在加载权重的进程 taskkill、启动进度清零重来（改为 409 提示等就绪）；`/api/health` 在 ComfyUI 挂掉时每次探 8 秒 socket，前端 15 秒轮询会堆积（收到 1.5 秒）；SSE 遇前端刷新断连每次往 err 日志灌 40 行 `WinError 10054` traceback（历史累积 500+ 条，真错误全被埋），改为正常退出；AnythingXL 混在参考生图下拉里（SD1.5 权重配 SDXL IPAdapter 必崩），标 `ref_image: false` 后从下拉移除并拒绝写入；前端 localStorage 里已被下架的视频档会继续发旧 key，改为加载模型列表时自动清空回默认档。验证：配置接口 26 项断言全过（15 种非法值全部 400 且原因可读、合法写入与 `/api/models` 联动正常）、假 ComfyUI 抓到取消时的 `queue delete + interrupt`、真机 ComfyUI 超分 E2E 4.8s 出图 1.8MB、38 条 GET 路由冒烟只有 5 个"尚未生成"的正常 404、面板下拉项数与后端一致（生视频 4 / 参考生图 2 / 参考生视频 1）。
 - **全程序审查（#95）**：对着配置面板逐项回查"面板有没有真接线"，挖出 5 个真 bug 并修：①注意力后端改成 sage 后点「重启 ComfyUI」仍以 pytorch 起（启动参数是 import 期常量）——改为守护进程每次拉起现读配置；②面板的「蒸馏 LoRA 文件」选择只存不读——现在只接管 wan2.1 480P 蒸馏族节点，双帧 wan2.2 高低噪与 H3 turbo 模板不受影响；③关闭蒸馏时的采样步数默认写成 4（等于关了还是 4 步必糊）——默认抬到 20、夹在 1-80；④Ollama 模型选择只存不读——`effective_model()` 统一兜底；⑤PUT 可写入非法档位（如把 Qwen 塞进参考生图），要等任务跑到 ComfyUI 才 400——保存时就校验 registry/role/family 并拒绝。另修：写实族触发九宫格时 RealVisXL 无 grid9 角色导致整条任务 failed（改为回退带 grid9 的 SDXL 档）、`"false"` 字符串被 `bool()` 判成 True、前端全量回传导致每次保存都提示"重启后端+重启 ComfyUI"（改为只提交变化键 + 后端按实际变化判 need_restart）。验证：38 条 GET 路由冒烟 0 异常、pyflakes 无未定义名、加速开关与 LoRA 替换用假 ComfyUI 客户端抓提交体逐条核对。
 - **后台配置面板（#94）**：模型档散落在 `models.yaml` / 选档逻辑 / 工作流里，改一处要动代码——现在左侧导航底部「⚙️ 配置」一个入口全管：六个模型档（生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / 参考生视频 / 口型）、LoRA 根目录（面板直接扫出全部 safetensors，当前 188 个）、4 步蒸馏 LoRA 选择与开关、WAN 采样步数、注意力后端（PyTorch / SageAttention）、ComfyUI 与 Ollama 服务地址。配置写 `backend/data/settings.yaml`（运行时生成、不进 git），`pick_model` 在 models.yaml 默认之前读它，显式 model_key / prefer_tier 仍优先；服务地址在进程最早期写进 `os.environ` 供 `config.py` 读取，注意力开关直接转译成 ComfyUI 的 `--use-sage-attention` 启动参数。模型档即时生效，服务地址与路径重启后端，注意力重启 ComfyUI（面板内置一键重启，队列忙时拒绝）。API：`GET/PUT /api/settings`、`GET /api/settings/loras`、`POST /api/settings/restart-comfy`。
+
+- **音色源本地化 + 配置选项卡（#106）**：配音的唯一出口是 `_tts_one()` 里的 `edge_tts.Communicate`，14 条音色硬编码在 `voice_service.VOICE_MENU`——想加一条自己克隆的音色、或把配音从在线 edge 换成本机引擎，都得改代码。现在：①音色清单迁到 `backend/data/voice_sources.yaml`（首次启动从内置 14 条 edge 音色落盘；`builtin_keys` 受保护不可删，避免把下拉删空）；②`_tts_one` 按音色条目的 provider 分派——`edge` 走在线，`local` 走自建 HTTP 服务（支持 GPT-SoVITS `POST /tts`（`ref_audio_path` = voice）与 OpenAI 兼容 `POST /v1/audio/speech`，本地通道不传 rate/pitch：不同引擎参数不通用，强传会被拒）；③配音产物路径与文件名一处没动（`p{pid}_e{eid}_s{idx}_vo{seq}.mp3` 是混音与成片的硬约定），所以 `export_final` / `_collect_vo_audio` 零改动；本地服务返回 wav 时试听接口按文件头判 MIME（不硬写 `audio/mpeg`）；④后台配置从纵向分区改成顶部四选项卡（`cfg-body` 挂 `data-tab` + CSS 显隐，不动三大块既有 JSX），音色源页签含类型 / 地址 / 协议 / 超时、连接探测、分组清单（名称 / voice id / 性别 / 来源 / 试听 / 删除）与添加表单；⑤`GET /api/voice-presets` 改为读清单，配音页下拉、音色占用表与性别强校验自动跟随新音色，无需二次改前端；⑥删除做成 3 秒两段式（原生 `confirm()` 会阻塞页面 JS，实测把整个配置弹窗卡死，自动化也无从恢复）。API：`GET/PUT /api/voice-sources`、`POST /api/voice-sources/items`、`DELETE /api/voice-sources/items/{key}`、`POST /api/voice-sources/probe`。验证：接口层 8 项（添加→菜单出现→探测失败提示→本地试听 502 带原因→保存校验 400→删除清理）、edge 试听回归 29KB/1.3s、UI 层（4 选项卡切显、清单 14 行全可见、添加后 15 行并标"本地·未启用"、切 local_http 后变"本地·启用"、两段式删除回到 14 行）。
 
 > 方法论源自对 10+ 开源 AI 视频工具（Jellyfish / ArcReel / Toonflow / moyin-creator 等）的源码级拆解与实战迭代，每条规则都标注了触发它的真实事故。
 
@@ -224,6 +226,8 @@ Register-ScheduledTask -TaskName "ComfyUI-Watchdog" -Action $a -Trigger $t2 -Set
    保存时会做值校验，写错当场拒绝、不会等任务跑到一半才报错：参考生图只接受 SDXL 族档位（首帧/九宫格模板绑死 SDXL；AnythingXL 这类实为 SD1.5 的档标了 `ref_image: false`，会被挡）；视频位必须真有工作流模板（`vid_wan_i2v_aio` 没有模板，不出现在下拉里）；参考生视频只接受真带首尾帧约束的两档（`vid_h3_turbo` 24fps 带原生音频、`vid_wan22_flf_q4` 16fps 双模型 4 步更省显存；单帧 i2v 模板没有 end_image，选了会 400）；蒸馏 LoRA 必须能在 LoRA 目录里找到；服务地址必须是 `http://主机:端口`；安装目录 / extra_model_paths / LoRA 目录必须真实存在；采样步数必须是整数，注意力只接受 pytorch / sage。请求体结构不对（如 `"models": "abc"`）同样返回 400 而不是 500。
    
    加速项还可关闭 WAN 的 4 步蒸馏 LoRA 并把采样步数抬到 16-24（默认 20），画质更实、耗时更久。
+
+   **音色源（本地）**是同一面板的第四个选项卡：全局可在 `edge-tts 在线` / `本地 HTTP 服务` 之间切换（本地服务支持 GPT-SoVITS `POST /tts` 与 OpenAI 兼容 `POST /v1/audio/speech`，可填地址 / 协议 / 超时并「测试连接」）。音色清单存在 `backend/data/voice_sources.yaml`（运行时生成、不进 git），内置 14 个 edge 音色受保护不可删；自定义音色按「分组 / 显示名 / voice id / 性别」添加，加完配音页下拉立即出现，每条都能单独试听。内置音色固定走 edge，只有 `provider: local` 的条目才走本地服务——切过去不会把现有 14 个音色弄坏。
 2. **模型注册表**：复制 `backend/data/models.example.yaml` 为 `backend/data/models.yaml`，把 `weight` 改成你 ComfyUI `models` 目录里实际存在的权重文件名（面板里的下拉项就从这份注册表来）。
 3. **本机路径**（可选）：`backend/app/config.py` 支持环境变量覆盖——
    - `DRAMA_COMFYUI_INPUT_DIR`：ComfyUI input 共享目录
@@ -248,6 +252,7 @@ backend/
     db.py                # SQLAlchemy 模型 + 轻量迁移
     style_presets.py     # 57 种风格预设（列表显示 39 种）/ 设计图版式 / 方法论提示词组装 / 活人感词库
     settings.py          # 后台配置：运行时读写 settings.yaml + 进程早期注入环境变量（选档覆盖 / 加速开关）
+    voice_sources.py     # 音色源：读写 data/voice_sources.yaml（音色清单 + edge/本地 provider 分派 + 服务探测）
     style_vocab.py       # 双层词库：26 风格包 × 14 红果爆款题材包（风格/题材/负面词）
     aspect.py            # 全局画幅桶（SDXL 分辨率桶 + IPA 压长边策略）
     adapters/            # ComfyUI（D 范式结构化覆盖）/ Ollama 适配器
@@ -296,11 +301,12 @@ frontend/
 
 ## 演示截图
 
-> 截图均来自本机真实生产会话（演示项目《高武》：3D 国风风格锁、60 集、第 1 集已出 13 镜成片），按后台配置 → 项目 → 剧本 → 资产 → 分镜 → 配音 → 成片的实际使用顺序排列，全部为当前版本界面（含 #104 风格库叠名与风格锁信息条）。
+> 截图均来自本机真实生产会话（演示项目《高武》：3D 国风风格锁、60 集、第 1 集已出 13 镜成片），按后台配置 → 项目 → 剧本 → 资产 → 分镜 → 配音 → 成片的实际使用顺序排列，全部为当前版本界面（含 #104 风格库叠名与风格锁信息条、#106 后台配置选项卡与音色源）。
 
 | 步骤 | 模块 | 截图 |
 |---|---|---|
-| 0 | **后台配置**（模型档 / 参考链路 / LoRA 与加速 / 服务与路径，写回 `data/settings.yaml`） | ![配置](docs/screenshots/01_settings.png) |
+| 0 | **后台配置**（顶部分四个选项卡：模型档位 / LoRA 与加速 / 服务与路径 / 音色源（本地），前四类写回 `data/settings.yaml`） | ![配置](docs/screenshots/01_settings.png) |
+| 0b | **音色源（本地）**（音色清单从硬编码迁到 `data/voice_sources.yaml`：14 个内置 edge 音色 + 可增删的本地音色；全局切 edge-tts / 本地 HTTP 服务，带连接探测与逐条试听） | ![音色源](docs/screenshots/09_voice_source.png) |
 | 1 | **项目中心**（新建项目：名称 + 一句话描述；卡片直达工作台） | ![项目](docs/screenshots/02_projects.png) |
 | 2 | **剧本工坊**（全局风格锁只读信息条 + 锁词 / 光影滤镜 / 题材词库 / 画幅与转场开关；大纲、分集列表、本集剧本同屏） | ![剧本](docs/screenshots/03_script.png) |
 | 2b | **风格库**（39 种可见风格 / 8 分类，卡片缩略图底部叠风格名，选中项右上角「当前」；点卡片整体切换风格锁） | ![风格库](docs/screenshots/04_style_library.png) |

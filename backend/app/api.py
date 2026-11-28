@@ -2324,7 +2324,8 @@ class VoiceIn(BaseModel):
 
 @router.get("/voice-presets")
 def voice_presets():
-    return voice_service.VOICE_MENU
+    """音色下拉菜单（来自 data/voice_sources.yaml，后台「音色源」可直接增删）。"""
+    return voice_service.voice_menu()
 
 
 @router.get("/projects/{pid}/voice-availability")
@@ -2365,14 +2366,89 @@ def get_narrator_voice(pid: int):
 
 @router.get("/voice-preview-file")
 async def voice_preview_file(voice: str, pid: int = 1):
-    """试听音色：GET 直接返回样音 mp3（无缓存则现生成，同音色缓存复用）。"""
+    """试听音色：GET 直接返回样音 mp3（无缓存则现生成，同音色缓存复用）。
+
+    本地音色走自建 HTTP 服务，返回的可能是 wav → MIME 按文件头判，别硬写 audio/mpeg。
+    """
     if not voice:
         raise HTTPException(400, "请先选择音色")
     try:
         f = await voice_service.voice_preview(voice, pid)
     except Exception as e:
         raise HTTPException(502, f"试听生成失败：{e}")
-    return FileResponse(f, media_type="audio/mpeg")
+    return FileResponse(f, media_type=voice_service.audio_media_type(f))
+
+
+# ---------- 音色源（本地音色清单 + 本地 TTS 服务） ----------
+
+class VoiceSourceIn(BaseModel):
+    provider: str | None = None
+    local_url: str | None = None
+    local_api: str | None = None
+    local_timeout: int | None = None
+
+
+class VoiceItemIn(BaseModel):
+    group: str = "本地音色"
+    label: str
+    voice: str
+    gender: str
+    provider: str = "local"
+
+
+@router.get("/voice-sources")
+def get_voice_sources():
+    """音色源总览：{file, provider, local, groups, count, builtin_keys}。"""
+    from . import voice_sources
+    return voice_sources.public()
+
+
+@router.put("/voice-sources")
+def put_voice_sources(body: VoiceSourceIn):
+    """改全局音色源（edge 在线 / local_http 本地）与本地服务连接参数。"""
+    from . import voice_sources
+    try:
+        return voice_sources.set_source(
+            provider=body.provider,
+            local={k: v for k, v in {
+                "url": body.local_url, "api": body.local_api,
+                "timeout": body.local_timeout}.items() if v is not None} or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/voice-sources/items")
+def add_voice_source_item(body: VoiceItemIn):
+    """新增一条音色（本地音色写 provider=local，voice 填本地服务里的音色/参考音频名）。"""
+    from . import voice_sources
+    try:
+        return voice_sources.add_item(body.group, body.label, body.voice,
+                                      body.gender, body.provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/voice-sources/items/{key}")
+def del_voice_source_item(key: str):
+    """删除自定义音色（内置 14 个 edge 音色受保护，不可删）。"""
+    from . import voice_sources
+    try:
+        return voice_sources.remove_item(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class VoiceProbeIn(BaseModel):
+    url: str | None = None
+    api: str | None = None
+
+
+@router.post("/voice-sources/probe")
+def probe_voice_source(body: VoiceProbeIn | None = None):
+    """探测本地 TTS 服务：可达性 + 尽力列音色（/v1/voices、/voices）。"""
+    from . import voice_sources
+    b = body or VoiceProbeIn()
+    return voice_sources.probe(url=b.url, api=b.api)
 
 
 @router.post("/characters/{cid}/voice")
@@ -2390,7 +2466,7 @@ async def set_character_voice(cid: int, body: VoiceIn):
             # 性别匹配：女角色禁用男声、男角色禁用女声（描述判不出性别时不强判）
             desc = f"{ch.description or ''} {getattr(ch, 'prompt_json', '') or ''}"
             g = voice_service.guess_gender(desc)
-            vg = voice_service.VOICE_GENDER.get(body.voice)
+            vg = voice_service.voice_gender(body.voice)
             if g and vg and g != vg:
                 want = "女声" if g == "f" else "男声"
                 raise HTTPException(400, f"角色「{ch.name}」按描述应为{want}，请选对应性别的音色（性别不对就先改角色描述）")
