@@ -18,6 +18,11 @@ from pathlib import Path
 DATA = Path(__file__).resolve().parent.parent / "data"
 PROJECTS = DATA / "projects"
 
+# 台词闪避（ducking）默认关：开启后合成时用台词轨做侧链触发，说话时自动压低 BGM。
+# amount_db 是「压下去多少 dB」，合成时换算成 sidechaincompress 的 ratio（ratio = 10^(db/20)）。
+DEFAULT_DUCK = {"enabled": False, "amount_db": 12.0, "attack": 15.0,
+                "release": 300.0, "threshold": 0.02}
+
 
 def _path(pid: int, eid: int) -> Path:
     return PROJECTS / str(pid) / "audio_mix" / f"ep{eid}.json"
@@ -43,11 +48,15 @@ def load(pid: int, eid: int) -> dict:
         return {"bgm": {}, "shots": {}}
     d.setdefault("bgm", {})
     d.setdefault("shots", {})
+    duck = d.get("duck") if isinstance(d.get("duck"), dict) else {}
+    d["duck"] = {k: duck.get(k, v) for k, v in DEFAULT_DUCK.items()}
     return d
 
 
 def save(pid: int, eid: int, cfg: dict) -> dict:
-    cfg = {"bgm": cfg.get("bgm") or {}, "shots": cfg.get("shots") or {}}
+    duck = cfg.get("duck") if isinstance(cfg.get("duck"), dict) else {}
+    cfg = {"bgm": cfg.get("bgm") or {}, "shots": cfg.get("shots") or {},
+           "duck": {k: duck.get(k, v) for k, v in DEFAULT_DUCK.items()}}
     p = _path(pid, eid)
     p.parent.mkdir(parents=True, exist_ok=True)
     # 原子写：先写 .tmp 再 os.replace。直接覆盖原文件时，若进程在「截断→写入」之间被强杀
@@ -96,6 +105,26 @@ def set_shot(pid: int, eid: int, idx: int, ref: str, volume: float | None = 0.6,
     return save(pid, eid, cfg)
 
 
+def set_duck(pid: int, eid: int, enabled: bool | None = None,
+             amount_db: float | None = None, attack: float | None = None,
+             release: float | None = None, threshold: float | None = None) -> dict:
+    """台词闪避开关与参数。None = 沿用已保存值（前端只切开关时不会把强度冲回默认）。"""
+    cfg = load(pid, eid)
+    cur = dict(cfg.get("duck") or DEFAULT_DUCK)
+    if enabled is not None:
+        cur["enabled"] = bool(enabled)
+    if amount_db is not None:
+        cur["amount_db"] = max(0.0, min(float(amount_db), 30.0))
+    if attack is not None:
+        cur["attack"] = max(0.0, min(float(attack), 500.0))
+    if release is not None:
+        cur["release"] = max(10.0, min(float(release), 2000.0))
+    if threshold is not None:
+        cur["threshold"] = max(0.0001, min(float(threshold), 1.0))
+    cfg["duck"] = cur
+    return save(pid, eid, cfg)
+
+
 def summary(pid: int, eid: int) -> dict:
     """给前端用的摘要：带上解析后的文件名/是否存在，避免前端自己拼路径。"""
     from . import sfx_library as sfx
@@ -120,5 +149,6 @@ def summary(pid: int, eid: int) -> dict:
     return {
         "bgm": dict(bgm, ok=bool(bgm_path), name=bgm_name),
         "shots": shots,
+        "duck": cfg.get("duck") or DEFAULT_DUCK,
         "file": str(_path(pid, eid)),
     }

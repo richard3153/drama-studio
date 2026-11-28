@@ -86,6 +86,26 @@ EXTENDED_KW = [
     "funeral", "victory", "fanfare", "cartoon", "adventure",
 ]
 
+# 人声专补词包（--preset voice）：核心词包 / 扩展包里人声词占比低，Pixabay 人声素材存量也少，
+# 单独一轮人群 / 儿童 / 耳语 / 情绪反应关键词，把 voice 轨补到可用量级。
+VOICE_KW = [
+    # 人群（议论 / 嘈杂底流 / 欢呼 / 掌声 / 抗议）
+    "people", "people-talking", "crowd-talking", "crowd-laughing", "walla", "chatter",
+    "audience", "clapping", "cheer", "boo", "protest", "party", "wedding",
+    "restaurant-crowd", "market-crowd", "street-crowd", "office-chatter",
+    # 儿童
+    "children", "kids", "kids-playing", "toddler", "baby", "baby-laughing", "baby-crying",
+    "playground", "kindergarten",
+    # 耳语 / 低声 / 喃喃
+    "whisper", "whispering", "murmur", "mumbling", "low-voice", "gibberish",
+    # 情绪反应（笑 / 哭 / 喊 / 喘 / 咳）
+    "laugh", "giggle", "man-laughing", "woman-laughing", "scream", "screaming", "shout",
+    "yelling", "argue", "cry", "sobbing", "sigh", "gasp", "breath", "heavy-breath",
+    "groan", "moan", "cough", "sneeze", "yawn", "snore",
+    # 中文补充
+    "人声", "人群", "儿童", "耳语", "低声", "群众", "欢呼", "掌声", "喧闹",
+]
+
 _write_lock = threading.Lock()
 _state = {"ok": 0, "skip": 0, "fail": 0, "bytes": 0, "start": time.time()}
 _state_lock = threading.Lock()
@@ -353,7 +373,7 @@ def process_one(slug: str, sid: int, idx: dict, meta_lock: threading.Lock) -> No
 def main() -> None:
     ap = argparse.ArgumentParser(description="抓取 Pixabay 音效到本地音效库")
     ap.add_argument("--kw", action="append", default=[], help="关键词（可重复）")
-    ap.add_argument("--preset", choices=["core", "extended", "all"], help="内置分类关键词组：core 影视常用 / extended 精细扩充 / all 两组叠加")
+    ap.add_argument("--preset", choices=["core", "extended", "voice", "all"], help="内置分类关键词组：core 影视常用 / extended 精细扩充 / voice 人声专补 / all 三组叠加")
     ap.add_argument("--pages", type=int, default=5, help="每个关键词抓多少页（20 条/页）")
     ap.add_argument("--limit", type=int, default=0, help="最多抓多少条有效音效（0=不限）")
     ap.add_argument("--workers", type=int, default=3, help="详情页并发（站点 CF 敏感，建议 2-4）")
@@ -365,8 +385,10 @@ def main() -> None:
         kws += CORE_KW
     if args.preset in ("extended", "all"):
         kws += EXTENDED_KW
+    if args.preset in ("voice", "all"):
+        kws += VOICE_KW
     if not kws:
-        print("需要 --kw 或 --preset core|extended|all")
+        print("需要 --kw 或 --preset core|extended|voice|all")
         sys.exit(2)
 
     MEDIA.mkdir(parents=True, exist_ok=True)

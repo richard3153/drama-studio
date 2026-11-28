@@ -109,6 +109,7 @@
 - **双模型提示词库 + 自强化（#90）**：拆解期生图按 **Qwen-Image 习惯**组词（自然语言长描述分层、文字渲染/版式跟随只给角色板与道具、场景图剔除文字指令防乱码）、生视频按 **MiniMax H3 习惯**组词（连续镜/运镜短语/动作分解/氛围音，全正向表述）。新增 `prompt_bank.json` 学习层：种子词块随代码内置，生成成功 kept+1、失败 failed+1，权重 = kept - 1.5*failed，实战提炼块优先于内置种子；`POST /api/prompt-bank/harvest` 扫描现存产物提炼词块（拦截画质尾巴/剧情 UI 词/跨族方言/光照词定性，视频库只收运镜-物理-氛围类，防"室内荧光灯"词块粘到"正午阳光"镜头）；视频侧同步剔除图像画质尾词与活人感锁（含否定句，H3 cfg=1 无效），180° 轴线提示改正向表述。API：`GET /api/prompt-bank`（权重视图）、`POST /api/prompt-bank/chunk`（手动增删）。
 - **首帧底模按风格族对齐（#91）**：分镜首帧必须走 SDXL IPAdapter 锁脸通道，但底模此前只传 `style_family` 不点名——3D 国风在 SDXL 池内没有任何模型带 `3d` 标签，匹配落空后按档位平局取字典首个 = AnythingXL 动漫底模，于是 3D 项目首帧出成 2D 动漫人物；H3/Wan 是 I2V，直接继承首帧像素 → 视频角色与 Qwen-Image 生成的角色板"换人换画风"。现按风格族点名底模（3d/photo → RealVisXL 写实、anime/paint → AnimagineXL 3.1 动漫），写实负面锁（different face / plastic skin / distorted face）同步扩展到 3D；三视图裁脸区域从 0.5×0.85 收到 0.36×0.72，只取头肩特写（原区域会把右侧全身像一起裁进参考图，IPAdapter 学成混合版式、锁脸信号被稀释），角色可另存纯脸 `face_lock_path` 钉死版本。实测：首帧与角色板同一张脸，视频第 0 帧与首帧逐像素级同源，1.2s 处无换脸无脸崩。注：IPA 权重 0.8 会把参考图构图（半身）带进首帧，要按分镜 wide shot 出建议降到 0.7。
 - **队列噪声治理与 interrupted 语义（#92）**：服务启动时的僵尸收尸旧逻辑把遗留 `running/pending` 一律标 `failed`——H3 单条 15–30 分钟，碰上改代码重启就凭空多一条红色失败（线上 45 条 failed 有 24 条是这个来源，队列里"失败进程一直出现"）。现改标 `interrupted`（琥珀「已中断」，参数原样保留，点「继续」按原参数重派；真实报错仍走 `failed`），并给了历史迁移脚本 `scripts/migrate_failed_to_interrupted.py`（默认预览、`--apply` 写库）。ComfyUI 不在时任务以 `httpx.ConnectError: All connection attempts failed` 收场，为此补了 `ComfyUI-Backend`（登录后 30s 拉起）与 `ComfyUI-Watchdog`（每 2 分钟探活 8188）两个计划任务，共用幂等脚本 `run_comfyui.vbs`（8188 已应答或已有 ComfyUI 进程即退出，防加载期重复拉起抢端口）。前端补 SSE 重连全量对账 + 15 秒兜底轮询，修掉断线后页面停在旧快照的"running 100%"假状态。
+- **台词闪避 + 混音版下载 + 128k 试听代理 + 人声专补（#109，2026-11-28）**：四项按用户拍板落地。①**BGM 台词闪避（ducking）**：成片页「音频分轨」加勾选框与 3~24dB 强度，默认关、`PUT /api/audio-mix/duck` 落配置；实现在 `export_final` 里按**已排布的台词区间**生成 BGM 的 `volume` 表达式（每段进出 100ms 线性斜坡），**不用 `sidechaincompress`**——实测侧链方案在这条 17 路输入的 filtergraph 上把 BGM 在 4.06~7.13s、10.17~14.25s 压成 -91dB 数字静音（最小 2 路用例却不复现，属组合缺陷），改成纯增益表达式后静音段只剩片尾 fade（44.34~44.99s），台词段实测 -12.1dB（4.2s: -58.0 vs 关时 -45.9）、台词间隙恢复原音量。②**分轨混音版下载**：`export-status` 增 `mix_ready/mix_file`，新增 `GET /api/episodes/{eid}/final-mix-file`，成片预览区挂「⬇ 下载分轨混音版（未烧字幕）」。③**原码 + 128k 代理**：原码保留在 `media/`（合成仍用原码），新增 `tools/make_sfx_proxies.py` 增量转 `media_proxy/<id>.mp3`（实测约为原码 50%：106800 4.74→2.37MB、499668 1.73→0.86MB），`GET /api/sfx/{id}/audio` 默认返回代理、`?quality=orig` 取原码；临时文件必须保留 `.mp3` 后缀否则 ffmpeg 报 "Unable to choose an output format"。④**人声轨专补**：新增 `VOICE_KW`（40 词：人群/儿童/耳语/笑喊哭喘咳）与 `--preset voice`；同时修分轨判定——人声强词（talk/laugh/scream/whisper/applause…）排到 `amb` 之前，否则"人群底噪"全是 crowd 会被吞成环境音（当前 1713 条分布 bgm 318 / amb 1074 / voice 175 / sfx 146，voice 专补批次继续拉升）。
 - **风格库缩略图叠风格名 + 剧本页风格锁降级为只读信息条（#104，2026-11-28）**：风格库卡片原来是"图在上、名字在下"，图铺满整块（`img` 层级高于文字层）后只剩一排认不出是谁的剧照，用户实测 39 张全部没有标识。改成**名字直接压在图上**：`.style-thumb-name` 绝对定位贴底、`z-index:2` 盖在 `img`（`z-index:0`）之上，底部 18px 黑色渐变遮罩保证任何亮度的图上都读得清，选中项右上角再挂一枚琥珀色"当前"角标；卡片下方只留 `分类 · family` 一行，不再重复名字。同时修掉一个隐藏的版式 bug：`.style-grid` 的 `auto` 行在"容器高度确定 + 内容超长"时会被压扁（实测行高 79.95px、卡片 80px，而缩略图本身 124px），名字条与底部信息行整条被 `overflow:hidden` 裁掉——这才是旧截图里"只有图、没有字"的真正原因；显式 `grid-auto-rows: max-content` 让行高按内容撑开、超出交给滚动区。剧本页的**风格锁**按用户决定收敛为单一入口：删掉分组 `<select>`（连带删掉无错误处理的 `savePreset`），改成**只读信息条** `.style-lock-bar`——左侧加粗风格名、右侧灰字分类、当前用的正好是隐藏风格时挂"暂不适用"、最右「🎨 打开风格库」按钮，整条可点/可回车；切换只在弹窗里做（弹窗 apply 有 try/catch 失败提示）。弹窗套用后通过 `onApplied(key)` 回写 `curPresetKey`，信息条**立即刷新**（只 mutate `project` 对象不会触发 React 重渲染，这是原实现的隐性 bug）。E2E（项目 2 / `guofeng_3d`）：39 张卡片名字全部非空且在卡内可见（`z=2`、`nameBottom ≤ cardBottom`），点「二次元动漫」后弹窗提示"已套用…6 个资产的提示词按新风格重组装"、信息条同步变「二次元动漫 / 动漫卡通」，切回「3D国风动画」后端落库 `guofeng_3d` 一致。
 - **风格库配示例缩略图 + 只显示短剧漫剧用得上的（#103，2026-11-28）**：风格库原来是"色块渐变 + 风格名"的占位卡片，看不出风格长什么样。这次给**每个风格生成一张真实示例图**：用本地 ComfyUI + `char_portrait_qwen.json`（Qwen-Image 2.1 int8）出 768×1024，22 步，**同一段主体描述、同一构图**（"年轻剑客，破旧深蓝长袍，烛光古宅庭院，半身中景，脸部细节，电影构图"），前面只拼各风格的 `style_lock`——这样一眼能看出差异全在画风而不在内容；出图后压成 384×512 JPEG（约 30KB/张，57 张共约 1.7MB），存 `backend/data/style_samples/<key>.jpg`，由 `GET /api/style-samples/{key}.jpg` 供图（白名单校验 key，非注册风格一律 404，挡 `../` 穿越）。批量脚本 `backend/tools/gen_style_samples.py` 支持断点续跑（已有则跳过）、`--force` 全重出、`--only a,b` 单补失败项，失败不中断整批并打印可重跑的 `--only` 清单。单张实测 22–29 秒，57 张约半小时，全程本地、不耗 token、不调云端。**可见性**：用户要求"只保留 AI 短剧和 AI 漫剧用得上的风格，其余保留文字说明和缩略图、只是暂不在列表显示"。落地为 `STYLE_HIDDEN`（18 个）——判断口径是"能不能当一集几分钟、连拍十几镜、角色要复用的片子底色"：插画里的纸张/笔触肌理类 6（扁平矢量 / 炭笔 / 马克笔 / 孔版印刷 / 木刻版画 / 剪纸，每镜重画纹理、接戏对不上）、复古未来里的封面语汇 5（蒸汽波 / 像素 / 低多边形 / Y2K 光面，单张成立、连成戏散架）、潮玩 3D 里的物件类 4（盲盒 / 毛绒 / 体素 / 机甲，主体不承接人物表演）、设计工程 3（蓝图 / 线框 / 玻璃拟态，是工程示意语汇）——**保留 39 种**（动漫 14 + 国风 5 + 写实 7 + 插画 7 + 复古 2 赛博/蒸汽 + 潮玩 2 黏土定格/等距2.5D + 暗黑 2）。数据与缩略图 57 张全部保留，要放出来只从这个集合删 key，前端不用改。**三处出口同步收口**：`visible_presets()` 供 `style_library()` 与 `GET /api/style-presets`（默认 39，`?include_hidden=true` 拿全量 57 且每项带 `hidden` 标记）；`/api/director/meta` 的 item 新增 `thumb` 字段、`total` 改可见数并附 `hidden_total` / `hidden_note`；剧本页风格下拉只列可见项，**但项目当前若正用着隐藏风格，会把它额外挂出来并标"（暂不适用）"**（否则下拉空白、看不出当前风格）。前端卡片改成真图 `<img>`（`object-fit: cover`、`object-position: center 26%` 横切保脸、懒加载、加载失败自动退回原渐变块），分类侧栏与标题计数全部跟可见集走。
 
@@ -238,7 +239,7 @@ Register-ScheduledTask -TaskName "ComfyUI-Watchdog" -Action $a -Trigger $t2 -Set
    - `DRAMA_FFMPEG`：ffmpeg 路径（默认自动探测 PATH，回退 ComfyUI Desktop 自带版）
 4. **工作流**：`backend/workflows/*.json` 均为 ComfyUI **API 格式**模板，节点名与你的 custom_node 版本不一致时可在 ComfyUI 里「导出(API)」后同名替换。
 5. **本地音色库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_jimu_library.py` 一次抓取 1248 款参考音频到 `backend/data/voice_library/`（571MB，断点续传，中断后重跑只补缺）；不抓也能用，面板里只会显示一份空库。抓完在「音色源」页签的分类按钮上一键整批写入清单。
-6. **本地音效库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_pixabay_sfx.py --preset core --pages 4 --limit 260` 抓 Pixabay 免版税音效到 `backend/data/sfx_library/`（断点续传，可反复追加）；成片页「音频分轨」里挂 BGM 与逐镜贴片音，合成时自动与台词轨混合。
+6. **本地音效库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_pixabay_sfx.py --preset core --pages 4 --limit 260` 抓 Pixabay 免版税音效到 `backend/data/sfx_library/`（断点续传，可反复追加；`--preset voice` 专补人声轨）；再跑 `tools/make_sfx_proxies.py` 生成 128k 试听代理（原码保留）。成片页「音频分轨」里挂 BGM 与逐镜贴片音（可开台词闪避），合成时自动与台词轨混合，成品另出「分轨混音版」可直接下载。
 
 ### 生产流程（UI 引导式）
 
@@ -285,6 +286,7 @@ backend/
     gen_style_samples.py # 风格库示例缩略图批量生成（Qwen-Image，同一主体同一构图，断点续跑）
     fetch_jimu_library.py# 抓取积木音色库 1248 款参考音频到 data/voice_library/（断点续传，571MB/约 1.5 分钟）
     fetch_pixabay_sfx.py # 抓 Pixabay 免版税音效到 data/sfx_library/（curl_cffi 过 CF + 全局限速 + 断点续传）
+make_sfx_proxies.py  # 为音效库生成 128k 试听代理（原码保留，media_proxy/，增量可重跑）
   data/
     style_samples/       # 57 张风格示例缩略图（384×512 jpg，GET /api/style-samples/{key}.jpg 供图）
 frontend/
@@ -304,7 +306,10 @@ backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset cor
 # 2) 精选扩库：extended 词包（夜间/医院/地铁/电梯/枪械/魔法/钢琴/二胡/情绪 等 132 词）
 backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset extended --pages 20 --limit 2600 --workers 2 --delay 1.2
 
-# 3) 两组叠加（耗时更长）
+# 3) 人声专补：voice 词包（人群/儿童/耳语/笑喊哭喘咳 等 40 词；Pixabay 人声素材少，单独一轮补 voice 轨）
+backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset voice --pages 8 --limit 350 --workers 2 --delay 1.2
+
+# 4) 三组叠加（耗时更长）
 backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset all --pages 20 --limit 5000
 ```
 
@@ -312,20 +317,32 @@ backend\.venv\Scripts\python.exe backend\tools\fetch_pixabay_sfx.py --preset all
 - 落地：`backend/data/sfx_library/index.json`（id → 名称/描述/时长/作者/标签/mp3 直链）+ `media/<id>.mp3`，不进 git。
 - 抓取靠 `curl_cffi`（impersonate=chrome）+ 线程局部 Session + 预热首页绕过 Cloudflare；突发会触发挑战页，停下来等 1~2 分钟即恢复。
 - **规模口径**：实测 298 条约 793MB（长环境音可达 7~8MB/条）；13 万条全量约 **350GB / 20~50 小时**，不做全量镜像。本项目按**精选建库**跑：core + extended 两批共约 3000~4500 条（≈8~13GB），四轨各覆盖数百到上千条，足够覆盖短剧剪辑的 BGM / 环境 / 人声 / 动作需求；需要更多再按词补跑（断点续传）。
+- **原码 + 代理（省带宽）**：原码一律保留在 `media/`（合成混音只用原码，音质不打折）；另生成 128k 代理到 `media_proxy/<id>.mp3`（实测约为原码 50%），`GET /api/sfx/{id}/audio` 默认返回代理、`?quality=orig` 取原码，浏览器试听与下拉预览都走代理。代理可反复增量生成：
 
-元数据自动分轨（`sfx_library.track_of()`，关键词启发式）：`bgm`（music/loop/theme…）、`amb`（rain/wind/ocean/forest…）、`voice`（crowd/laugh/scream…）、`sfx`（hit/whoosh/explosion…），兜底 `sfx`。
+```powershell
+backend\.venv\Scripts\python.exe backend\tools\make_sfx_proxies.py --workers 2          # 全量增量（源更新/代理缺失才重转）
+backend\.venv\Scripts\python.exe backend\tools\make_sfx_proxies.py --limit 500 --bitrate 96k
+```
+
+元数据自动分轨（`sfx_library.track_of()`，关键词启发式）：**人声强词优先**（talk/laugh/scream/whisper/applause…，否则"人群底噪"会把全部人群素材吞成环境音）→ `amb`（rain/wind/ocean/forest…）→ `sfx`（hit/whoosh/explosion…）→ `bgm`（music/loop/theme…）→ 兜底 `sfx`。`index.json` 里的 `track` 字段是人工纠正值，优先级最高（UI 上点用途胶囊即可改，空值恢复自动归类）。
+
+**BGM 台词闪避（ducking，可选、默认关）**：「说话时自动压低 BGM」。实现方式不是侧链压缩，而是**按已排布的台词时间区间生成 BGM 的 `volume` 增益表达式**（进出各 100ms 线性斜坡）——因为 `export_final` 本来就知道每句台词的绝对起止时间，这样不引第二路信号、不会把长 filtergraph 里的 BGM 压成数字静音（侧链方案实测在 4~14s 段落直接把 BGM 变成 -91dB 静音）。强度 `amount_db`（默认 12dB，可 3~24 调）换算成剩余增益 `10^(-dB/20)`。
 
 编排与接口：
 
 | 接口 | 作用 |
 |---|---|
 | `GET /api/sfx?q=&track=&page=&size=&max_dur=` | 库浏览（带 stats：条数 / 已下载 / 体积 / 四轨分布） |
-| `GET /api/sfx/{id}/audio` | 原声试听（FileResponse） |
-| `GET /api/audio-mix?project_id=&episode_id=` | 读该集分轨编排（带解析后的 ok/name） |
-| `PUT /api/audio-mix/bgm` | 挂 BGM `{ref, volume, fade_in, fade_out}` |
+| `GET /api/sfx/{id}/audio?quality=proxy\|orig` | 试听：默认 128k 代理，`orig` 取原码 |
+| `PUT /api/sfx/{id}/track` | 人工改轨 `{"track":"bgm\|amb\|voice\|sfx"}`，空串恢复自动 |
+| `GET /api/audio-mix?project_id=&episode_id=` | 读该集分轨编排（带解析后的 ok/name + `duck`） |
+| `PUT /api/audio-mix/bgm` | 挂 BGM `{ref, volume, fade_in, fade_out}`（未传字段沿用旧值） |
 | `PUT /api/audio-mix/shot` | 挂某镜贴片音 `{idx, ref, volume, offset}`（`ref=""` 即清除） |
+| `PUT /api/audio-mix/duck` | 台词闪避 `{enabled, amount_db, attack, release, threshold}` |
+| `GET /api/episodes/{eid}/final-mix-file` | 分轨混音版（BGM+贴片音+台词，未烧字幕）下载 |
+| `GET /api/episodes/{eid}/export-status` | 成片/混音版/字幕就绪状态（`mix_ready` / `mix_file`） |
 
-编排存 `data/projects/<pid>/audio_mix/ep<eid>.json`（**原子写**：tmp + fsync + replace，避免重启时留下 0 字节坏文件）。成片页「音频分轨」面板：BGM 下拉 + 音量滑杆、逐镜一行（镜号 / 音效 / 试听 / 音量），空库时提示跑抓取脚本。
+编排存 `data/projects/<pid>/audio_mix/ep<eid>.json`（**原子写**：tmp + fsync + replace，避免重启时留下 0 字节坏文件）。成片页「音频分轨」面板：BGM 下拉 + 音量滑杆 + **台词闪避开关与强度**、逐镜一行（镜号 / 音效 / 试听 / 音量）、跨轨检索；成片预览区除 SRT 外还提供**「下载分轨混音版（未烧字幕）」**，方便自己再剪一版或换字幕。
 
 ## 已验证的低显存实测数据（RTX 4070 Laptop 8GB）
 

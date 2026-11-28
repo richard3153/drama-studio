@@ -418,6 +418,15 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
     }).catch(e => { setMsg('BGM 保存失败：' + e.message) })
     if (r) { setSfmix(r); setMsg('音频分轨已保存（下次合成成片时生效）') }
   }
+  const saveDuck = async (patch = {}) => {
+    if (!selId) return
+    const r = await put('/audio-mix/duck', { project_id: project.id, episode_id: selId, ...patch })
+      .catch(e => setMsg('台词闪避设置保存失败：' + e.message))
+    if (r) {
+      setSfmix(r)
+      setMsg(`台词闪避已${r.duck?.enabled ? `开启（-${Math.round(r.duck.amount_db ?? 12)}dB）` : '关闭'}（下次合成生效）`)
+    }
+  }
   const saveShotSfx = async (idx, patch = {}) => {
     if (!selId) return
     const cur = (sfmix?.shots || []).find(x => x.idx === idx) || {}
@@ -540,6 +549,26 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
                 onTouchEnd={e => saveBgm({ volume: Number(e.target.value) })} />
               <span className="lib-state">{Math.round((sfmix?.bgm?.volume ?? 0.22) * 100)}%</span>
             </div>
+            <div className="mix-row">
+              <span className="mix-label">台词闪避</span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 13 }}>
+                <input type="checkbox" checked={!!sfmix?.duck?.enabled}
+                  onChange={e => saveDuck({ enabled: e.target.checked })} />
+                说话时自动压低 BGM
+                <em style={{ color: sfmix?.duck?.enabled ? '#3a9d5c' : '#8a8f98' }}>
+                  {sfmix?.duck?.enabled ? `开 · 压 -${Math.round(sfmix.duck.amount_db ?? 12)}dB` : '默认关'}
+                </em>
+              </label>
+              {sfmix?.duck?.enabled && <>
+                <span className="mix-label">强度</span>
+                <input type="range" min="3" max="24" step="1"
+                  value={String(sfmix.duck.amount_db ?? 12)}
+                  onChange={e => setSfmix(m => ({ ...(m || {}), duck: { ...((m || {}).duck || {}), amount_db: Number(e.target.value) } }))}
+                  onMouseUp={e => saveDuck({ amount_db: Number(e.target.value) })}
+                  onTouchEnd={e => saveDuck({ amount_db: Number(e.target.value) })} />
+                <span className="lib-state">-{Math.round(sfmix.duck.amount_db ?? 12)}dB</span>
+              </>}
+            </div>
             <div className="cfg-tip">BGM 会循环铺满本集，结尾自动淡出；台词轨不受影响（混音时台词优先清晰度）。</div>
             {(withVideo.length > 0) && <div className="mix-shots">
               {withVideo.map(s => {
@@ -614,6 +643,9 @@ function ExportPage({ project, setStage, wizardStage = 'export' }) {
           <video controls src={status.final_file} className="preview-video" />
           {status.srt_ready && <div style={{ marginTop: 8 }}>
             <a href={status.srt_file} download="subtitle.srt">⬇ 下载 SRT 字幕</a>
+          </div>}
+          {status.mix_ready && <div style={{ marginTop: 6 }}>
+            <a href={status.mix_file} download={`ep${selId}_mix.mp4`} title="BGM / 贴片音已混合、未烧字幕，适合自己再剪">⬇ 下载分轨混音版（未烧字幕）</a>
           </div>}
         </div>}
       <WizardBar stage={wizardStage} setStage={setStage} nextLabel="" />

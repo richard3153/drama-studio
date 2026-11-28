@@ -550,6 +550,9 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
     if missing_audio:
         raise RuntimeError("缺少配音文件（先点「生成台词配音」）：" + "、".join(missing_audio[:8]))
     filters, mix_inputs, cursor, srt_rows, n = [], [], 0.0, [], 0
+    fx_labels: list[str] = []
+    duck_iv: list[tuple[float, float]] = []   # 台词时间区间（供 BGM 闪避用）
+    bgm_on = False
     shot_starts: list[float] = []
     for s in segs:
         shot_starts.append(cursor)
@@ -584,6 +587,7 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
                     srt_rows.append((cur, end_k, ch))
                     cur = end_k
             cur_line = start + adur + 0.35   # 行间 0.35s 呼吸间隔
+            duck_iv.append((start, min(start + adur, shot_end)))
         cursor += s["dur"]
 
     # 分轨：BGM 铺底（整集循环 + 首尾淡入淡出）+ 每镜动作音/环境音（贴镜头起点）。
@@ -599,6 +603,16 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
         print(f"[export_final] 音频分轨配置读取失败（{e}），本集按纯台词轨合成", flush=True)
         mixcfg, _sfx = {"bgm": {}, "shots": {}}, None
 
+    # 台词闪避（ducking）：BGM 在台词区间内按增益曲线压低（区间由上面排布台词时收集，
+    # 只用 volume 表达式，不引侧链第二路——侧链压缩在这条长 filtergraph 上会把 BGM 压成数字静音）。
+    duck = (mixcfg.get("duck") or {}) if isinstance(mixcfg, dict) else {}
+    try:
+        duck_amt = max(0.0, min(float(12.0 if duck.get("amount_db") is None else duck.get("amount_db")), 30.0))
+    except (TypeError, ValueError):
+        duck_amt = 12.0
+    duck_on = bool(duck.get("enabled")) and n > 0 and bool(duck_iv)
+    duck_note = ""
+
     bgm = (mixcfg.get("bgm") or {}) if isinstance(mixcfg, dict) else {}
     bgm_path = _sfx.resolve(bgm.get("ref")) if (_sfx and bgm.get("ref")) else None
     if bgm_path:
@@ -607,11 +621,26 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
         vol = float(bgm.get("volume") or 0.22)
         fi = max(min(float(bgm.get("fade_in") or 0.8), total_dur), 0.0)
         fo = max(min(float(bgm.get("fade_out") or 2.0), total_dur), 0.0)
+        vol_arg = f"{vol}"
+        if duck_on:
+            level = 10 ** (-duck_amt / 20.0)        # 台词期间 BGM 的剩余增益（-12dB → 0.25）
+            ramp = 0.10                             # 进出各 100ms 斜坡，避免台阶式爆音
+            parts = []
+            for a, b in duck_iv:
+                s0 = max(a - ramp, 0.0)
+                parts.append(f"min(1,max(0,(t-{s0:.3f})/{ramp}))"
+                             f"*min(1,max(0,({b + ramp:.3f}-t)/{ramp}))")
+            gain = parts[0]
+            for p in parts[1:]:
+                gain = f"max({gain},{p})"
+            expr = f"{vol}*(1-{1 - level:.4f}*({gain}))".replace(",", "\\,")
+            vol_arg = f"{expr}:eval=frame"
+            duck_note = f" + BGM（台词闪避 -{duck_amt:.0f}dB）"
         filters.append(
-            f"[{idx}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol},"
+            f"[{idx}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol_arg},"
             f"atrim=0:{total_dur:.3f},asetpts=PTS-STARTPTS,"
-            f"afade=t=in:st=0:d={fi},afade=t=out:st={max(total_dur - fo, 0):.3f}:d={fo}[bgm]")
-        mix_inputs.append("[bgm]")
+            f"afade=t=in:st=0:d={fi},afade=t=out:st={max(total_dur - fo, 0):.3f}:d={fo}[bgmraw]")
+        bgm_on = True
 
     if _sfx:
         for k, (s, st) in enumerate(zip(segs, shot_starts)):
@@ -629,7 +658,16 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
                 f"[{idx}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol},"
                 f"adelay={int(start * 1000)}|{int(start * 1000)},"
                 f"atrim=0:{start + s['dur']:.3f},asetpts=PTS-STARTPTS[{name}]")
-            mix_inputs.append(f"[{name}]")
+            fx_labels.append(f"[{name}]")
+
+    vo_labels = [f"[a{i}]" for i in range(n)]
+    mix_inputs = vo_labels + (["[bgmraw]"] if bgm_on else []) + fx_labels
+    mix_note = (duck_note if (duck_on and bgm_on) else (" + BGM" if bgm_on else ""))
+
+    if len(mix_inputs) == 1:
+        # amix 至少要两路输入：只剩 BGM（或只剩一条台词）时先 asplit 成两路，否则 ffmpeg 报错
+        filters.append(f"{mix_inputs[0]}asplit=2[mixA][mixB]")
+        mix_inputs = ["[mixA]", "[mixB]"]
 
     if mix_inputs:
         head = ";".join(filters)
@@ -643,10 +681,8 @@ def export_final(db, t: TaskRecord, params: dict) -> dict:
             cmd += ["-i", str(it["path"])]
         cmd += ["-filter_complex", fc, "-map", "0:v", "-map", "[mixout]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(mixed)]
-        _run_ff(cmd, "音频分轨混音（台词" +
-                (f" + BGM" if bgm_path else "") +
-                (f" + {len(mix_inputs) - n - (1 if bgm_path else 0)} 条贴片音" if len(mix_inputs) > n + (1 if bgm_path else 0) else "") +
-                "）")
+        _run_ff(cmd, "音频分轨混音（台词" + mix_note +
+                (f" + {len(fx_labels)} 条贴片音" if fx_labels else "") + "）")
     else:
         mixed = novoice
 

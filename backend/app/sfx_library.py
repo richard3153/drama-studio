@@ -19,6 +19,9 @@ from pathlib import Path
 LIB = Path(__file__).resolve().parent.parent / "data" / "sfx_library"
 INDEX = LIB / "index.json"
 MEDIA = LIB / "media"
+# 代理文件（128k mp3）：原码保留不动，代理只用于浏览器试听/预览，省带宽省解码。
+# 合成混音始终走原码（resolve/audio_path 默认返回 MEDIA 下的原文件）。
+PROXY = LIB / "media_proxy"
 
 TRACK_NAMES = {"bgm": "BGM 音乐", "amb": "场景环境音", "voice": "人声反应", "sfx": "动作打击音"}
 
@@ -49,6 +52,14 @@ _AMB = ["rain", "rainfall", "thunder", "wind", "storm", "ocean", "wave", "sea", 
         "雨", "雷", "风", "海", "水", "森林", "鸟", "火", "城市", "街道",
         "市场", "环境"]
 
+# 人声强词：必须压过 amb（人群底噪里也全是 crowd，不先判人声的话「人群闲聊/笑/掌声」
+# 会被整片归成环境音，导致 voice 轨几乎为空）。只放不会和自然环境撞车的词。
+_VOICE_STRONG = ["talk", "chatter", "walla", "murmur", "whisper", "laugh", "giggle",
+                 "scream", "shout", "yell", "cry", "sob", "gasp", "applause", "clap",
+                 "cheer", "sigh", "groan", "moan", "cough", "sneeze", "yawn", "snore",
+                 "argue", "voice", "vocal", "baby", "speech", "conversation",
+                 "说", "笑", "喊", "哭", "尖叫", "掌声", "耳语", "人声", "闲聊"]
+
 _cache: dict = {"mtime": 0.0, "rows": []}
 
 
@@ -59,7 +70,9 @@ def track_of(rec: dict) -> str:
     text = " ".join([str(rec.get("name") or ""), str(rec.get("desc") or ""),
                      " ".join(str(t) for t in (rec.get("tags") or [])),
                      " ".join(str(t) for t in (rec.get("keywords") or []))]).lower()
-    if any(k.lower() in text for k in _AMB):
+    if any(k in text for k in _VOICE_STRONG):
+        return "voice"          # 明确的人声反应/群杂，优先于环境
+    if any(k in text for k in _AMB):
         return "amb"
     for tr in ("voice", "sfx", "bgm"):
         if any(k.lower() in text for k in _KW[tr]):
@@ -139,11 +152,37 @@ def find(sid: str) -> dict | None:
     return next((r for r in rows() if r["id"] == sid), None)
 
 
-def audio_path(sid: str) -> Path | None:
+def audio_path(sid: str, quality: str = "orig") -> Path | None:
+    """quality='proxy' 时优先返回 128k 代理（没有则回退原码）；'orig' 返回下载到的原文件。"""
     r = find(sid)
     if not r or not r["downloaded"]:
         return None
-    return MEDIA / r["file"]
+    orig = MEDIA / r["file"]
+    if quality == "proxy":
+        pp = PROXY / f"{r['id']}.mp3"
+        try:
+            if pp.exists() and pp.stat().st_size > 512 and \
+                    pp.stat().st_mtime >= orig.stat().st_mtime:
+                return pp
+        except OSError:
+            pass
+    return orig
+
+
+def proxy_stats() -> dict:
+    """代理覆盖率（供设置页与工具输出用）。"""
+    rs = [r for r in rows() if r["downloaded"]]
+    ready = 0
+    pbytes = 0
+    for r in rs:
+        pp = PROXY / f"{r['id']}.mp3"
+        try:
+            if pp.exists() and pp.stat().st_size > 512:
+                ready += 1
+                pbytes += pp.stat().st_size
+        except OSError:
+            pass
+    return {"total": len(rs), "ready": ready, "bytes": pbytes, "missing": len(rs) - ready}
 
 
 def set_track(sid: str, track: str) -> dict:

@@ -2528,9 +2528,11 @@ def sfx_list(q: str = "", track: str = "", page: int = 1, size: int = 20, max_du
 
 
 @router.get("/sfx/{sid}/audio")
-def sfx_audio(sid: str):
+def sfx_audio(sid: str, quality: str = "proxy"):
+    """试听/预览：默认返回 128k 代理（省带宽），quality=orig 取原码。合成混音走原码，不受影响。"""
     from . import sfx_library
-    p = sfx_library.audio_path(sid)
+    q = "proxy" if (quality or "").lower() in ("", "proxy", "preview", "auto") else "orig"
+    p = sfx_library.audio_path(sid, q)
     if not p:
         raise HTTPException(404, f"音效 {sid} 还没下载完成")
     mt = "audio/mpeg" if p.suffix.lower() == ".mp3" else "audio/wav"
@@ -2581,6 +2583,26 @@ class AudioMixShotIn(BaseModel):
 def audio_mix_shot(body: AudioMixShotIn):
     from . import audio_mix
     audio_mix.set_shot(body.project_id, body.episode_id, body.idx, body.ref, body.volume, body.offset)
+    return audio_mix.summary(body.project_id, body.episode_id)
+
+
+
+class AudioMixDuckIn(BaseModel):
+    project_id: int
+    episode_id: int
+    enabled: bool | None = None       # None = 不改，只调强度时不带上开关就不会误切
+    amount_db: float | None = None
+    attack: float | None = None
+    release: float | None = None
+    threshold: float | None = None
+
+
+@router.put("/audio-mix/duck")
+def audio_mix_duck(body: AudioMixDuckIn):
+    """台词闪避（ducking）：台词出现时按侧链自动压低 BGM。默认关，合成时生效。"""
+    from . import audio_mix
+    audio_mix.set_duck(body.project_id, body.episode_id, body.enabled, body.amount_db,
+                       body.attack, body.release, body.threshold)
     return audio_mix.summary(body.project_id, body.episode_id)
 
 
@@ -2813,9 +2835,12 @@ def episode_export_status(eid: int):
             raise HTTPException(404, "剧集不存在")
         export_dir = voice_service.ASSETS_ROOT / str(ep.project_id) / "export"
         final = export_dir / f"final_ep{eid}.mp4"
+        mixf = export_dir / f"final_ep{eid}_mix.mp4"
         srt = export_dir / f"final_ep{eid}.srt"
         return {"final_ready": final.exists(),
                 "final_file": f"/api/episodes/{eid}/final-file" if final.exists() else "",
+                "mix_ready": mixf.exists(),
+                "mix_file": f"/api/episodes/{eid}/final-mix-file" if mixf.exists() else "",
                 "srt_ready": srt.exists(),
                 "srt_file": f"/api/episodes/{eid}/srt-file" if srt.exists() else ""}
 
@@ -2830,6 +2855,19 @@ def episode_final_file(eid: int):
     if f.exists():
         return FileResponse(f, media_type="video/mp4")
     raise HTTPException(404, "成片尚未生成")
+
+
+@router.get("/episodes/{eid}/final-mix-file")
+def episode_final_mix_file(eid: int):
+    """分轨混音版（BGM/贴片音 + 台词，未烧字幕）：音轨已经调好、想自己再剪一版的场景用。"""
+    with SessionLocal() as db:
+        ep = db.get(Episode, eid)
+        if not ep:
+            raise HTTPException(404, "剧集不存在")
+        f = voice_service.ASSETS_ROOT / str(ep.project_id) / "export" / f"final_ep{eid}_mix.mp4"
+    if f.exists():
+        return FileResponse(f, media_type="video/mp4", filename=f"ep{eid}_mix.mp4")
+    raise HTTPException(404, "分轨混音版尚未生成（先合成一次成片）")
 
 
 @router.get("/episodes/{eid}/srt-file")
