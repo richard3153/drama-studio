@@ -71,7 +71,7 @@
 
 | 模块 | 功能 | 技术 |
 |---|---|---|
-| 配音成片 | 音色跨集锁定 + 角色性别强匹配 + 语气层（11 种情绪映射语速音调）+ 混音 + SRT 烧录（NVENC 硬编）；音色清单本地可配（`data/voice_sources.yaml`），可按条切本地 TTS 服务 | edge-tts（默认）/ 本地 HTTP TTS（GPT-SoVITS · OpenAI 兼容）+ ffmpeg |
+| 配音成片 | 音色跨集锁定 + 角色性别强匹配 + 语气层（11 种情绪映射语速音调）+ 混音 + SRT 烧录（NVENC 硬编）；音色清单本地可配（`data/voice_sources.yaml`），可按条切本地 TTS 服务；配套 1248 款本地参考音频（积木音色库）可搜索试听并一键加入 | edge-tts（默认）/ 本地 HTTP TTS（GPT-SoVITS · OpenAI 兼容）+ ffmpeg |
 | 批量编排 | 一键全流程（首帧→视频→配音→成片）/ 断点续跑 / 向后重链 / 断链即停 | FastAPI 编排 |
 | 外部导出 | **剪映草稿 JSON** 与 **FCPXML**（Premiere / DaVinci / FCPX 可导入），AI 生成 + 人工精剪两开花 | pipeline_service |
 
@@ -87,7 +87,7 @@
 | 图上的文字 · **自动迭代判字**（**#101**） | 「📝 改字」默认开自动迭代：每轮画完用**本地 OCR**（RapidOCR / PP-OCRv4 ONNX，CPU 即可跑，零 token、零显存占用，不与 ComfyUI 抢 8G 卡）读一遍框内的字，与目标逐字比对；不达标就按生成情况**重新框选再画**，直到读对或用完轮次（默认 3 轮，可选 1–5）。判定口径：中文短句（≤4 字）要求全对、长句命中 ≥90%，英文单词 ≥85%，另看 OCR 置信度；尺寸标注（300 / 507.68 / 620×840）不算文字内容，判定前剔除。缩框**看情况而不是机械等比缩小**：目标字只占框的一部分（<55%）时收到"目标字最集中"的那一块、面积压到上一轮 85% 以内；目标字本来就占满框（竖排五字顶到框边）时**不缩**——实测缩到 26%×46% 会把第五个字切掉、出「券」+ 叠笔残影。短边到 56px 即停（再小模型写不出清晰字）。每轮换 seed、重绘强度 +0.05（上限 0.95）、第 2 轮起追加"蒙版内原有字形必须完全擦除，不得保留旧笔画或残影"，并且**每轮都回到原始图重画**（不在上一轮产物上再叠一遍，否则错字残笔会一层层堆着，越迭越糊）。能定位到"具体是第几个字写错了"时（整串 ≥3 字、OCR 读数与目标逐位对齐），**把框收窄到那一个字**、提示词也只写这一个字——整段重写经常"改对一个、又写坏另一个"。**落库取最好的一轮而不是最后一轮**（按命中率 + 置信度挑），中间轮文件物理删除；连续两轮读不出字、或命中率不再提升会自动停，不白烧时间。弹窗里可开/关、选轮次，任务进度与结果里能看到每轮命中率、框尺寸与 OCR 读数。**已知盲区**：旧字的下半截若落在框底之外，会以一小块"残笔"留在图上（OCR 不把它算作字，判定看不出来）——拖框时把下缘多留 5% 即可；发光红字 / 极小标注 OCR 读不出，会在两轮后判"读不出字"停止 | `app/services/text_ocr.py` · `app/services/text_judge.py` · `app/services/text_edit_service.py` · `POST /api/assets/{aid}/text-edit` |
 | 带文字道具 · 双本地文字模型（**#99**） | 带文字道具按**要写的字**自动分流，两条都是本地权重、零云端：**中文 → MOSS-Image SFT INT8 + 8 步 DMD 蒸馏**（`img_moss_text`，768×1344 约 36–40 秒；毛笔竖排五字逐字准，皱纸 / 朱印 / 水墨 / 边缘光保真）；**英文 → Ideogram 4 fp8 双模型 + Qwen3-VL 8B 编码器**（`img_ideogram4_text`，`Ideogram4Scheduler` 20 步、`CFGOverride` 3.0（0.7–1.0）、`DualModelGuider` cfg 7、mu 0.0 / std 1.5，约 85 秒；`QING YUN SECT TOKEN` 逐字母准确）。**Ideogram 4 必须吃结构化 JSON caption**：自然语言 prompt 一律回灰底「Image blocked by safety filter」（连 "a red apple on a wooden table" 都被拦，int8 与 bf16 编码器均复现），换成 caption 结构立刻正常 —— 英文档由 `text_caption.build_caption()` 用槽位现拼 caption；两条硬经验：obj 描述里必须剔掉要写的同一串字（否则模型把文字画两遍、重叠错位），文字块要给"宽块 + 每词一行"（窄高块会把 `SECT` 压成 `SEC` 并混入中文伪字）。中文档反向强调"画面中只出现这几个字"，压掉周边装饰小字。分流位置 `asset_service.generate_asset`：`role=prop` + 有 `surface_text` + 未显式指定 `model_key` → `text_prop.detect_lang` 判语言 → 点名 `img_moss_text` / `img_ideogram4_text`（两档 `auto: false`，不会被自动选档误选）；文字档画幅强制 16 倍数（`Ideogram4Scheduler` / `EmptyFlux2LatentImage` 的硬约束）。 | `app/text_prop.py` · `app/text_caption.py` · `app/services/asset_service.py` · `workflows/prop_text_moss.json` · `workflows/prop_text_ideogram4.json` · `data/models.yaml` |
 | 光影 / 色彩滤镜预设 | 对齐 RHTV 图片/视频节点底部的"滤镜条"：18 条预设（**光线 12**：黄金时刻 / 蓝调时刻 / 阴天柔光 / 烛火暖光 / 月光冷调 / 霓虹夜 / 正午硬光 / 柔光棚拍 / 逆光剪影 / 底光诡异 / 窗棂光柱 / 薄雾漫射；**色彩 6**：青橙电影调 / 漂白高对比 / 胶片低饱和 / 国潮高饱和 / 黑白水墨 / 奶油柔粉），点选即把成套光影词塞进首帧提示词，一串镜头观感自动统一。**三级作用域**：单镜（导演台）> 全片（剧本页「全片光影 / 色彩」下拉）> 空（各镜自己的光位描述）。**纯提示词层，零 token、零云端调用**：写入即本地重算全项目提示词（不重跑 LLM），无后期 LUT、无额外模型；只进图片侧（首帧 / 尾帧 / 关键帧），不进 I2V 视频提示词（避免逐帧重新想象颜色导致闪烁）。分镜短模板只给 4 词短版词组，防止挤掉内容项 | `app/light_grades.py` · `GET /api/director/meta` · `POST /api/shots/{id}/director-apply` · `POST /api/projects/{pid}/light-grade` |
-| 后台配置 | 顶部四个选项卡管全部参数：**模型档位**（6 个模型档：生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / **参考生视频（H3 turbo / Wan2.2 首尾帧 Q4 两档可选）** / 口型）、**LoRA 与加速**（LoRA 根目录、4 步蒸馏 LoRA 开关、注意力后端 PyTorch / SageAttention、WAN 采样步数）、**服务与路径**（ComfyUI / Ollama 地址与安装目录、extra_model_paths）、**音色源（本地）**（全局切 edge-tts / 本地 HTTP 服务、协议与超时、音色清单增删与逐条试听、连接探测）。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝。**无任何云端出图 key 配置**——图片与语音链路全本地 | settings.py + voice_sources.py + `/api/settings` + `/api/voice-sources` |
+| 后台配置 | 顶部四个选项卡管全部参数：**模型档位**（6 个模型档：生图 / 生视频主链路 / 写实参考生图 / 动漫参考生图 / **参考生视频（H3 turbo / Wan2.2 首尾帧 Q4 两档可选）** / 口型）、**LoRA 与加速**（LoRA 根目录、4 步蒸馏 LoRA 开关、注意力后端 PyTorch / SageAttention、WAN 采样步数）、**服务与路径**（ComfyUI / Ollama 地址与安装目录、extra_model_paths）、**音色源（本地）**（全局切 edge-tts / 本地 HTTP 服务、协议与超时、音色清单增删与逐条试听、连接探测，以及 **本地音色库：1248 款参考音频搜索/筛选/分页、原声试听、单条或整页批量加入清单**）。模型档即时生效；安装目录/extra_paths/注意力重启 ComfyUI（守护进程现读配置）；服务地址重启后端。保存时校验档位与 family，写错当场拒绝。**无任何云端出图 key 配置**——图片与语音链路全本地 | settings.py + voice_sources.py + voice_library.py + `/api/settings` + `/api/voice-sources` + `/api/voice-library` |
 
 ## 方法论（内建于代码，非文档）
 
@@ -228,12 +228,16 @@ Register-ScheduledTask -TaskName "ComfyUI-Watchdog" -Action $a -Trigger $t2 -Set
    加速项还可关闭 WAN 的 4 步蒸馏 LoRA 并把采样步数抬到 16-24（默认 20），画质更实、耗时更久。
 
    **音色源（本地）**是同一面板的第四个选项卡：全局可在 `edge-tts 在线` / `本地 HTTP 服务` 之间切换（本地服务支持 GPT-SoVITS `POST /tts` 与 OpenAI 兼容 `POST /v1/audio/speech`，可填地址 / 协议 / 超时并「测试连接」）。音色清单存在 `backend/data/voice_sources.yaml`（运行时生成、不进 git），内置 14 个 edge 音色受保护不可删；自定义音色按「分组 / 显示名 / voice id / 性别」添加，加完配音页下拉立即出现，每条都能单独试听。内置音色固定走 edge，只有 `provider: local` 的条目才走本地服务——切过去不会把现有 14 个音色弄坏。
+
+   **本地音色库**同在第四页签：1248 款真实录音参考音频来自公开音色库 voice.jimu.chat，用 `backend/tools/fetch_jimu_library.py` 一次抓完（571MB、约 1.5 分钟、断点续传，落在 `backend/data/voice_library/`，不进 git）。面板里按名称/编号/分类/标签搜索，按性别（女 336 / 男 803 / 长者 76 / 孩童 33）与 7 大分类筛选，20 条一页浏览；「试听」播原声样本（不经过 TTS，接引擎前也能先挑），「加入」把该条写进 `voice_sources.yaml`（voice = 参考音频绝对路径、provider = local），「批量加入本页」一次 20 条。库与清单分两层，配音下拉不会被 1248 条淹没；接上 GPT-SoVITS / CosyVoice 后这些条目就是 zero-shot 配音的参考音频。
+
 2. **模型注册表**：复制 `backend/data/models.example.yaml` 为 `backend/data/models.yaml`，把 `weight` 改成你 ComfyUI `models` 目录里实际存在的权重文件名（面板里的下拉项就从这份注册表来）。
 3. **本机路径**（可选）：`backend/app/config.py` 支持环境变量覆盖——
    - `DRAMA_COMFYUI_INPUT_DIR`：ComfyUI input 共享目录
    - `DRAMA_COMFYUI_URL` / `DRAMA_OLLAMA_URL`：服务地址（面板保存时自动写入）
    - `DRAMA_FFMPEG`：ffmpeg 路径（默认自动探测 PATH，回退 ComfyUI Desktop 自带版）
 4. **工作流**：`backend/workflows/*.json` 均为 ComfyUI **API 格式**模板，节点名与你的 custom_node 版本不一致时可在 ComfyUI 里「导出(API)」后同名替换。
+5. **本地音色库**（可选）：`backend/.venv/Scripts/python.exe backend/tools/fetch_jimu_library.py` 一次抓取 1248 款参考音频到 `backend/data/voice_library/`（571MB，断点续传，中断后重跑只补缺）；不抓也能用，面板里只会显示一份空库。
 
 ### 生产流程（UI 引导式）
 
@@ -272,8 +276,10 @@ backend/
       vfx_vocab.py       # 特效词库（14 类特效镜识别：慢镜/金光/气浪/爆炸…）
   workflows/             # 16 个 ComfyUI API 工作流模板（含 prop_text_inpaint 局部改字、
                          #   prop_text_moss 中文文字、prop_text_ideogram4 英文文字）
+    voice_library.py     # 本地音色库：索引 data/voice_library/index.json（1248 款参考音频）分页/筛选/试听/加入清单
   tools/
     gen_style_samples.py # 风格库示例缩略图批量生成（Qwen-Image，同一主体同一构图，断点续跑）
+    fetch_jimu_library.py# 抓取积木音色库 1248 款参考音频到 data/voice_library/（断点续传，571MB/约 1.5 分钟）
   data/
     style_samples/       # 57 张风格示例缩略图（384×512 jpg，GET /api/style-samples/{key}.jpg 供图）
 frontend/
@@ -301,12 +307,13 @@ frontend/
 
 ## 演示截图
 
-> 截图均来自本机真实生产会话（演示项目《高武》：3D 国风风格锁、60 集、第 1 集已出 13 镜成片），按后台配置 → 项目 → 剧本 → 资产 → 分镜 → 配音 → 成片的实际使用顺序排列，全部为当前版本界面（含 #104 风格库叠名与风格锁信息条、#106 后台配置选项卡与音色源）。
+> 截图均来自本机真实生产会话（演示项目《高武》：3D 国风风格锁、60 集、第 1 集已出 13 镜成片），按后台配置 → 项目 → 剧本 → 资产 → 分镜 → 配音 → 成片的实际使用顺序排列，全部为当前版本界面（含 #104 风格库叠名与风格锁信息条、#106 后台配置选项卡 + 音色源 + 1248 款本地音色库）。
 
 | 步骤 | 模块 | 截图 |
 |---|---|---|
 | 0 | **后台配置**（顶部分四个选项卡：模型档位 / LoRA 与加速 / 服务与路径 / 音色源（本地），前四类写回 `data/settings.yaml`） | ![配置](docs/screenshots/01_settings.png) |
 | 0b | **音色源（本地）**（音色清单从硬编码迁到 `data/voice_sources.yaml`：14 个内置 edge 音色 + 可增删的本地音色；全局切 edge-tts / 本地 HTTP 服务，带连接探测与逐条试听） | ![音色源](docs/screenshots/09_voice_source.png) |
+| 0c | **本地音色库**（1248 款真实录音参考音频（公开音色库 voice.jimu.chat，571MB）落到本机，按名称/编号/分类/标签搜索 + 性别与分类筛选 + 分页；试听直接播原声，"加入"或"批量加入本页"写进配音清单） | ![音色库](docs/screenshots/10_voice_library.png) |
 | 1 | **项目中心**（新建项目：名称 + 一句话描述；卡片直达工作台） | ![项目](docs/screenshots/02_projects.png) |
 | 2 | **剧本工坊**（全局风格锁只读信息条 + 锁词 / 光影滤镜 / 题材词库 / 画幅与转场开关；大纲、分集列表、本集剧本同屏） | ![剧本](docs/screenshots/03_script.png) |
 | 2b | **风格库**（39 种可见风格 / 8 分类，卡片缩略图底部叠风格名，选中项右上角「当前」；点卡片整体切换风格锁） | ![风格库](docs/screenshots/04_style_library.png) |

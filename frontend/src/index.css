@@ -654,6 +654,26 @@ button.small.accent {
 .vs-add-title { font-size: 12px; color: var(--text-soft); margin-bottom: 7px; }
 .vs-add-row { display: grid; grid-template-columns: 1fr 1.2fr 1.4fr 86px 72px; gap: 8px; align-items: center; }
 
+/* 本地音色库（1248 款参考音频分页浏览） */
+.lib-bar { display: grid; grid-template-columns: minmax(0, 1fr) 108px 152px 74px; gap: 8px; align-items: center; margin-bottom: 8px; }
+.lib-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.lib-row {
+  display: grid; grid-template-columns: 62px minmax(80px, 1.25fr) 30px minmax(110px, 1fr) 54px 38px 58px;
+  gap: 8px; align-items: center; padding: 5px 10px; font-size: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, .04);
+}
+.lib-row:last-child { border-bottom: none; }
+.lib-code { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; color: var(--dim); }
+.lib-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-gender { text-align: center; color: var(--text-soft); }
+.lib-cat { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-state { font-size: 10.5px; color: var(--dim); text-align: right; }
+.lib-state.ok { color: #7ed6a5; }
+.lib-pager {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin-top: 10px; font-size: 11.5px; color: var(--dim);
+}
+
 @media (max-width: 760px) {
   .cfg-grid { grid-template-columns: 1fr; }
   .vs-row { grid-template-columns: 1fr 1fr 30px 60px 40px 36px; }

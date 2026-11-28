@@ -195,14 +195,19 @@ def add_item(group: str, label: str, voice: str, gender: str,
         raise ValueError("显示名不能为空")
     if not voice:
         raise ValueError("voice id 不能为空（本地服务里登记的音色名/参考音频名）")
-    if gender not in ("f", "m"):
+    if gender not in ("f", "m", ""):
         raise ValueError("性别只能选 男声 / 女声（配音性别要强匹配）")
     if provider not in ("local", "edge"):
         raise ValueError("条目 provider 只支持 local / edge")
     all_voices = {i["voice"] for g in cfg.get("groups") or [] for i in g.get("items") or []}
     if voice in all_voices:
         raise ValueError(f"voice id「{voice}」已存在，换一个")
-    key = "local_" + "".join(ch if ch.isalnum() else "_" for ch in voice.lower())[:32]
+    # key 用「文件名 slug + 路径哈希」：本地音色的 voice 是参考音频绝对路径，
+    # 直接 slug 化会超长且截断后可能撞名，加 6 位哈希保证唯一
+    import hashlib
+    raw = Path(voice).stem if ("/" in voice or "\\" in voice) else voice
+    slug = "".join(ch if ch.isalnum() else "_" for ch in raw.lower())[:26]
+    key = f"local_{slug}_{hashlib.md5(voice.encode('utf-8')).hexdigest()[:6]}"
     keys = {i.get("key") for g in cfg.get("groups") or [] for i in g.get("items") or []}
     base, n = key, 2
     while key in keys:

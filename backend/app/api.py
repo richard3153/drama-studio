@@ -2451,6 +2451,52 @@ def probe_voice_source(body: VoiceProbeIn | None = None):
     return voice_sources.probe(url=b.url, api=b.api)
 
 
+# ---------- 本地音色库（积木音色库 1248 款真实录音参考音频） ----------
+
+class VoiceLibraryAddIn(BaseModel):
+    group: str | None = None
+
+
+@router.get("/voice-library")
+def voice_library_list(q: str = "", gender: str = "", category: str = "",
+                       page: int = 1, size: int = 20):
+    """本地音色库分页查询：支持名称/编号/分类/标签/样本文案搜索 + 性别与分类筛选。"""
+    from . import voice_library
+    return voice_library.query(q, gender, category, page, size)
+
+
+@router.get("/voice-library/{code}/audio")
+def voice_library_audio(code: str):
+    """播放原声样本（不经过 TTS，零延迟；本地引擎接好之前也能先挑音色）。"""
+    from . import voice_library
+    p = voice_library.audio_path(code)
+    if not p:
+        raise HTTPException(404, f"音色库 {code} 的样本还没下载完成")
+    return FileResponse(p, media_type="audio/wav" if p.suffix.lower() == ".wav" else "audio/mpeg")
+
+
+@router.post("/voice-library/{code}/add")
+def voice_library_add(code: str, body: VoiceLibraryAddIn | None = None):
+    """把库里的一条加入配音清单（provider=local，voice=参考音频绝对路径）。"""
+    from . import voice_library
+    b = body or VoiceLibraryAddIn()
+    try:
+        return voice_library.add_to_sources(code, b.group)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class VoiceLibraryBatchIn(BaseModel):
+    codes: list[str] = []
+
+
+@router.post("/voice-library/add-batch")
+def voice_library_add_batch(body: VoiceLibraryBatchIn):
+    """批量加入（当前页 20 条）：返回 {added, skipped, failed, state}。"""
+    from . import voice_library
+    return voice_library.add_batch(body.codes)
+
+
 @router.post("/characters/{cid}/voice")
 async def set_character_voice(cid: int, body: VoiceIn):
     """设置角色配音音色（空 = 未设置）。音色唯一 + 必须与角色性别匹配。"""

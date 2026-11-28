@@ -2531,6 +2531,13 @@ function SettingsModal({ open, onClose }) {
   const [probe, setProbe] = useState(null)
   const [newVoice, setNewVoice] = useState({ group: '本地音色', label: '', voice: '', gender: 'f' })
   const [confirmDel, setConfirmDel] = useState('')   // 两段式删除：第一次点亮，3s 内再点才真删
+  // 本地音色库（积木音色库 1248 款参考音频）：分页浏览 + 原声试听 + 加入配音清单
+  const [lib, setLib] = useState(null)
+  const [libQ, setLibQ] = useState('')
+  const [libGender, setLibGender] = useState('')
+  const [libCat, setLibCat] = useState('')
+  const [libBusy, setLibBusy] = useState('')
+  const [libMsg, setLibMsg] = useState('')
   const load = () => api('/settings').then(d => {
     setData(d); setDraft(JSON.parse(JSON.stringify(d.config)))
   }).catch(e => setMsg('读取配置失败：' + e.message))
@@ -2545,7 +2552,8 @@ function SettingsModal({ open, onClose }) {
   }).catch(e => setVsMsg('读取音色源失败：' + e.message))
   useEffect(() => {
     if (!open) return
-    setMsg(''); setVsMsg(''); setProbe(null); load(); loadVs()
+    setMsg(''); setVsMsg(''); setProbe(null); setLib(null); setLibMsg('')
+    load(); loadVs(); loadLib(1, '', '', '')
   }, [open])
   if (!open) return null
   const saveVsSource = async () => {
@@ -2592,7 +2600,32 @@ function SettingsModal({ open, onClose }) {
       setVs(r); setVsMsg(`已删除音色「${label}」。已分配它的角色会回到未分配，去配音页重新选。`)
     } catch (e) { setVsMsg('删除失败：' + e.message) } finally { setVsBusy('') }
   }
-  const previewVs = (voice) => {
+  const loadLib = (page = 1, q = libQ, g = libGender, c = libCat) => {
+    setLibBusy('load')
+    api(`/voice-library?q=${encodeURIComponent(q)}&gender=${encodeURIComponent(g)}` +
+        `&category=${encodeURIComponent(c)}&page=${page}&size=20`)
+      .then(d => setLib(d))
+      .catch(e => setLibMsg('读取音色库失败：' + e.message))
+      .finally(() => setLibBusy(''))
+  }
+  const addLibItem = async (code, name) => {
+    setLibBusy('add:' + code)
+    try {
+      const r = await post(`/voice-library/${encodeURIComponent(code)}/add`, {})
+      setVs(r); setLibMsg(`已把「${name}（${code}）」加入配音清单（来源：本地音色库）。`)
+    } catch (e) { setLibMsg('加入失败：' + e.message) } finally { setLibBusy('') }
+  }
+  const addLibBatch = async () => {
+    if (!lib || !lib.items.length) return
+    setLibBusy('batch')
+    try {
+      const r = await post('/voice-library/add-batch', { codes: lib.items.map(i => i.code) })
+      if (r.state) setVs(r.state)
+      setLibMsg(`本页加入：新增 ${r.added} 条，已有 ${r.skipped} 条` +
+        (r.failed && r.failed.length ? `，失败 ${r.failed.length} 条（${r.failed[0]}）` : '') + '。')
+    } catch (e) { setLibMsg('批量加入失败：' + e.message) } finally { setLibBusy('') }
+  }
+  const previewVoice = (voice) => {
     new Audio(`/api/voice-preview-file?voice=${encodeURIComponent(voice)}&pid=1&ts=${Date.now()}`).play()
   }
   const set = (g, k, v) => setDraft(d => ({ ...d, [g]: { ...((d || {})[g] || {}), [k]: v } }))
@@ -2823,7 +2856,7 @@ function SettingsModal({ open, onClose }) {
                               ? (vsDraft?.provider === 'local_http' ? '本地·启用' : '本地·未启用')
                               : '在线'}
                           </span>
-                          <button className="small ghost" onClick={() => previewVs(it.voice)} title="试听">🔊</button>
+                          <button className="small ghost" onClick={() => previewVoice(it.voice)} title="试听">🔊</button>
                           {vs.builtin_keys.indexOf(it.key) < 0
                             ? <button className={'small ghost vs-del' + (confirmDel === it.key ? ' armed' : '')}
                                 disabled={!!vsBusy}
@@ -2856,6 +2889,71 @@ function SettingsModal({ open, onClose }) {
                   </div>
                   <div className="cfg-tip">新音色写进 data/voice_sources.yaml，配音页下拉立即出现；本地音色只有「音色源类型=本地 HTTP 服务」时才真正调服务。</div>
                 </div>
+              </div>
+
+              <div className="cfg-group" data-tab="tts">
+                <div className="cfg-group-title">本地音色库
+                  <span className="cfg-badge">
+                    {lib ? `${lib.stats.total} 款 · 已下载 ${lib.stats.downloaded}` : '读取中…'}
+                  </span>
+                </div>
+                <div className="lib-bar">
+                  <input className="cfg-input" placeholder="搜名称 / 编号 / 分类 / 标签"
+                    value={libQ} onChange={e => setLibQ(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') loadLib(1) }} />
+                  <select className="cfg-select" value={libGender}
+                    onChange={e => { setLibGender(e.target.value); loadLib(1, libQ, e.target.value, libCat) }}>
+                    <option value="">全部性别</option>
+                    <option value="f">女声</option>
+                    <option value="m">男声</option>
+                  </select>
+                  <select className="cfg-select" value={libCat}
+                    onChange={e => { setLibCat(e.target.value); loadLib(1, libQ, libGender, e.target.value) }}>
+                    <option value="">全部分类</option>
+                    {(lib?.stats.categories || []).map(c => (
+                      <option key={c.key} value={c.key}>{c.name}（{c.count}）</option>
+                    ))}
+                  </select>
+                  <button className="small" disabled={libBusy === 'load'} onClick={() => loadLib(1)}>
+                    {libBusy === 'load' ? '读取中…' : '搜索'}
+                  </button>
+                </div>
+                <div className="cfg-tip">
+                  1248 款真实录音参考音频（公开音色库 voice.jimu.chat），落在 backend/data/voice_library/。
+                  「试听」直接播原声样本（不经过 TTS）；「加入清单」写进 voice_sources.yaml（voice 填参考音频绝对路径），
+                  接上 GPT-SoVITS / CosyVoice 后即可用它做 zero-shot 配音。
+                </div>
+                {lib && <>
+                  <div className="lib-list">
+                    {lib.items.map(it => (
+                      <div className="lib-row" key={it.code}>
+                        <code className="lib-code">{it.code}</code>
+                        <span className="lib-name" title={it.sampleText || it.name}>{it.name}</span>
+                        <span className="lib-gender">{it.gender === 'f' ? '女' : it.gender === 'm' ? '男' : '—'}</span>
+                        <span className="lib-cat">{it.categoryName} · {it.emotionName}</span>
+                        <span className={'lib-state' + (it.downloaded ? ' ok' : '')}>
+                          {it.downloaded ? `${Math.round(it.size / 1024)}K` : '未下载'}
+                        </span>
+                        <button className="small ghost" disabled={!it.downloaded}
+                          onClick={() => { new Audio(`/api/voice-library/${it.code}/audio?ts=${Date.now()}`).play() }}>🔊</button>
+                        <button className="small" disabled={!it.downloaded || !!libBusy}
+                          onClick={() => addLibItem(it.code, it.name)}>
+                          {libBusy === 'add:' + it.code ? '加入中…' : '加入'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="lib-pager">
+                    <button className="small ghost" disabled={lib.page <= 1} onClick={() => loadLib(lib.page - 1)}>上一页</button>
+                    <span>第 {lib.page} / {lib.pages} 页 · 共 {lib.total} 款{(libQ || libGender || libCat) ? '（已筛选）' : ''}</span>
+                    <button className="small ghost" disabled={lib.page >= lib.pages} onClick={() => loadLib(lib.page + 1)}>下一页</button>
+                    <button className="small" disabled={!!libBusy} onClick={addLibBatch}>
+                      {libBusy === 'batch' ? '加入中…' : `批量加入本页（${lib.items.length}）`}
+                    </button>
+                  </div>
+                </>}
+                {libMsg && <div className="vs-probe ok">{libMsg}</div>}
+                {!lib && <div className="cfg-note">正在读取音色库索引…</div>}
               </div>
             </>}
             {!vs && <div className="cfg-note">正在读取音色源…</div>}
